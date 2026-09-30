@@ -251,9 +251,15 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
 - Spikes B1–B3 plus sizing, with results in [spikes/NOTES.md](../spikes/NOTES.md). All passed, so no fallback is needed.
 - The `Procfile` moves to Phase 3, when there are processes to start.
 
-**Phase 1 — Pure core** (`envelope`, `plan`, `replay`, `status`, `collapse`)
+**Phase 1 — Pure core** (`envelope`, `plan`, `replay`, `status`, `collapse`) ✅
 - Tests: a test for every envelope limit, a test for each of A3's three rules, and the Hypothesis replay property (10k examples).
 - **Exit:** 100% branch coverage on these modules, and the property test passes.
+- Result: 118 tests in about 17 s, and all six pure modules at 100% branch coverage. Three properties hold:
+  - the store matches the oracle for any batching (10k examples)
+  - outcomes don't depend on batching
+  - a crash replay changes neither the store nor any merchant Change's Submission status
+
+  The property test caught one real subtlety on its first run: an internal reclassify can replay as `reclassified` after `skipped`. That's harmless and now documented. Two decisions made along the way: reclassify ignores the source version, and Submission status uses the best outcome, not the latest (both in the design doc).
 
 **Phase 2 — Storage shell** (`landing`, `store`, `state`, `events`)
 - Integration tests: an append then a per-partition read, conditional MERGE outcomes, atomic offset writes surviving a simulated crash, a second process failing to lock a partition that's already taken, events readable while being written.

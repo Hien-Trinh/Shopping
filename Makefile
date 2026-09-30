@@ -1,5 +1,5 @@
 # Pure modules (comma-separated) must stay at 100% branch coverage (plan-v1.md, Testing rules).
-PURE := src/catalog/keys.py
+PURE := src/catalog/keys.py,src/catalog/envelope.py,src/catalog/plan.py,src/catalog/replay.py,src/catalog/status.py,src/catalog/collapse.py
 
 .PHONY: check lint test hooks
 

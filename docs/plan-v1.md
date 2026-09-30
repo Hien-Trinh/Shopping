@@ -244,14 +244,15 @@ tests/unit  tests/integration  tests/stress
 
 Each phase ends green on `make check`, and its exit criteria are the tests.
 
-**Phase 0 — Skeleton and spikes**
-- `uv` project on Python 3.14, ruff, pytest with the coverage gate, pre-push hook, `Procfile`.
+**Phase 0 — Skeleton and spikes** ✅
+- `uv` project on Python 3.14, ruff, pytest with the coverage gates, pre-push hook (`make hooks`), README.
 - `.github/workflows/ci.yml` with the `check` job, which is required on `main`.
-- Spikes: B1 (reproduce the hang, prove the watchdog works), B2 (OPTIMIZE concurrent with MERGE/append), B3 (per-partition CDF reads), and group-commit throughput.
-- **Exit:** spike notes committed. If B2 or B3 fails, fall back to 64 separate Listing Store tables, one per partition, which removes conflicts entirely.
+- `keys.py` pulled forward from Phase 1, so CI has real code to gate: stable SHA-256 partition, `owner`/`owned`, 100% branch coverage, and property tests including Python/DuckDB equivalence.
+- Spikes B1–B3 plus sizing, with results in [spikes/NOTES.md](../spikes/NOTES.md). All passed, so no fallback is needed.
+- The `Procfile` moves to Phase 3, when there are processes to start.
 
-**Phase 1 — Pure core** (`keys`, `envelope`, `plan`, `replay`, `status`, `collapse`)
-- Tests: known-answer partition values and a hash-uniformity check, a test for every envelope limit, a test for each of A3's three rules, and the Hypothesis replay property (10k examples).
+**Phase 1 — Pure core** (`envelope`, `plan`, `replay`, `status`, `collapse`)
+- Tests: a test for every envelope limit, a test for each of A3's three rules, and the Hypothesis replay property (10k examples).
 - **Exit:** 100% branch coverage on these modules, and the property test passes.
 
 **Phase 2 — Storage shell** (`landing`, `store`, `state`, `events`)

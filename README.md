@@ -1,0 +1,15 @@
+# Shopping — commerce ingestion pipeline
+
+A learning project: merchants push product Listings through one API, and the pipeline categorizes them and keeps a correct current catalog under out-of-order, duplicate and crash-replayed changes. It runs locally on one Mac (Python 3.14, Delta Lake via delta-rs, DuckDB for queries).
+
+- [Design doc](docs/design-commerce-ingestion-pipeline.md) · [v1 build plan](docs/plan-v1.md) · [Glossary](CONTEXT.md) · [ADRs](docs/adr/)
+
+## Develop
+
+```bash
+uv sync
+make hooks   # once per clone: runs `make check` before every push
+make check   # ruff + tests + coverage gates, same as CI
+```
+
+Changes reach `main` only through a PR with a green `check` job.

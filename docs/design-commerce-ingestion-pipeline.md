@@ -76,10 +76,12 @@ Only the Ingestion API and the backfill job write to the Landing log, both appen
    - `==` stored with a different content hash: **conflict**, rejected, and the first write wins
    - `>` stored, or no stored row: **apply**
 
-   Within one batch, only the highest `source_version` per Listing key is applied, and the others get their outcome relative to it.
-5. **Classify** the batch's to-apply changes that are new, re-created after a delete, have a changed title, description or attributes, or are `op=reclassify`. The timeout (200 ms) covers the whole batch. On a timeout or error, those Listings get Primary Category = Uncategorized and `needs_reclassify = true`.
-6. **MERGE** the batch in one commit: update only if `s.source_version > t.source_version` (or equal, for `reclassify`). An upsert replaces the whole Listing. A delete writes a Tombstone (merchant content cleared, key and `source_version` kept).
-7. Emit one event per change (`written`, `stale`, `already_applied`, `conflict`, `failed`), then write each partition's offset atomically, then the heartbeat.
+   A batch behaves exactly like applying its changes one at a time in landing order. Each change is compared with the state left by the changes before it, so batching only decides when writes are flushed, never what they are. A property test checks that outcomes are the same for any batching. A delete of an unknown Listing still writes a Tombstone, so an older upsert that arrives later can't bring it back.
+
+   `op=reclassify` ignores `source_version`: it re-classifies whatever the Listing holds now (`reclassified`), or does nothing if the Listing is missing or deleted (`skipped`). Tying it to a version would let a price-only update make it skip, leaving the Listing on the old taxonomy.
+5. **Classify** the Listings the batch leaves live that are new, re-created after a delete, have a changed title, description or attributes, are flagged `needs_reclassify`, were classified under an older taxonomy version, or got `op=reclassify`. A price or stock change never reclassifies. The timeout (200 ms) covers the whole batch. On a timeout or error, those Listings get Primary Category = Uncategorized and `needs_reclassify = true`.
+6. **MERGE** the batch in one commit: update only if `s.source_version > t.source_version`, or, for a reclassify-only row, `s.source_version = t.source_version` with an unchanged content hash. An upsert replaces the whole Listing. A delete writes a Tombstone (merchant content cleared, key and `source_version` kept).
+7. Emit one event per change (`written`, `stale`, `already_applied`, `conflict`, `failed`, or the internal `reclassified` / `skipped`), then write each partition's offset atomically, then the heartbeat.
 8. **Errors:**
    - An exception in one change's logic: retry, then mark `failed` and skip it. If a MERGE fails on the data itself, bisect the batch to isolate the bad change.
    - Storage errors (Landing log read, MERGE commit, offset write): back off. The offset is never advanced, and the worker crashes after N attempts so the supervisor restarts it.
@@ -102,15 +104,17 @@ A Listing is one sellable variant (the medium red t-shirt), identified by its **
 | price_micros | int64 | Merchant | Required for upserts, > 0 |
 | currency | string | Merchant | Required for upserts. Must equal the Merchant's currency |
 | availability | enum | Merchant | Required for upserts: `in_stock`, `out_of_stock` or `preorder` |
-| attributes | map<string,string> | Merchant | ≤ 100 keys. Includes `gtin`, `brand` and `mpn` (for future Product matching) and `group_id` (Variant group) |
-| content_hash | string | Ingestion worker | SHA-256 of the canonical JSON of the merchant fields. Drives step 4's rules and whether to reclassify |
+| attributes | map<string,string> | Merchant | ≤ 100 keys; names 1–100 characters, values ≤ 1,000. Includes `gtin`, `brand` and `mpn` (for future Product matching) and `group_id` (Variant group) |
+| content_hash | string | Ingestion worker | SHA-256 of the canonical JSON (sorted keys) of the merchant content; a Tombstone hashes `null`. Drives step 4's rules |
+
+All merchant fields are validated in strict mode: `"5"`, `5.0` and `true` are not integers, and unknown fields are rejected, both at the top level and inside `listing`. The request shape is `{"changes": [{"op", "merchant_product_id", "source_version", "listing": {…}}]}`. A delete carries no `listing`.
 | primary_category | string | Ingestion worker | Taxonomy node, or Uncategorized |
 | taxonomy_version, classify_confidence, needs_reclassify | string, float, bool | Ingestion worker | |
 | is_tombstone | bool | Ingestion worker | Kept forever |
 | partition | int (0–63) | Ingestion API | `int.from_bytes(sha256(f"{merchant_id}/{merchant_product_id}")[:8], "big") % 64`, which DuckDB and Spark SQL can reproduce |
 | submission_id, change_index, received_at | UUIDv7, int, timestamp (UTC) | Ingestion API | Landing log and events. Not used for ordering |
 
-**Submission status** is derived from events (the latest event per `change_index`), read by an in-memory DuckDB query that only covers event hours from the UUIDv7 timestamp onward. A Merchant can only read its own Submissions.
+**Submission status** is derived from events, read by an in-memory DuckDB query that only covers event hours from the UUIDv7 timestamp onward. A Merchant can only read its own Submissions. Each change's status is the **best** outcome any event reported for it, in the order written, reclassified, already_applied, conflict, stale, skipped, failed, rejected. It isn't the latest, because a crash replay can only make a merchant change look worse (a written change replays as `already_applied` or `stale`). A change with only `accepted` is `pending`.
 
 ## Categorization
 

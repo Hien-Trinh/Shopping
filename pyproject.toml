@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Commerce ingestion pipeline: Listings in, categorized current catalog out."
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "pydantic>=2.13.5",
+]
 
 [dependency-groups]
 dev = [

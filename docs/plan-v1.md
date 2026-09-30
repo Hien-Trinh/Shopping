@@ -1,0 +1,316 @@
+# v1 Build Plan — Commerce Ingestion
+
+Sep 29, 2026 · Architecture review of [design-commerce-ingestion-pipeline.md](design-commerce-ingestion-pipeline.md), [ADR-0001](adr/0001-partition-by-listing-key.md), [ADR-0002](adr/0002-local-first-delta-no-queue.md). Terms are defined in [CONTEXT.md](../CONTEXT.md).
+
+## Verdict
+
+The shape is sound: single-writer partitions, a conditional write, and a replay check that acts as the correctness oracle. **The doc has 19 holes, and 8 of them would ship bugs** (section A). Section B lists risks to prove early, and section C lists scope gaps we accept for v1.
+
+**Status (Sep 30):** every decision is resolved, and A1–A19 are folded into the design doc, CONTEXT.md and both ADRs.
+
+## Is it Python only?
+
+Yes. Everything is written in **Python 3.14**: the API, workers, export, snapshots, load generator and eval harness. On this Mac (M4, 16 GB RAM, 10 cores) I checked that these install on 3.14: `deltalake` 1.6.6, `duckdb` 1.5.6, `mlx` 0.32.3, `fastembed` 0.8.1, `fastapi`, `hypothesis`, `pytest-cov`, and `uuid.uuid7` from the standard library.
+
+Things that aren't Python, none of which you write as code:
+- SQL, for DuckDB metric queries
+- TOML, for config
+- a `Procfile`, to start the processes
+- Rust inside delta-rs, which you never touch
+
+Two places where Python could become the bottleneck, and neither needs another language at this scale:
+- **The load generator** (the GIL limits it): run it as several processes, and check that it isn't the bottleneck before trusting any stress number.
+- **Parsing a 10k-item JSON body in the API**: it blocks the event loop for up to about a second. Measure it and cap the body size.
+
+## What I verified (spike, delta-rs 1.6.6)
+
+| Assumption | Result |
+| --- | --- |
+| Conditional MERGE (`s.sv > t.sv`) skips stale writes | ✅ The stale write left the row unchanged |
+| MERGE writes the change feed (CDF) | ✅ It produced `insert`, `update_preimage` and `update_postimage` rows |
+| Separate processes can MERGE into disjoint partitions | ✅ 8 processes × 20 MERGEs: **0 conflicts**, 1.3 s |
+| Log checkpoints happen automatically | ✅ A checkpoint appeared at version 99 |
+| One commit per MERGE | ⚠️ 160 MERGEs made 160 log files, which confirms hole A10 |
+| MERGE never hangs | ❌ **One run hung on the first MERGE for over 5 minutes** and never reproduced. See B1 |
+
+## A. Holes in the design (fix before coding)
+
+**A1. Validation runs before classification, but category-specific validation needs the Category.** Lifecycle steps 4 and 5 are in an impossible order. Timeouts also send Listings to Uncategorized, which skips category rules entirely. And reclassification could later invalidate a Listing that was already accepted. Also, no per-Category rules are actually defined.
+→ **Drop per-Category validation from v1.** Workers run generic validation only. Category rules come back together with the Category-specific workers (future work).
+
+**A2. Upsert semantics are undefined.** If a merchant sends only a new price, does the description get cleared? Partial updates applied out of order would need a version per field.
+→ **An upsert is a full replace.** The change is the Listing's complete state. That also keeps the replay check trivial.
+
+**A3. After a crash, changes that were applied get reported as "stale".** Say a worker MERGEs a batch, then crashes before writing events. On restart it reprocesses the batch, finds `source_version == stored`, and reports `stale` for changes that are actually live.
+→ Three rules:
+- `<` stored: `stale`
+- `==` stored, same content hash: `already_applied`, which counts as success
+- `==` stored, different content: `conflict`, rejected, and the first write wins
+
+This replaces the Round 6 decision that retries show up as "stale, ignored".
+
+**A4. The replay check as written would fail on a correct system.** Fix it to:
+- exclude changes that were rejected, conflicting or failed (join against events)
+- use the A3 tie rule
+- compare merchant fields, `source_version` and the tombstone flag, but not the Category, because timeouts make classification nondeterministic
+- only run from an empty store, since Landing log retention (A13) drops old history
+
+→ Add two more oracles: replaying the export files in order must equal the Listing Store at the watermark, and every snapshot must equal the Listing Store at its pinned version.
+
+**A5. The backfill/reclassify job would be a second writer to the Listing Store.** That breaks ADR-0001's single writer per partition.
+→ Backfill appends `op=reclassify` changes (carrying the current `source_version`) to the Landing log, and the partition's owning worker applies them. There's still only one writer.
+
+**A6. "Retry 3 times, then skip" loses data on infrastructure errors.** With a full disk, thousands of valid changes would be skipped and marked `failed`.
+→ Treat the two kinds of error differently:
+- **Errors in a single change's logic:** retry, then mark `failed` and skip.
+- **Storage errors** (Landing log read, MERGE, offset write): back off, never advance the offset, and crash loudly after N attempts.
+
+If a MERGE fails on the data itself, bisect the batch to isolate the bad change.
+
+**A7. Python's `hash()` is randomized per process.** Different processes would put the same Listing key in different partitions, and ordering silently breaks. When I ran `hash('m_42/SKU-123') % 64` in fresh processes I got 21, 42 and 35. One earlier pair happened to match (55, 55), which is exactly why a quick check can make it look stable.
+→ Use **SHA-256**:
+
+```python
+def partition(merchant_id: str, merchant_product_id: str) -> int:
+    digest = hashlib.sha256(f"{merchant_id}/{merchant_product_id}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") % 64
+```
+
+- **Why SHA-256 rather than blake2b or xxhash:** it's in the Python standard library, in DuckDB (`sha256`) and in Spark SQL (`sha2`). Metric queries, the replay check and a later Databricks port can all recompute the partition inside SQL. I checked that Python and DuckDB (`('0x' || substr(sha256(k), 1, 16))::UBIGINT % 64`) agree on 20,000 random keys, including Unicode ones, and the keys spread evenly across the 64 buckets. Speed doesn't matter at 50/s.
+- **Why a `/` separator is enough:** `merchant_id` is generated by the server from `[a-z0-9_]` and never contains `/`, so the first `/` always splits the key correctly. That's true no matter what the merchant product ID contains, so no length prefix is needed.
+- **Test:** pin known key → partition values, plus the Python/DuckDB equivalence check.
+
+**A8. ADR-0001's `partition // (64/N)` uses float division when N doesn't divide 64, and nothing stops two workers from claiming the same partition.**
+→ Use `owner = partition * N // 64`. Each worker takes an `flock` on `state/locks/pNN.lock` for every partition it owns and refuses to start if one is taken.
+
+**A9. Offsets need to be stored per partition, and the design never says where.** A per-worker offset can't move with a partition when workers are rescaled.
+→ One JSON file per partition, `state/offsets/pNN.json` holding the last Landing log version, written atomically (write to a temp file, then `os.replace`). Only the owner writes it, so there's no contention. The Change Export watermark is stored the same way.
+
+**A10. One MERGE per change means one Delta commit per change.** At 50 changes/s that's 4.3M log files and small data files a day. The API has the same problem when it appends to the Landing log.
+→ Batch on both sides:
+- **Workers:** read up to 1,000 changes or 200 ms, dedupe per Listing key, then do one MERGE per batch.
+- **API:** group commit. A single appender collects requests for up to 100 ms, commits once, then answers all of them with 202.
+- **Compaction:** each worker compacts its own partitions every K batches. It's the only writer there, so compaction can't conflict.
+
+**A11. Events can't go into a DuckDB table.** DuckDB allows only one process to hold a database open for writing, and the API, N workers and Change Export all write events.
+→ Each process appends to its own JSONL file under `events/<hour>/<process>.jsonl`, and DuckDB queries them with `read_json` (with `ignore_errors` in case it reads a half-written last line). See "DuckDB's role" below.
+
+**A12. Deriving Submission status from events means scanning every event on each lookup, which gets slower over time.**
+→ Make `submission_id` a UUIDv7, which embeds a timestamp. A lookup then only reads event hours from that timestamp onward.
+
+**A13. The disk won't fit 30 days of Landing log.** There's 27 GB free. My estimate: sustained 50 changes/s × about 500 B compressed ≈ 2 GB/day of Landing log, plus about 4 GB/day of events, which is roughly 60 GB+ over 30 days.
+→ Keep 7 days of Landing log and 3 days of events and exports, all configurable. The API returns 503 when free disk drops below 5 GB.
+
+**A14. A single bad `source_version` freezes a Listing forever.** If a merchant sends `9e18` by mistake, no later write can ever be higher.
+→ Reject `source_version > now_ms + 24h`. This works for both kinds of versions merchants send: plain counters stay tiny, and epoch milliseconds stay close to now.
+
+**A15. Price has no defined type.** A float price rounds money.
+→ Store `price_micros` (int64, > 0). `currency` must equal the Merchant's single currency, per the one-market rule.
+
+**A16. There's no design for storing merchants (IDs, keys, currency).**
+→ A SQLite `merchants` table (`merchant_id`, `currency`, `key_hash`, `status`), plus a CLI to create a merchant and rotate its key:
+- keys come from `secrets.token_urlsafe(32)` and are shown once
+- only the SHA-256 is stored, compared with `hmac.compare_digest`
+
+**A17. Compacting tombstones after N days lets old changes bring deleted Listings back.**
+→ Keep tombstones forever in v1. 1M rows is nothing.
+
+**A18. Change Export can fall behind cleanup and lose data without noticing.** If export is down longer than VACUUM's retention, the change-feed files it still needs are gone.
+→ On startup, if the watermark is behind the oldest readable version, export a full snapshot and log a `gap_recovered` event. Export files are kept 3 days (A13).
+
+**A19. "Retries create a Submission that reports stale, ignored" (Round 6).** Superseded by A3.
+
+## B. Risks to prove early
+
+| # | Risk | Mitigation / proof |
+| --- | --- | --- |
+| B1 | MERGE hung once in the spike, with no timeout available | Each worker writes a heartbeat file every batch, and the supervisor kills and restarts a worker whose heartbeat is older than 60 s. At-least-once delivery plus A3 make the restart safe. Phase 0 tries to reproduce the hang. |
+| B2 | OPTIMIZE running at the same time as a MERGE or append | Phase 0 spike. Workers compact only their own partitions. The Landing log is compacted by a maintenance job, and appends (which never read) shouldn't conflict with it. |
+| B3 | Reading the Landing log change feed per partition without reading every partition | Phase 0 spike: `load_cdf` with a partition predicate on a table partitioned by `partition`. |
+| B4 | Classifier throughput on bulk uploads | Batch-embedding a whole worker batch is fine. Laya does about 13 ms per decision, one at a time, so roughly 75/s per process. Jev is capped at 40 requests/s, so a 1M-Listing initial load through Jev takes about 7 h, and most of it would time out into Uncategorized. The **timeout applies to the whole batch**, not to each change. |
+| B5 | Memory with 16 GB | Laya at FP16 is about 0.85 GB per process, so 8 workers use about 7 GB. If Laya wins the eval, run **one shared classifier process** instead of loading the model into every worker. |
+| B6 | Docker | Ruled out: MLX can't use the GPU inside Docker on macOS. Processes run natively from a `Procfile` via `honcho` (Python). |
+| B7 | Laptop sleep pauses every process and skews freshness numbers | Run stress tests under `caffeinate -dims`. |
+| B8 | Unbounded request bodies | FastAPI and uvicorn don't limit body size. Add middleware that caps bodies at 32 MB and returns 413 above that. |
+| B9 | The load generator becomes the bottleneck | Run the load generator as several processes. Its own send rate goes in the report, and a run is invalid if the generator is at 100% CPU. |
+
+## C. Scope gaps accepted for v1 (say if any is wrong)
+
+- **No long-term history.** Snapshots and the Landing log each cover only 7 days, so the original "every version of every listing" promise is gone.
+- **No `availability`/stock field.** I recommend adding it: stock changes are the most frequent real update, and they don't trigger reclassification, which makes stress tests realistic. There's no image URL either (put it in `attributes`).
+- Listings never expire. A full-catalog feed that silently drops an item doesn't delete that item.
+- No per-merchant rate limit. One merchant hammering a single key slows its partition (1/64 of the catalog).
+- No merchant read API (`GET /listings/{key}`). You inspect data through DuckDB.
+- The API binds to `127.0.0.1` without TLS. Before exposing it anywhere, add TLS and rate limits.
+- Jev sends merchant data to a third party. Prompt injection in a title can at worst cause a misclassification, because `Choice` can only answer from the given options.
+- The Amazon Reviews '23 dataset is for research use. Fine for learning, not for a commercial product.
+- "Catalog" will clash with Databricks' Unity Catalog if you port. Minor.
+- `laya-mlx` installs from a GitHub repo. Review it before installing. I won't install it without your OK.
+
+## DuckDB's role: read-only query engine
+
+The pipeline never writes to DuckDB. Every DuckDB use opens a throwaway **in-memory** connection and reads files that other components own. That makes the single-writer limit irrelevant, and any number of processes can query at the same time.
+
+| DuckDB reads | How |
+| --- | --- |
+| Listing Store, Landing log, snapshots | Through `DeltaTable(path).to_pyarrow_dataset()`, which DuckDB queries directly as Arrow (verified). This avoids DuckDB's `delta` extension, which is a separate Delta reader downloaded at runtime. The pipeline then has one Delta implementation (delta-rs), and neither CI nor tests need network access. |
+| Events | `read_json('events/**/*.jsonl', ignore_errors=true)` |
+| Export files | `read_parquet('export/*.parquet')` |
+
+What DuckDB is used for:
+- saved metric queries (freshness, lag, rates)
+- the SQL half of the replay oracles
+- the `GET /submissions/{id}` status fold
+
+Merchants stay in SQLite. It handles several processes writing (in WAL mode), and only the API and the admin CLI write to it.
+
+## CI
+
+**Every PR runs the whole suite on GitHub Actions and must be green before merging.** The repo is public, and `main` requires a PR with passing checks, even for admins. One workflow, `.github/workflows/ci.yml`, gains a job as each phase makes it meaningful:
+
+| Job | Runner | Runs | When |
+| --- | --- | --- | --- |
+| `check` | `ubuntu-latest` | `make check`: ruff, unit, integration, both coverage gates, and the Python/DuckDB hash equivalence test | From Phase 0: every PR and every push to `main` (required) |
+| `stress-smoke` | `ubuntu-latest` | 60 s of every chaos scenario at low rate, ending with the three oracles | From Phase 7: every PR (required) |
+| `model` | `macos-latest` (Apple Silicon) | Tests marked `model` (MLX/Laya and the real embedding model), with the model cached | From Phase 6: PRs that touch `classify*`, `taxonomy*`, `eval/` or dependencies (required, skipped otherwise) |
+| full stress / eval | local Mac | Full Phase 7 scenarios and the classifier eval | Before a release, run by hand. CI runners are too small to mean anything |
+
+Details that matter:
+- **The `model` job filters by path with a job-level `if`, not the workflow-level `paths:` filter.** A required check whose workflow never runs stays "Expected" forever and blocks the merge. A job skipped through `if` counts as passed. A first step runs `git diff --name-only origin/main...HEAD`, so no third-party action is needed.
+- **Cost on this private repo:** the Free plan includes 2,000 Actions minutes a month, and GitHub's price list has macOS at about 10× Linux ($0.062 vs $0.006/min). That's why `model` only runs when relevant. Public repos run for free.
+- **No secrets in CI.** Jev is never called in CI, and the `model` job uses only local models.
+- **Why the repo is public:** private repos on the Free plan can't require status checks. Making it public was chosen over paying for GitHub Pro, and public repos also run Actions (including macOS) for free.
+- **Why jobs arrive by phase:** a job can't be required before it has something to run. A placeholder job that always passes would be a check that proves nothing.
+- The local pre-push hook stays, so failures show up before you push.
+
+## Architecture after fixes
+
+```
+Merchant ─HTTP─▶ Ingestion API (1 process, async, group commit ≤100 ms)
+                   │ append (partitioned by hash % 64)        events/*.jsonl
+                   ▼
+             Landing log (Delta, CDF, 7 d) ◀── backfill appends op=reclassify
+                   │ load_cdf(since per-partition offset)
+                   ▼
+  Ingestion worker ×N (flock per partition, heartbeat, batch ≤1000/200 ms)
+    plan (pure) → classify batch (timeout) → conditional MERGE → events → offsets
+                   ▼
+             Listing Store (Delta, partitioned, CDF, tombstones forever)
+               │ change feed since watermark          │ pinned-version copy
+               ▼                                      ▼
+        Change Export (1 min, files 3 d)       Catalog Snapshots (6 h, 7 d)
+```
+
+## Code layout
+
+A **functional core with an imperative shell**: every decision lives in pure functions that are tested without touching disk, and the I/O modules stay thin.
+
+```
+src/catalog/
+  keys.py         Listing key encoding, stable hash, partition, owner(p, N)            [pure]
+  envelope.py     pydantic models, limits, source_version ceiling, currency rule        [pure]
+  plan.py         batch + stored rows → outcomes, merge rows, needs-classify set       [pure]  ← the heart
+  replay.py       the three oracles: store, export, snapshot                           [pure]
+  status.py       events → Submission status fold                                     [pure]
+  collapse.py     change-feed rows → latest row per key, tombstone → delete            [pure]
+  classify.py     Classifier protocol, threshold, EmbeddingClassifier, FakeClassifier
+  taxonomy.py     load Shopify taxonomy, trim to depth 3, version string
+  merchants.py    SQLite registry, key issue/verify, CLI
+  landing.py      schema, group-commit appender, read-since per partition
+  store.py        schema, read rows by keys, conditional MERGE, compact own partitions
+  state.py        atomic offset/watermark files, partition flocks, heartbeat
+  events.py       JSONL writer, event types
+  worker.py       loop + error policy (A6)
+  api.py          FastAPI app, auth, body cap, disk guard
+  export.py       Change Export + gap recovery
+  snapshots.py    pinned copy + pruning
+  maintenance.py  Landing log compaction, retention, vacuum
+loadgen/          scenarios, multiprocess sender
+eval/             labeled set, classifier experiment
+tests/unit  tests/integration  tests/stress
+```
+
+## Testing rules
+
+- **Every module ships with its tests in the same commit.** TDD is recommended (red, green, refactor).
+- **Coverage gate:** `pytest --cov=catalog --cov-branch --cov-fail-under=90` on every run. The pure modules (`keys`, `envelope`, `plan`, `replay`, `status`, `collapse`) must reach **100% branch coverage**, enforced by a second `coverage report --include=… --fail-under=100`. The only coverage exclusions are `if __name__ == "__main__":` lines.
+- **Coverage doesn't prove correctness; property tests do.** A Hypothesis test generates random change sequences (with shuffles, duplicates, deletes, stale versions, crash-and-replay), runs them through `plan` against an in-memory store, and asserts the result equals the `replay` oracle. That single test covers A2, A3, A4 and the tombstone rules.
+- **Integration tests** run against real Delta tables in `tmp_path`. No mocks of delta-rs: the spike showed its behavior is exactly what needs testing.
+- **Inject everything that varies:** clock, classifier and paths. There's no `sleep` in unit tests.
+- **The stress suite** (`tests/stress`, marked `slow`) is excluded from the coverage gate and ends with all three oracles.
+- **Tooling:** `uv`, `ruff` (lint and format), `pytest`, `pytest-cov`, `hypothesis`. `make check` = ruff + unit + integration + coverage gates, run by a pre-push hook.
+
+## Phases
+
+Each phase ends green on `make check`, and its exit criteria are the tests.
+
+**Phase 0 — Skeleton and spikes**
+- `uv` project on Python 3.14, ruff, pytest with the coverage gate, pre-push hook, `Procfile`.
+- `.github/workflows/ci.yml` with the `check` job, which is required on `main`.
+- Spikes: B1 (reproduce the hang, prove the watchdog works), B2 (OPTIMIZE concurrent with MERGE/append), B3 (per-partition CDF reads), and group-commit throughput.
+- **Exit:** spike notes committed. If B2 or B3 fails, fall back to 64 separate Listing Store tables, one per partition, which removes conflicts entirely.
+
+**Phase 1 — Pure core** (`keys`, `envelope`, `plan`, `replay`, `status`, `collapse`)
+- Tests: known-answer partition values and a hash-uniformity check, a test for every envelope limit, a test for each of A3's three rules, and the Hypothesis replay property (10k examples).
+- **Exit:** 100% branch coverage on these modules, and the property test passes.
+
+**Phase 2 — Storage shell** (`landing`, `store`, `state`, `events`)
+- Integration tests: an append then a per-partition read, conditional MERGE outcomes, atomic offset writes surviving a simulated crash, a second process failing to lock a partition that's already taken, events readable while being written.
+- **Exit:** integration tests pass against real Delta.
+
+**Phase 3 — Worker end to end** (with `FakeClassifier`)
+- Tests:
+  - Poison change: isolated and skipped, and the partition keeps moving.
+  - Storage error: the offset does not advance.
+  - `kill -9` mid-batch, then restart: the replay oracle holds and outcomes are `already_applied`.
+  - Rescale from 4 to 3 workers: every partition keeps its offset.
+  - Stale heartbeat: the supervisor restarts the worker.
+- **Exit:** all of the above pass.
+
+**Phase 4 — Ingestion API** (`api`, `merchants`, `status`)
+- Tests:
+  - Auth: no key, a wrong key, a revoked key.
+  - A merchant can't read another merchant's Submission (IDOR).
+  - Partial batch: per-item errors come back and the valid items are accepted.
+  - A 33 MB body gets 413.
+  - Low disk gets 503.
+  - Group commit makes one Delta commit for concurrent requests.
+  - Submission status moves through pending, then done, then a mix of outcomes.
+- **Exit:** tests pass, and an end-to-end request travels HTTP → Landing log → worker → Listing Store.
+
+**Phase 5 — Change Export, Snapshots, maintenance**
+- Tests:
+  - The export oracle.
+  - Re-running after a crash between writing the file and the watermark produces identical output.
+  - Gap recovery (A18).
+  - Snapshots equal the pinned version.
+  - Pruning at 7 days (with an injected clock).
+  - Landing log retention and compaction don't break worker reads.
+- **Exit:** all three oracles pass on a generated run.
+
+**Phase 6 — Categorization**
+- Load and trim the Shopify taxonomy. `EmbeddingClassifier` (fastembed) with batch classification and a batch timeout. Backfill through `op=reclassify`.
+- The eval harness scores all 4 options, then accuracy, p50/p99 latency and cost go into a report.
+- Label set: sample about 200 items from Amazon Reviews '23. An LLM can pre-label them, but you verify every label by hand.
+- Tests:
+  - Threshold boundaries.
+  - A timeout produces Uncategorized plus `needs_reclassify`.
+  - A price-only change doesn't reclassify.
+  - A taxonomy version bump reclassifies through the Landing log.
+  - `FakeClassifier` is used everywhere except `tests/model` (marked `model`, with the model cached).
+- **Exit:** the eval report is committed and the threshold is chosen from it.
+
+**Phase 7 — Load and chaos**
+- Multi-process load generator. Scenarios: steady 50/s, a 10k-item bulk batch, a 1M initial load, out-of-order changes, duplicate retries, a delete followed by a late update, a poison change, a classifier outage, killing a worker, rescaling, and a disk-guard trip.
+- Metrics as saved DuckDB SQL: freshness p50/p99, lag per partition, classify latency, stale/conflict/failed rates, Uncategorized rate, worker utilization.
+- A runbook covers start, stop, rescale, reset and reading results.
+- **Exit:** every scenario ends with the three oracles passing, and the p99 freshness SLO (under 5 minutes) holds at 50/s.
+
+## Decisions (resolved Sep 30)
+
+1. **A1:** drop per-Category validation from v1. ✅
+2. **A2:** an upsert is a full replace. ✅
+3. **A13 / C:** keep 7 days of Landing log, with no long-term history. ✅
+4. **C:** add `availability` as a first-class field. ✅
+5. **CI enforcement:** the repo is public, and `main` requires passing checks. ✅
+6. **Branch workflow:** every change goes through a PR, and there are no direct pushes to `main`. ✅

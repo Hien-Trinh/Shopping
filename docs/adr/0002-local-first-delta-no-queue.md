@@ -14,7 +14,7 @@ v1 runs as plain Python processes on a Mac. The Landing log, Listing Store and C
 - Every Delta write is a commit, so writers batch: the API group-commits for up to 100 ms, and workers do one MERGE per batch of up to 1,000 changes. Workers compact their own partitions.
 - Change Export uses the Listing Store's Delta change feed. Its watermark is the last exported table version, advanced only after the export file is written. If cleanup has passed the watermark, Change Export falls back to a full snapshot export.
 - Catalog Snapshots are explicit copies, not Delta time travel, because vacuum removes old table versions.
-- Events are per-process JSONL files. DuckDB is only a read-only query engine over Delta (via Arrow), JSONL and Parquet, with in-memory connections only.
+- Events are per-process JSONL files, read by a reader that trusts only complete lines (DuckDB's `ignore_errors` returns partial events). DuckDB is only a read-only query engine for metrics over Delta (via Arrow) and Parquet, with in-memory connections only.
 - Retention is capped by one laptop disk: Landing log 7 days, events and exports 3 days. The stress-test ceiling is one machine.
 - No Docker: MLX can't use the GPU inside it. Processes run natively from a `Procfile`.
 - Verified in a spike with delta-rs 1.6.6: the conditional MERGE ignores stale writes, MERGE writes the change feed, and 8 processes writing disjoint partitions had 0 conflicts. One unexplained MERGE hang was seen, and a heartbeat watchdog restarts stuck workers.

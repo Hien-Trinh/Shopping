@@ -57,7 +57,7 @@ Only the Ingestion API and the backfill job write to the Landing log, both appen
 | --- | --- | --- | --- |
 | Ingestion API | Authenticates the Merchant, checks the envelope, group-commits accepted changes to the Landing log, returns 202 + `submission_id`. Serves `GET /submissions/{id}`. Rejects bodies over 32 MB (413) and returns 503 when free disk is under 5 GB. | Merchant requests, merchant registry, events | Landing log, events |
 | Merchant registry | SQLite: `merchant_id`, `currency`, `key_hash`, `status`. An admin CLI creates Merchants and rotates keys. | — | — |
-| Landing log | Append-only Delta table (change feed enabled), partitioned by `partition`. It doubles as the work queue. Retained 7 days. | — | — |
+| Landing log | Append-only Delta table (change feed enabled), partitioned by `partition`. It doubles as the work queue. Landing order is `(commit version, seq)`, where `seq` is a row's position in its commit. The content is stored as JSON (`listing`). Retained 7 days. | — | — |
 | Ingestion worker | Owns partitions where `partition * N // 64 == index`, holding an `flock` per partition. Loop: read up to 1,000 changes or 200 ms past each partition's offset → plan → classify the batch → one conditional MERGE → events → offsets → heartbeat. Compacts its own partitions every K batches. | Landing log, Listing Store | Listing Store, offsets, events |
 | Listing Store | Delta table (change feed enabled), partitioned by `partition`. Current state of every Listing, including Tombstones. | — | — |
 | Change Export | Every minute: reads the change feed since its watermark and writes one Parquet file (latest row per changed Listing key; tombstone → `op=delete`), named by version range, then advances the watermark. If the watermark is older than what cleanup kept, it exports a full snapshot instead. Files kept 3 days. | Listing Store | Export files, watermark, events |
@@ -114,7 +114,7 @@ All merchant fields are validated in strict mode: `"5"`, `5.0` and `true` are no
 | partition | int (0–63) | Ingestion API | `int.from_bytes(sha256(f"{merchant_id}/{merchant_product_id}")[:8], "big") % 64`, which DuckDB and Spark SQL can reproduce |
 | submission_id, change_index, received_at | UUIDv7, int, timestamp (UTC) | Ingestion API | Landing log and events. Not used for ordering |
 
-**Submission status** is derived from events, read by an in-memory DuckDB query that only covers event hours from the UUIDv7 timestamp onward. A Merchant can only read its own Submissions. Each change's status is the **best** outcome any event reported for it, in the order written, reclassified, already_applied, conflict, stale, skipped, failed, rejected. It isn't the latest, because a crash replay can only make a merchant change look worse (a written change replays as `already_applied` or `stale`). A change with only `accepted` is `pending`.
+**Submission status** is derived from events, read only from event hours starting at the UUIDv7 timestamp. A Merchant can only read its own Submissions. Each change's status is the **best** outcome any event reported for it, in the order written, reclassified, already_applied, conflict, stale, skipped, failed, rejected. It isn't the latest, because a crash replay can only make a merchant change look worse (a written change replays as `already_applied` or `stale`). A change with only `accepted` is `pending`.
 
 ## Categorization
 
@@ -128,7 +128,7 @@ All merchant fields are validated in strict mode: `"5"`, `5.0` and `true` are no
 ```
 data/landing_log/  data/listing_store/  data/snapshots/<ts>/  data/export/<v1>-<v2>.parquet
 data/events/<yyyy-mm-ddThh>/<process>.jsonl   data/merchants.sqlite
-state/offsets/pNN.json  state/export_watermark.json  state/locks/pNN.lock  state/heartbeat/<worker>.json
+state/offsets/pNN.json ([version, seq])  state/export_watermark.json  state/locks/pNN.lock  state/heartbeat/<worker>.json
 ```
 
 Offsets and watermarks are written atomically (write to a temp file, then `os.replace`). Retention: Landing log 7 days, events and export files 3 days, snapshots 7 days. All are configurable.
@@ -136,7 +136,8 @@ Offsets and watermarks are written atomically (write to a temp file, then `os.re
 ## Observability and testing
 
 - **Events:** one JSONL line per stage per change, carrying `submission_id`, `change_index`, the Listing key, `partition`, the Listing Store version where relevant, and a timestamp. Each process writes its own files.
-- **DuckDB is a read-only query engine.** Each query uses a throwaway in-memory connection over Delta (via `to_pyarrow_dataset()`), JSONL and Parquet. The pipeline never writes to DuckDB.
+- **Reading events:** a plain line reader trusts only complete lines, and skips a line still being written or one torn by a crash. After a crash, the writer ends its own torn last line before appending. (DuckDB's `read_json` with `ignore_errors` returns a *partial* event instead, which could look real, so it isn't used for events that drive status.)
+- **DuckDB is a read-only query engine** for metrics and ad-hoc SQL. Each query uses a throwaway in-memory connection over Delta (via `to_pyarrow_dataset()`) and Parquet. The pipeline never writes to DuckDB.
 - **Metrics (saved SQL):** freshness p50/p99, worker lag per partition, classify latency, rates of stale, conflict, failed and Uncategorized changes, worker utilization.
 - **Three oracles:**
   1. **Store:** the Landing log (excluding rejected, conflicting and failed changes) → highest `source_version` per key → full replace → tombstones must equal the Listing Store, compared on merchant fields, `source_version` and the tombstone flag. It runs from an empty store.

@@ -261,9 +261,15 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
 
   The property test caught one real subtlety on its first run: an internal reclassify can replay as `reclassified` after `skipped`. That's harmless and now documented. Two decisions made along the way: reclassify ignores the source version, and Submission status uses the best outcome, not the latest (both in the design doc).
 
-**Phase 2 — Storage shell** (`landing`, `store`, `state`, `events`)
+**Phase 2 — Storage shell** (`landing`, `store`, `state`, `events`) ✅
 - Integration tests: an append then a per-partition read, conditional MERGE outcomes, atomic offset writes surviving a simulated crash, a second process failing to lock a partition that's already taken, events readable while being written.
 - **Exit:** integration tests pass against real Delta.
+- Result: 148 tests in about 17 s, 100% branch coverage across the whole package. The integration tests caught three real bugs before any commit:
+  - a worker would stall forever on a stretch of commits with nothing for its partitions
+  - after a batch limit cut a commit, the rest of that commit was skipped
+  - DuckDB's `ignore_errors` turns a half-written event into a partial event that looks real
+
+  All three are fixed, and each has a test that fails without the fix. Also verified: concurrent MERGEs from two processes each get their own commit version, a killed lock holder releases its partitions, and a crash in the middle of saving an offset leaves the old value.
 
 **Phase 3 — Worker end to end** (with `FakeClassifier`)
 - Tests:

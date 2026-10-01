@@ -1,0 +1,13 @@
+/Users/hientrinh/Projects/Shopping/.claude/agents/reviewer-concurrency.md
+/Users/hientrinh/Projects/Shopping/.claude/agents/reviewer-correctness.md
+/Users/hientrinh/Projects/Shopping/.claude/agents/reviewer-perf.md
+/Users/hientrinh/Projects/Shopping/.claude/skills/lean-review/SKILL.md
+/Users/hientrinh/Projects/Shopping/.github/workflows/ci.yml
+/Users/hientrinh/Projects/Shopping/.github/workflows/mutation.yml
+/Users/hientrinh/Projects/Shopping/CONTEXT.md
+/Users/hientrinh/Projects/Shopping/README.md
+/Users/hientrinh/Projects/Shopping/docs/adr/0001-partition-by-listing-key.md
+/Users/hientrinh/Projects/Shopping/docs/adr/0002-local-first-delta-no-queue.md
+/Users/hientrinh/Projects/Shopping/docs/design-commerce-ingestion-pipeline.md
+/Users/hientrinh/Projects/Shopping/docs/plan-v1.md
+/Users/hientrinh/Projects/Shopping/spikes/NOTES.md

@@ -1,6 +1,6 @@
 ---
 name: reviewer-perf
-description: Lean-review finder for performance problems on hot paths in a PR diff. Used by the /lean-review skill only when the diff touches a hot path.
+description: Lean-review finder for performance problems on hot paths in a PR diff. Used by the /lean-review skill.
 model: sonnet
 tools: Read, Grep, Glob, Bash
 ---
@@ -23,4 +23,4 @@ Look for:
 
 Measure cheaply, and only report what matters at this scale. Spend about 10 tool calls, then report.
 
-Output: up to 4 candidates. Each one: `file:line`, the wasted work, the measured or estimated cost at this scale, and the cheaper alternative. If there's nothing that matters, say "none".
+Output: up to 4 candidates. Each one: `file:line`, the wasted work, the measured or estimated cost at this scale, and the cheaper alternative. If the diff touches no hot path or nothing matters at this scale, say "none" after a quick look.

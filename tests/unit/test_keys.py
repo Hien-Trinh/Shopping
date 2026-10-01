@@ -97,11 +97,11 @@ def test_worker_count_bounds(workers):
 
 @pytest.mark.parametrize("p", [-1, PARTITIONS])
 def test_owner_partition_bounds(p):
-    with pytest.raises(ValueError, match="partition must be"):
+    with pytest.raises(ValueError, match=r"partition must be 0\.\.63, got "):
         owner(p, 4)
 
 
 @pytest.mark.parametrize("index", [-1, 4])
 def test_owned_index_bounds(index):
-    with pytest.raises(ValueError, match="index must be"):
+    with pytest.raises(ValueError, match=r"index must be 0\.\.3, got "):
         owned(index, 4)

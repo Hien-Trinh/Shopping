@@ -1,4 +1,5 @@
 import copy
+import hashlib
 
 import pytest
 
@@ -125,6 +126,19 @@ def test_rejected(path, value, message):
     assert message in errors_for(upsert(**{path: value}))
 
 
+def test_errors_name_the_field_without_the_op_tag():
+    assert errors_for(upsert(listing__title="")).startswith("listing.title: String should")
+    assert errors_for(delete(source_version=0)).startswith("source_version: Input should")
+    assert errors_for(upsert(merchant_product_id=" x")) == (
+        "merchant_product_id: Value error, must be printable, with no leading or trailing"
+        " whitespace"
+    )
+    assert errors_for(upsert(source_version=NOW + FUTURE_SLACK_MS + 1)) == (
+        "source_version: must not be more than 24 hours in the future"
+    )
+    assert str(InvalidChange(("a: x", "b: y"))) == "a: x; b: y"
+
+
 @pytest.mark.parametrize("raw", [None, "SKU-1", [], 5])
 def test_rejects_non_objects(raw):
     assert errors_for(raw).startswith("change:")
@@ -155,8 +169,17 @@ def test_reports_every_business_rule_at_once():
     ],
 )
 def test_bad_batches(body):
-    with pytest.raises(BadBatch):
+    with pytest.raises(BadBatch) as e:
         check_batch(body, **MERCHANT)
+    assert str(e.value) in {
+        'body must be {"changes": [...]}',
+        f"changes must be a list of 1 to {MAX_BATCH} items",
+    }
+
+
+def test_single_change_batch_keeps_the_merchant():
+    checked = check_batch({"changes": [delete()]}, merchant_id="m_9", currency="USD", now_ms=NOW)
+    assert checked.accepted == [(0, Change("m_9", "SKU-1", 6, "delete"))]
 
 
 def test_partial_batch():
@@ -202,3 +225,14 @@ def test_changes_are_never_hashable():
     # Content holds a dict, so a hashable Change would fail only for upserts; fail always.
     with pytest.raises(TypeError):
         hash(Change("m_1", "x", 1, "delete"))
+
+
+def test_content_hash_bytes_are_pinned():
+    # Stored in every Listing Store row: a format change would make every stored hash disagree.
+    c = listing(title="Áo đỏ", currency="VND", price_micros=1, attributes={"màu": "đỏ", "b": "2"})
+    canonical = (
+        '{"attributes":{"b":"2","màu":"đỏ"},"availability":"in_stock","currency":"VND",'
+        '"description":"","price_micros":1,"title":"Áo đỏ"}'
+    )
+    assert content_hash(c) == hashlib.sha256(canonical.encode()).hexdigest()
+    assert content_hash(None) == hashlib.sha256(b"null").hexdigest()

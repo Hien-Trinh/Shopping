@@ -245,11 +245,12 @@ tests/unit  tests/integration  tests/stress
 
 Every step PR (under about 300 changed lines) goes through `/lean-review` (`.claude/skills/lean-review`): deterministic gates first (`make check`, plus `make mutate` for pure modules), then 2–3 Sonnet reviewer agents (`.claude/agents/reviewer-*.md`), verification in-context, and one round, with a second in-context round only if correctness bugs were found. A max-effort fan-out (11 agents, about 1.7M tokens for one PR) hit the usage limit. The deterministic gates found most of the real bugs anyway. Reuse, simplification and altitude reviews run once at the end of the project.
 
-**Mutation baseline** (`make mutate`, Oct 1): 364 of 400 mutants killed (91%). The 36 survivors to triage:
-- error-message text (`_describe`, `InvalidChange`)
-- **`content_hash` serialization (7):** no test pins an exact hash value, so a changed JSON format would silently break every stored hash
-- `check_batch` bounds
-- a few in `keys.owner`/`owned`, `status.fold`, `plan`, `replay.fingerprint` and `collapse`
+**Mutation baseline** (`make mutate`, after step 2r): 373 of 382 mutants killed. The 9 survivors are equivalent mutants, so a new survivor outside this list is a real gap:
+- `keys.partition`: `from_bytes(..., "big")` without the byte order (big is the default)
+- `content_hash`: `model_dump` mode `None`, `"XXjsonXX"` or `"JSON"`, since any mode other than `"json"` means python, and every `Content` field is already JSON-native; and `ensure_ascii=None`, which is falsy like `False`. The exact bytes are pinned by `test_content_hash_bytes_are_pinned`.
+- `plan`: `touched[k] = ""` (twice), since the dict is an ordered set and its values are never read
+- `status.fold`: `<=` for `<`, since equal rank means the same Outcome
+- `collapse`: `>=` for `>`, since a change feed has at most one row per key per commit once pre-images are skipped
 
 ## PR steps (from Oct 1)
 
@@ -257,7 +258,7 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 
 | Phase | Step | PR |
 | --- | --- | --- |
-| 2 | 2r | Mutation-survivor triage: pin `content_hash` bytes, kill or justify the rest |
+| 2 | 2r ✅ | Mutation-survivor triage: pin `content_hash` bytes, kill or justify the rest |
 | 3 | 3a | `worker.process_batch`: one batch from read to plan, classify (FakeClassifier), merge, events and offsets, plus the replay oracle test |
 | 3 | 3b | Error policy: per-change failure isolation and bisecting; a storage error never advances the offset |
 | 3 | 3c | Worker process: claim, startup beat, poll loop, owner compaction cadence, CLI entry, `Procfile` |

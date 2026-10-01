@@ -6,3 +6,6 @@ __pycache__/
 .ruff_cache/
 /data/
 /state/
+
+.mutmut-cache
+mutants/

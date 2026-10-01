@@ -149,3 +149,14 @@ def test_concurrent_startup_creates_one_table(tmp_path):
 
 def _open_and_identify(path):
     return landing.table_id(landing.ensure(path))
+
+
+def test_ensure_by_uri_locks_next_to_the_table(tmp_path, monkeypatch):
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    log = landing.ensure(str(tmp_path / "landing"))
+    again = landing.ensure(log.table_uri)  # file:///... form, as handles report it
+    assert landing.table_id(again) == landing.table_id(log)
+    assert list(cwd.iterdir()) == []  # no stray "file:" directory
+    assert (tmp_path / "landing.lock").exists()

@@ -9,6 +9,7 @@ Layout under the state directory:
 import fcntl
 import json
 import os
+import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
@@ -42,7 +43,7 @@ def save(path: Path, value: Any) -> None:
     Upgrade path: fsync new Delta log and data files after each commit, then F_FULLFSYNC here.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")  # unique per call, not per pid
     with open(tmp, "w") as f:
         json.dump(value, f)
         f.flush()

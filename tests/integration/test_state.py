@@ -2,7 +2,9 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -28,6 +30,21 @@ def test_crash_mid_save_keeps_the_old_value(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         state.save(path, {"v": 2})
     assert state.load(path, None) == {"v": 1}
+
+
+def test_concurrent_saves_in_one_process_never_tear_the_file(tmp_path):
+    path, start = tmp_path / "w.json", threading.Barrier(4)
+    state.save(path, {"v": 0})
+
+    def saver(n):
+        start.wait()
+        for i in range(200):
+            state.save(path, {"v": n * 1000 + i})
+            state.load(path, None)
+
+    with ThreadPoolExecutor(4) as pool:
+        list(pool.map(saver, range(4)))  # re-raises CorruptState or FileNotFoundError
+    assert state.load(path, None)["v"] % 1000 == 199
 
 
 def test_unreadable_state_fails_with_a_clear_error(tmp_path):

@@ -7,6 +7,7 @@ process never appends after the torn last line its predecessor may have left.
 import json
 import os
 import time
+import uuid
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,7 +17,10 @@ _HOUR = "%Y-%m-%dT%H"
 
 class EventLog:
     def __init__(self, root: Path, process: str, clock: Callable[[], float] = time.time):
-        self.root, self.name, self.clock = root, f"{process}-{os.getpid()}", clock
+        # The nonce keeps a restart that reuses the pid (pid 1 in a container) out of its
+        # predecessor's file, whose last line may be torn.
+        self.name = f"{process}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        self.root, self.clock = root, clock
 
     def emit(self, events: Iterable[Mapping]) -> None:
         """Append events with a shared timestamp (ms) that the events can't override."""

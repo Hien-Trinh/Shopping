@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -32,7 +33,8 @@ def test_round_trip_across_processes_and_hours(tmp_path):
 
 def test_one_file_per_process_run(tmp_path):
     EventLog(tmp_path, "worker-0", clock(T0)).emit([{"type": "x"}])
-    assert [f.name for f in (tmp_path / HOUR).iterdir()] == [f"worker-0-{os.getpid()}.jsonl"]
+    (name,) = [f.name for f in (tmp_path / HOUR).iterdir()]
+    assert re.fullmatch(rf"worker-0-{os.getpid()}-[0-9a-f]{{8}}\.jsonl", name)
 
 
 def test_the_shared_timestamp_wins(tmp_path):
@@ -89,3 +91,12 @@ def test_empty_cases(tmp_path):
     assert list(tmp_path.iterdir()) == []
     EventLog(tmp_path, "api", clock(T0)).emit([{"type": "heartbeat"}])
     assert events.read(tmp_path, submission_id="s1") == []
+
+
+def test_a_restart_with_the_same_pid_never_appends_to_a_torn_file(tmp_path):
+    EventLog(tmp_path, "worker-0", clock(T0)).emit([{"type": "a"}])
+    (torn,) = (tmp_path / HOUR).iterdir()
+    with torn.open("a") as f:
+        f.write('{"type":"b","sta')  # killed mid-write
+    EventLog(tmp_path, "worker-0", clock(T0 + 1)).emit([{"type": "c"}])  # same pid
+    assert [e["type"] for e in events.read(tmp_path)] == ["a", "c"]

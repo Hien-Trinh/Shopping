@@ -240,6 +240,16 @@ tests/unit  tests/integration  tests/stress
 - **The stress suite** (`tests/stress`, marked `slow`) is excluded from the coverage gate and ends with all three oracles.
 - **Tooling:** `uv`, `ruff` (lint and format), `pytest`, `pytest-cov`, `hypothesis`. `make check` = ruff + unit + integration + coverage gates, run by a pre-push hook.
 
+## Review process (from Oct 1)
+
+Every phase PR goes through `/lean-review` (`.claude/skills/lean-review`): deterministic gates first (`make check`, plus `make mutate` for pure modules), then 2–3 Sonnet reviewer agents (`.claude/agents/reviewer-*.md`), verification in-context, and one round, with a second in-context round only if correctness bugs were found. A max-effort fan-out (11 agents, about 1.7M tokens for one PR) hit the usage limit. The deterministic gates found most of the real bugs anyway. Reuse, simplification and altitude reviews run once at the end of the project.
+
+**Mutation baseline** (`make mutate`, Oct 1): 364 of 400 mutants killed (91%). The 36 survivors to triage:
+- error-message text (`_describe`, `InvalidChange`)
+- **`content_hash` serialization (7):** no test pins an exact hash value, so a changed JSON format would silently break every stored hash
+- `check_batch` bounds
+- a few in `keys.owner`/`owned`, `status.fold`, `plan`, `replay.fingerprint` and `collapse`
+
 ## Phases
 
 Each phase ends green on `make check`, and its exit criteria are the tests.

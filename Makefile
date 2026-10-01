@@ -1,7 +1,7 @@
 # Pure modules (comma-separated) must stay at 100% branch coverage (plan-v1.md, Testing rules).
 PURE := src/catalog/keys.py,src/catalog/envelope.py,src/catalog/plan.py,src/catalog/replay.py,src/catalog/status.py,src/catalog/collapse.py
 
-.PHONY: check lint test hooks
+.PHONY: check lint test hooks mutate
 
 check: lint test
 
@@ -15,3 +15,8 @@ test:
 
 hooks:
 	git config core.hooksPath .githooks
+
+# Mutation testing of the pure modules (~1 min). Not part of `check`; CI reports it without blocking.
+mutate:
+	uv run mutmut run
+	uv run mutmut results

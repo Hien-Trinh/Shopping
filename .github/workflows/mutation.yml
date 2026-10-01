@@ -1,0 +1,15 @@
+name: mutation
+
+# Reports surviving mutants in the pure modules. Informational: not a required check.
+on:
+  pull_request:
+    paths: ["src/catalog/**", "tests/unit/**"]
+  workflow_dispatch:
+
+jobs:
+  mutate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: make mutate

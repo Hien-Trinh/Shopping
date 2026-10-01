@@ -142,5 +142,5 @@ def check_change(raw: object, *, merchant_id: str, currency: str, now_ms: int) -
 
 
 def _describe(err) -> str:
-    loc = err["loc"][1:] if err["loc"][:1] in (("upsert",), ("delete",)) else err["loc"]
+    loc = err["loc"][1:]  # drop the union tag ("upsert"/"delete"); an untagged loc is empty
     return f"{'.'.join(map(str, loc)) or 'change'}: {err['msg']}"

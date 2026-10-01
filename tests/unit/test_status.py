@@ -53,3 +53,8 @@ def test_other_event_types_are_ignored():
 
 def test_internal_reclassify_outcomes():
     assert fold(S, [ev("skipped", 0), ev("reclassified", 0)]).outcomes == {0: "reclassified"}
+
+
+def test_events_of_other_submissions_are_skipped_not_final():
+    events = [ev("accepted", 0), ev("accepted", 0, submission="other"), ev("written", 0)]
+    assert fold(S, events).outcomes == {0: "written"}

@@ -28,6 +28,7 @@ def test_failed_and_reclassify_changes_do_not_count():
 def test_fingerprint_and_live():
     row = {"source_version": 3, "content_hash": "h", "is_tombstone": 0}
     assert fingerprint(row) == (3, "h", False)
+    assert fingerprint(row | {"is_tombstone": 1}) == (3, "h", True)
     assert live({A: (1, "h", False), B: (2, "t", True)}) == {A: (1, "h", False)}
 
 

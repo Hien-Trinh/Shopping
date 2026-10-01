@@ -7,7 +7,7 @@ description: Strict but usage-conscious PR review for this repo. Runs 2-3 Sonnet
 
 Review target: a PR number (default: the current branch's open PR). Every step is mandatory, and the order matters.
 
-1. **Gather the diff.** Save `gh pr diff <n>` to the session scratchpad. If the diff is over about 600 lines, say the PR should have been split, and suggest the split for next time. Review it anyway.
+1. **Gather the diff.** Save `gh pr diff <n>` to the session scratchpad. If the diff is over about 300 changed lines (tests included), say the PR should have been split, and suggest the split for next time. Review it anyway.
 2. **Deterministic gates first.** `make check` must pass. If the diff touches `src/catalog/` pure modules, run `make mutate` and note any surviving mutants in changed lines. Fix or explain them before using agent tokens.
 3. **Finders (parallel, in one message).** Give each one the diff path, the scratch directory and the PR's intent in 3–5 lines:
    - `reviewer-correctness`: always.

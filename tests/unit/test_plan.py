@@ -23,7 +23,7 @@ def test_empty_batch():
 def test_new_listing_is_written_and_classified():
     p = run([up("a", 5)])
     assert p.outcomes == (W,)
-    assert only_write(p) == Write(K, 5, listing(), None, needs_classify=True, content_changed=True)
+    assert only_write(p) == Write(K, 5, listing(), None, needs_classify=True)
 
 
 def test_rules_against_stored_row():
@@ -53,7 +53,7 @@ def test_batch_is_applied_in_landing_order():
 def test_delete_of_unknown_listing_leaves_a_tombstone():
     p = run([delete("a", 7)])
     assert p.outcomes == (W,)
-    assert only_write(p) == Write(K, 7, None, None, needs_classify=False, content_changed=True)
+    assert only_write(p) == Write(K, 7, None, None, needs_classify=False)
     assert run([up("a", 6)], {K: stored(7, tombstone=True)}).outcomes == (ST,)
 
 
@@ -90,7 +90,7 @@ def test_reclassifies_when_row_needs_it():
     same = listing()
     for base in [
         stored(5, tombstone=True),  # re-created after a delete
-        stored(5, same, needs_reclassify=True),  # classifier timed out earlier
+        stored(5, same, cls=classified(needs_reclassify=True)),  # classifier timed out earlier
         stored(5, same, cls=classified(taxonomy="shopify-2025-01")),  # taxonomy changed
     ]:
         assert only_write(run([up("a", 6, same)], {K: base})).needs_classify
@@ -104,7 +104,7 @@ def test_row_without_classification_is_classified():
 def test_reclassify_live_listing():
     p = run([reclassify("a")], {K: stored(5)})
     assert p.outcomes == (Outcome.RECLASSIFIED,)
-    assert only_write(p) == Write(K, 5, listing(), None, needs_classify=True, content_changed=False)
+    assert only_write(p) == Write(K, 5, listing(), None, needs_classify=True)
 
 
 def test_reclassify_missing_or_deleted_listing_is_skipped():
@@ -117,11 +117,20 @@ def test_reclassify_missing_or_deleted_listing_is_skipped():
 
 def test_reclassify_mixed_with_merchant_changes():
     w = only_write(run([reclassify("a"), delete("a", 6)], {K: stored(5)}))
-    assert (w.listing, w.needs_classify, w.content_changed) == (None, False, True)
+    assert (w.listing, w.needs_classify) == (None, False)
     w = only_write(run([up("a", 6, listing(price=9)), reclassify("a")], {K: stored(5)}))
-    assert (w.source_version, w.needs_classify, w.content_changed) == (6, True, True)
+    assert (w.source_version, w.needs_classify) == (6, True)
 
 
 def test_writes_in_first_touch_order():
     p = run([up("b", 1), reclassify("c"), up("a", 1), up("b", 2)], {("m_1", "c"): stored(1)})
     assert [w.key[1] for w in p.writes] == ["b", "c", "a"]
+
+
+def test_a_provisional_classification_is_redone_until_it_sticks():
+    provisional = classified("Uncategorized", needs_reclassify=True)
+    assert only_write(run([up("a", 6)], {K: stored(5, cls=provisional)})).needs_classify
+    # Once classified for real, an unrelated change (price) carries it and asks for nothing more.
+    final = classified("Apparel > Shirts")
+    w = only_write(run([up("a", 7, listing(price=9))], {K: stored(6, cls=final)}))
+    assert (w.needs_classify, w.classification) == (False, final)

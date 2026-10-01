@@ -25,6 +25,8 @@ class Classification:
     category: str
     confidence: float
     taxonomy_version: str
+    # A provisional answer (Uncategorized after a classifier failure or timeout) to redo later.
+    needs_reclassify: bool = False
 
 
 @dataclass(frozen=True)
@@ -34,7 +36,6 @@ class Stored:
     source_version: int
     listing: Content | None  # None is a Tombstone
     classification: Classification | None = None
-    needs_reclassify: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,8 +46,7 @@ class Write:
     source_version: int
     listing: Content | None
     classification: Classification | None  # carried over; None when classifying or a Tombstone
-    needs_classify: bool
-    content_changed: bool  # False for a reclassify-only write, which keeps the source version
+    needs_classify: bool  # plan output only: the worker classifies these before merging
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,6 @@ class Plan:
 def plan(changes: Sequence[Change], stored: Mapping[Key, Stored], taxonomy_version: str) -> Plan:
     current: dict[Key, tuple[int, Content | None]] = {}
     touched: dict[Key, None] = {}  # ordered set: first-touch order
-    changed: set[Key] = set()
     reclassify: set[Key] = set()
     outcomes = []
     for c in changes:
@@ -75,7 +74,6 @@ def plan(changes: Sequence[Change], stored: Mapping[Key, Stored], taxonomy_versi
                 outcomes.append(Outcome.SKIPPED)
         elif cur is None or c.source_version > cur[0]:
             current[k] = (c.source_version, c.listing)
-            changed.add(k)
             touched[k] = None
             outcomes.append(Outcome.WRITTEN)
         elif c.source_version < cur[0]:
@@ -85,8 +83,7 @@ def plan(changes: Sequence[Change], stored: Mapping[Key, Stored], taxonomy_versi
         else:
             outcomes.append(Outcome.CONFLICT)
     writes = tuple(
-        _write(k, current[k], stored.get(k), k in changed, k in reclassify, taxonomy_version)
-        for k in touched
+        _write(k, current[k], stored.get(k), k in reclassify, taxonomy_version) for k in touched
     )
     return Plan(tuple(outcomes), writes)
 
@@ -95,24 +92,23 @@ def _write(
     k: Key,
     final: tuple[int, Content | None],
     base: Stored | None,
-    changed: bool,
     reclassify: bool,
     taxonomy_version: str,
 ) -> Write:
     source_version, listing = final
     if listing is None:
-        return Write(k, source_version, None, None, needs_classify=False, content_changed=changed)
+        return Write(k, source_version, None, None, needs_classify=False)
     needs = (
         reclassify
         or base is None
         or base.listing is None  # re-created after a delete
-        or base.needs_reclassify
         or base.classification is None
+        or base.classification.needs_reclassify
         or base.classification.taxonomy_version != taxonomy_version
         or _classified_view(base.listing) != _classified_view(listing)
     )
     carried = None if needs else base.classification
-    return Write(k, source_version, listing, carried, needs, changed)
+    return Write(k, source_version, listing, carried, needs)
 
 
 def _classified_view(listing: Content) -> tuple:

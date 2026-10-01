@@ -30,10 +30,22 @@ def test_crash_mid_save_keeps_the_old_value(tmp_path, monkeypatch):
     assert state.load(path, None) == {"v": 1}
 
 
+def test_unreadable_state_fails_with_a_clear_error(tmp_path):
+    (tmp_path / "w.json").write_text("")
+    with pytest.raises(state.CorruptState, match="w.json is unreadable"):
+        state.load(tmp_path / "w.json", None)
+
+
 def test_offsets(tmp_path):
-    assert state.load_offsets(tmp_path, [0, 1]) == {0: START, 1: START}
-    state.save_offsets(tmp_path, {1: (7, 3)})
-    assert state.load_offsets(tmp_path, [0, 1]) == {0: START, 1: (7, 3)}
+    assert state.load_offsets(tmp_path, [0, 1], "log-a") == {0: START, 1: START}
+    state.save_offsets(tmp_path, {1: (7, 3)}, "log-a")
+    assert state.load_offsets(tmp_path, [0, 1], "log-a") == {0: START, 1: (7, 3)}
+
+
+def test_offsets_from_another_landing_log_are_refused(tmp_path):
+    state.save_offsets(tmp_path, {1: (7, 3)}, "log-a")
+    with pytest.raises(state.OffsetsMismatch, match="partition 1"):
+        state.load_offsets(tmp_path, [1], "log-b")
 
 
 def test_claim_is_exclusive_and_released(tmp_path):
@@ -67,6 +79,7 @@ def test_lock_blocks_other_processes_and_dies_with_its_holder(tmp_path):
     finally:
         holder.send_signal(signal.SIGKILL)  # the watchdog's kill -9
         holder.wait()
+        holder.stdout.close()
     with state.claim(tmp_path, [7]):
         pass
 

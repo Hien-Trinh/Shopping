@@ -243,13 +243,45 @@ tests/unit  tests/integration  tests/stress
 
 ## Review process (from Oct 1)
 
-Every phase PR goes through `/lean-review` (`.claude/skills/lean-review`): deterministic gates first (`make check`, plus `make mutate` for pure modules), then 2–3 Sonnet reviewer agents (`.claude/agents/reviewer-*.md`), verification in-context, and one round, with a second in-context round only if correctness bugs were found. A max-effort fan-out (11 agents, about 1.7M tokens for one PR) hit the usage limit. The deterministic gates found most of the real bugs anyway. Reuse, simplification and altitude reviews run once at the end of the project.
+Every step PR (under about 300 changed lines) goes through `/lean-review` (`.claude/skills/lean-review`): deterministic gates first (`make check`, plus `make mutate` for pure modules), then 2–3 Sonnet reviewer agents (`.claude/agents/reviewer-*.md`), verification in-context, and one round, with a second in-context round only if correctness bugs were found. A max-effort fan-out (11 agents, about 1.7M tokens for one PR) hit the usage limit. The deterministic gates found most of the real bugs anyway. Reuse, simplification and altitude reviews run once at the end of the project.
 
 **Mutation baseline** (`make mutate`, Oct 1): 364 of 400 mutants killed (91%). The 36 survivors to triage:
 - error-message text (`_describe`, `InvalidChange`)
 - **`content_hash` serialization (7):** no test pins an exact hash value, so a changed JSON format would silently break every stored hash
 - `check_batch` bounds
 - a few in `keys.owner`/`owned`, `status.fold`, `plan`, `replay.fingerprint` and `collapse`
+
+## PR steps (from Oct 1)
+
+Each step is one PR of **under about 300 changed lines, tests included**, merged before the next one starts. A step that grows past that gets split rather than squeezed. ⏸ means the loop stops for you.
+
+| Phase | Step | PR |
+| --- | --- | --- |
+| 2 | 2r | Mutation-survivor triage: pin `content_hash` bytes, kill or justify the rest |
+| 3 | 3a | `worker.process_batch`: one batch from read to plan, classify (FakeClassifier), merge, events and offsets, plus the replay oracle test |
+| 3 | 3b | Error policy: per-change failure isolation and bisecting; a storage error never advances the offset |
+| 3 | 3c | Worker process: claim, startup beat, poll loop, owner compaction cadence, CLI entry, `Procfile` |
+| 3 | 3d | Supervisor: heartbeat watchdog (start time counts as a beat), restart |
+| 3 | 3e | Chaos tests: `kill -9` mid-batch, rescale from 4 to 3 workers |
+| 4 | 4a | Merchant registry (SQLite) and admin CLI: create a merchant, rotate a key |
+| 4 | 4b | `POST /listings:batch`: auth, envelope, 32 MB cap, disk guard, direct append |
+| 4 | 4c | Group-commit appender (≤100 ms window) |
+| 4 | 4d | `GET /submissions/{id}`: status from events, IDOR check |
+| 4 | 4e | End-to-end test: HTTP → Landing log → worker → Listing Store |
+| 5 | 5a | Change Export: change feed since the watermark, export files, export oracle |
+| 5 | 5b | Export gap recovery (A18) |
+| 5 | 5c | Catalog Snapshots and pruning |
+| 5 | 5d | Landing log retention and compaction (never past the slowest offset) |
+| 5 | 5e | Retention-horizon bootstrap for workers below the horizon |
+| 6 | 6a ⏸ | Taxonomy loader (asks before downloading the Shopify taxonomy) |
+| 6 | 6b ⏸ | Embedding classifier with a batch timeout (asks before downloading the model) |
+| 6 | 6c | Backfill job (`op=reclassify` for flagged rows and taxonomy bumps) |
+| 6 | 6d | Eval harness and report format |
+| 6 | 6e ⏸ | Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK |
+| 7 | 7a | Load generator (multiprocess) |
+| 7 | 7b | Chaos scenario runner and the three oracles |
+| 7 | 7c | Metrics SQL and runbook |
+| 7 | 7d ⏸ | `stress-smoke` CI job; then full stress runs on your Mac |
 
 ## Phases
 

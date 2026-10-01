@@ -94,11 +94,58 @@ def test_classifier_failure_marks_uncategorized_then_backfill_fixes_it(tmp_path)
     assert env.outcomes("backfill") == {1: "reclassified"}
 
 
-def test_a_wrong_number_of_answers_counts_as_a_failure(env, monkeypatch):
-    monkeypatch.setattr(env.classifier, "classify", lambda listings: [])
+def category(env, mpid):
+    return store.read(env.store, [("m_1", mpid)])[("m_1", mpid)].classification
+
+
+def test_answers_go_to_their_own_listings(env):
+    env.land(up(A, 1, listing("Shirt")), up(B, 1, listing("Hat")))
+    env.run()
+    assert (category(env, A).category, category(env, B).category) == ("Fake > S", "Fake > H")
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [[], [("Fake > S", 0.9)] * 2, [(None, 0.5)], [("", 0.5)], [("x", float("nan"))], [("x", 1.5)],
+     [("x", -0.1)], [("x", None)], ["x"]],
+)  # fmt: skip
+def test_a_bad_answer_counts_as_a_failure(env, monkeypatch, answer):
+    monkeypatch.setattr(env.classifier, "classify", lambda listings: answer)
     env.land(up(A, 1))
     env.run()
-    assert store.read(env.store, [("m_1", A)])[("m_1", A)].classification.needs_reclassify
+    assert (category(env, A).category, category(env, A).needs_reclassify) == (UNCATEGORIZED, True)
+    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
+    assert (failed["listings"], failed["partitions"]) == (1, [3])
+
+
+def test_an_outage_keeps_a_good_answer_whose_inputs_are_unchanged(env):
+    env.land(up(A, 1, listing("Shirt")), up(B, 1, listing("Hat")))
+    env.run()
+    env.classifier.fail = True
+    env.land(reclassify(A), up(B, 2, listing("Cap")), submission="s2")
+    env.run()
+    assert (category(env, A).category, category(env, A).needs_reclassify) == ("Fake > S", True)
+    assert (category(env, B).category, category(env, B).needs_reclassify) == (UNCATEGORIZED, True)
+
+
+def test_a_huge_classifier_error_is_truncated(env, monkeypatch):
+    def boom(listings):
+        raise RuntimeError("x" * 10_000)
+
+    monkeypatch.setattr(env.classifier, "classify", boom)
+    env.land(up(A, 1))
+    env.run()
+    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
+    assert len(failed["error"]) == 500
+
+
+def test_only_moved_offsets_are_saved(env, monkeypatch):
+    env.land(up(A, 1))
+    env.run()
+    saved = []
+    monkeypatch.setattr(state, "save_offsets", lambda _dir, offsets, _table: saved.append(offsets))
+    env.run()  # nothing new: no partition moves
+    assert saved == [{}]
 
 
 def test_crash_before_offsets_replays_safely(env, monkeypatch):

@@ -1,7 +1,9 @@
 """Classifiers: Listing content -> (Primary Category, confidence), a whole batch per call.
 
 The contract the worker relies on: a `taxonomy_version` attribute, and `classify(listings)`
-returning one (category, confidence) per Listing, in order. The real classifier is step 6b.
+returning one (category, confidence) per Listing, in order, with a non-empty category and a
+confidence in 0..1. The classifier owns the design's batch timeout (raise on expiry) and its
+confidence threshold (answer Uncategorized below it); the real one is step 6b.
 """
 
 from collections.abc import Sequence

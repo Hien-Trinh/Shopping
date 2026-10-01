@@ -47,6 +47,9 @@ class Write:
     listing: Content | None
     classification: Classification | None  # carried over; None when classifying or a Tombstone
     needs_classify: bool  # plan output only: the worker classifies these before merging
+    # Plan output only: what to keep if classifying fails. The stored answer when the classified
+    # fields are unchanged (a reclassify or a taxonomy bump); None means Uncategorized.
+    fallback: Classification | None = None
 
 
 @dataclass(frozen=True)
@@ -107,8 +110,15 @@ def _write(
         or base.classification.taxonomy_version != taxonomy_version
         or _classified_view(base.listing) != _classified_view(listing)
     )
-    carried = None if needs else base.classification
-    return Write(k, source_version, listing, carried, needs)
+    if not needs:
+        return Write(k, source_version, listing, base.classification, False)
+    same_content = (
+        base is not None
+        and base.listing is not None
+        and _classified_view(base.listing) == _classified_view(listing)
+    )
+    fallback = base.classification if same_content else None
+    return Write(k, source_version, listing, None, True, fallback)
 
 
 def _classified_view(listing: Content) -> tuple:

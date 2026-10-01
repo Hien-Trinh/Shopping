@@ -14,6 +14,7 @@ from deltalake import DeltaTable
 from catalog import landing, state, store
 from catalog.classify import UNCATEGORIZED
 from catalog.events import EventLog
+from catalog.keys import partition
 from catalog.landing import Position
 from catalog.plan import Classification, Outcome, Write, plan
 
@@ -29,7 +30,11 @@ def process_batch(
     limit: int = 1000,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> dict[int, Position]:
-    """Process up to `limit` Changes past `offsets` (the owned partitions); returns new offsets."""
+    """Process up to `limit` Changes past `offsets`; returns the new offsets.
+
+    The caller must hold `state.claim()` on every partition in `offsets` (ADR-0001): two workers
+    on one partition would redo each other's work and could pick the wrong conflict winner.
+    """
     batch = landing.read(landing_dt, offsets, limit)
     changes = [landed.change for landed in batch.changes]
     stored = store.read(store_dt, {c.key for c in changes})
@@ -66,16 +71,33 @@ def _classify(writes: Sequence[Write], classifier, events: EventLog) -> list[Wri
     version = classifier.taxonomy_version
     try:
         results = classifier.classify([w.listing for w in todo])
-        found = [
-            Classification(category, confidence, version)
-            for _, (category, confidence) in zip(todo, results, strict=True)
-        ]
+        found = [_answer(a, version) for _, a in zip(todo, results, strict=True)]
     except Exception as e:  # an outage, a timeout or a bad answer: never stall the partition
-        events.emit([{"type": "classify_failed", "listings": len(todo), "error": repr(e)}])
-        # Provisional, flagged so the Backfill reclassifies it (design doc, lifecycle step 5).
-        found = [Classification(UNCATEGORIZED, 0.0, version, needs_reclassify=True)] * len(todo)
+        failed = {
+            "type": "classify_failed",
+            "listings": len(todo),
+            "partitions": sorted({partition(*w.key) for w in todo}),
+            "error": repr(e)[:500],  # a provider error may echo listing text
+        }
+        events.emit([failed])
+        # Keep an answer whose inputs haven't changed, else Uncategorized; either way flagged so
+        # the Backfill reclassifies it (design doc, lifecycle step 5).
+        found = [
+            replace(w.fallback, needs_reclassify=True)
+            if w.fallback
+            else Classification(UNCATEGORIZED, 0.0, version, needs_reclassify=True)
+            for w in todo
+        ]
     answers = iter(found)
     return [
         replace(w, classification=next(answers), needs_classify=False) if w.needs_classify else w
         for w in writes
     ]
+
+
+def _answer(answer, version: str) -> Classification:
+    category, confidence = answer
+    confidence = float(confidence)
+    if not (isinstance(category, str) and category and 0.0 <= confidence <= 1.0):  # NaN fails too
+        raise ValueError(f"bad classifier answer: {answer!r}")
+    return Classification(category, confidence, version)

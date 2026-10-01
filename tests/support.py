@@ -37,3 +37,13 @@ def stored(sv, content=None, *, tombstone=False, cls=None, needs_reclassify=Fals
     content = None if tombstone else (content or listing())
     cls = None if tombstone else (cls or classified())
     return Stored(sv, content, cls, needs_reclassify)
+
+
+def product_in(partition: int, merchant="m_1", prefix="sku") -> str:
+    """A merchant product ID whose Listing key lands in `partition`."""
+    from catalog.keys import partition as partition_of
+
+    i = 0
+    while partition_of(merchant, f"{prefix}-{i}") != partition:
+        i += 1
+    return f"{prefix}-{i}"

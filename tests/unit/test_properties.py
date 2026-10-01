@@ -1,9 +1,9 @@
 """The replay property (plan-v1.md, Testing rules): whatever the batching, duplicates, order
 or crash replays, plan() lands the Listing Store exactly where the independent oracle says."""
 
-from helpers import TAX, classified, listing
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from support import TAX, classified, listing
 
 from catalog.envelope import Change
 from catalog.plan import Stored, plan

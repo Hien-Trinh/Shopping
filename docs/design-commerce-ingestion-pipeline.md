@@ -142,7 +142,7 @@ The Listing Store is compacted to about 1 MiB files. A copy-on-write MERGE rewri
 ## Observability and testing
 
 - **Events:** one JSONL line per stage per change, carrying `submission_id`, `change_index`, the Listing key, `partition`, the Listing Store version where relevant, and a timestamp. Each process writes its own files.
-- **Reading events:** each process run writes its own file (`<process>-<pid>.jsonl`), so a restarted process never appends after its predecessor's torn last line. The reader streams files and trusts only complete lines, skipping a line still being written or one torn by a crash. (DuckDB's `read_json` with `ignore_errors` returns a *partial* event instead, which could look real, so it isn't used for events that drive status.)
+- **Reading events:** each process run writes its own file (`<process>-<pid>-<nonce>.jsonl`), so a restarted process never appends after its predecessor's torn last line. The reader streams files and trusts only complete lines, skipping a line still being written or one torn by a crash. (DuckDB's `read_json` with `ignore_errors` returns a *partial* event instead, which could look real, so it isn't used for events that drive status.)
 - **DuckDB is a read-only query engine** for metrics and ad-hoc SQL. Each query uses a throwaway in-memory connection over Delta (via `to_pyarrow_dataset()`) and Parquet. The pipeline never writes to DuckDB.
 - **Metrics (saved SQL):** freshness p50/p99, worker lag per partition, classify latency, rates of stale, conflict, failed and Uncategorized changes, worker utilization.
 - **Three oracles:**

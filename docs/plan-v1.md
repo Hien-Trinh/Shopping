@@ -84,7 +84,7 @@ def partition(merchant_id: str, merchant_product_id: str) -> int:
 → Use `owner = partition * N // 64`. Each worker takes an `flock` on `state/locks/pNN.lock` for every partition it owns and refuses to start if one is taken.
 
 **A9. Offsets need to be stored per partition, and the design never says where.** A per-worker offset can't move with a partition when workers are rescaled.
-→ One JSON file per partition, `state/offsets/pNN.json` holding the last Landing log version, written atomically (write to a temp file, then `os.replace`). Only the owner writes it, so there's no contention. The Change Export watermark is stored the same way.
+→ One JSON file per partition, `state/offsets/pNN.json`, holding the **next** position to read, `(commit version, seq)`, and the id of the Landing log it belongs to. It's written atomically (write to a temp file, then `os.replace`). Only the owner writes it, so there's no contention. The Change Export watermark is stored the same way.
 
 **A10. One MERGE per change means one Delta commit per change.** At 50 changes/s that's 4.3M log files and small data files a day. The API has the same problem when it appends to the Landing log.
 → Batch on both sides:
@@ -93,7 +93,7 @@ def partition(merchant_id: str, merchant_product_id: str) -> int:
 - **Compaction:** each worker compacts its own partitions every K batches. It's the only writer there, so compaction can't conflict.
 
 **A11. Events can't go into a DuckDB table.** DuckDB allows only one process to hold a database open for writing, and the API, N workers and Change Export all write events.
-→ Each process appends to its own JSONL file under `events/<hour>/<process>.jsonl`, and DuckDB queries them with `read_json` (with `ignore_errors` in case it reads a half-written last line). See "DuckDB's role" below.
+→ Each process run appends to its own JSONL file under `events/<hour>/<process>-<pid>.jsonl`. They're read by a streaming reader that trusts only complete lines. (DuckDB's `read_json(ignore_errors=true)` returns a half-written line as a *partial* event, so it's never used on event files.) See "DuckDB's role" below.
 
 **A12. Deriving Submission status from events means scanning every event on each lookup, which gets slower over time.**
 → Make `submission_id` a UUIDv7, which embeds a timestamp. A lookup then only reads event hours from that timestamp onward.
@@ -154,13 +154,14 @@ The pipeline never writes to DuckDB. Every DuckDB use opens a throwaway **in-mem
 | DuckDB reads | How |
 | --- | --- |
 | Listing Store, Landing log, snapshots | Through `DeltaTable(path).to_pyarrow_dataset()`, which DuckDB queries directly as Arrow (verified). This avoids DuckDB's `delta` extension, which is a separate Delta reader downloaded at runtime. The pipeline then has one Delta implementation (delta-rs), and neither CI nor tests need network access. |
-| Events | `read_json('events/**/*.jsonl', ignore_errors=true)` |
+| Events | `events.read()` (complete lines only) loaded into DuckDB as Arrow, never `read_json` on live files |
 | Export files | `read_parquet('export/*.parquet')` |
 
 What DuckDB is used for:
 - saved metric queries (freshness, lag, rates)
 - the SQL half of the replay oracles
-- the `GET /submissions/{id}` status fold
+
+The `GET /submissions/{id}` status fold uses `events.read(submission_id=…)` and `status.fold` directly; no DuckDB is involved.
 
 Merchants stay in SQLite. It handles several processes writing (in WAL mode), and only the API and the admin CLI write to it.
 
@@ -270,6 +271,29 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
   - DuckDB's `ignore_errors` turns a half-written event into a partial event that looks real
 
   All three are fixed, and each has a test that fails without the fix. Also verified: concurrent MERGEs from two processes each get their own commit version, a killed lock holder releases its partitions, and a crash in the middle of saving an offset leaves the old value.
+- **Strict review, round 1** (PR #3 was merged before the review ran, so the fixes landed in a follow-up PR). 10 reviewer angles plus a gap sweep produced 15 reported findings, 12 of them reproduced, all fixed or explicitly deferred:
+  - **Bugs:**
+    - `ensure` raced when processes started together; fixed with a lock file.
+    - Offsets from a recreated Landing log silently skipped rows; offsets now carry the table id.
+    - `needs_classify` was overloaded, a reclassify-loop trap; the flag now lives on `Classification`.
+    - Strict re-validation of stored rows would strand them after a limit change; stored rows now decode without validation.
+    - Key columns were nullable; they're now non-nullable.
+    - Naive datetimes were accepted; they're now refused.
+    - A corrupt state file gave an unclear crash; it now raises a clear `CorruptState`.
+    - `test_compact_keeps_data` was vacuous; it now really compacts.
+    - `append([])` made an empty commit.
+    - An event's own `ts` overrode the shared stamp.
+  - **Performance:**
+    - `store.read` turned whole partitions into Python.
+    - `landing.read` turned the whole version window into Python and pinned idle partitions; offsets are now half-open cursors with one high-water mark.
+    - Compaction to 100 MB files made each MERGE rewrite a whole partition; compaction now targets 1 MiB.
+    - `events.read` parsed every line.
+    - Tables were re-opened on every call; handles are now kept and refreshed with `update_incremental`.
+  - **Docs:** A9, A11 and "DuckDB's role" were stale.
+  - **Simplified:** the MERGE guard no longer needs the `_reclassify_only` column or `Write.content_changed`. `ensure` is shared in `catalog/delta.py`. One events file per process run removes the torn-line repair.
+  - **Deferred, now written into later phases:** the retention horizon (Phase 5) and heartbeat startup gaps (Phase 3).
+  - **Accepted ceiling, documented:** power-loss durability.
+  - **Planted-bug check:** reverting each fix fails its regression test. Two tests had to be strengthened before they caught their bug: one now uses a barrier-released race, the other checks the idle partition after every cut-off read.
 
 **Phase 3 — Worker end to end** (with `FakeClassifier`)
 - Tests:
@@ -278,6 +302,11 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
   - `kill -9` mid-batch, then restart: the replay oracle holds and outcomes are `already_applied`.
   - Rescale from 4 to 3 workers: every partition keeps its offset.
   - Stale heartbeat: the supervisor restarts the worker.
+  - The worker beats once at startup, before its first batch. A worker that hangs before ever beating is still restarted, because the supervisor measures age from its start time. A restarted worker isn't killed for its predecessor's old heartbeat.
+- **Rules carried from the Phase 2 review:**
+  - keep one table handle per table per process
+  - never fork while holding partition claims; use spawn
+  - mark a classifier failure with `Classification(..., needs_reclassify=True)`, never by leaving `needs_classify` set
 - **Exit:** all of the above pass.
 
 **Phase 4 — Ingestion API** (`api`, `merchants`, `status`)
@@ -299,6 +328,11 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
   - Snapshots equal the pinned version.
   - Pruning at 7 days (with an injected clock).
   - Landing log retention and compaction don't break worker reads.
+  - **Retention horizon (from the Phase 2 review):** an offset older than the Landing log's oldest readable version must not crash-loop. That happens for a fresh `START` after retention has vacuumed version 0, or for a worker more than 7 days behind; reading vacuumed versions fails forever. Two measures:
+    - retention never deletes or vacuums past the slowest partition's offset, with the disk guard as the backstop
+    - a worker below the horizon bootstraps from the retained snapshot (pinned version, in `seq` order), then follows the change feed
+
+    The same guard applies to Change Export's watermark (A18).
 - **Exit:** all three oracles pass on a generated run.
 
 **Phase 6 — Categorization**

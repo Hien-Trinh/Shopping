@@ -15,6 +15,8 @@ v1 runs as plain Python processes on a Mac. The Landing log, Listing Store and C
 - Change Export uses the Listing Store's Delta change feed. Its watermark is the last exported table version, advanced only after the export file is written. If cleanup has passed the watermark, Change Export falls back to a full snapshot export.
 - Catalog Snapshots are explicit copies, not Delta time travel, because vacuum removes old table versions.
 - Events are per-process JSONL files, read by a reader that trusts only complete lines (DuckDB's `ignore_errors` returns partial events). DuckDB is only a read-only query engine for metrics over Delta (via Arrow) and Parquet, with in-memory connections only.
+- Copy-on-write MERGE rewrites every file holding a matched row, so the Listing Store is compacted to about 1 MiB files rather than delta-rs's default 100 MB. Rewrites cost about 1–3k Listings per changed key instead of a whole partition. This write amplification is inherent to this ADR (no deletion vectors in delta-rs writes).
+- Durability covers process crashes, not power loss: delta-rs doesn't fsync local commits. That's an accepted v1 ceiling on a laptop.
 - Retention is capped by one laptop disk: Landing log 7 days, events and exports 3 days. The stress-test ceiling is one machine.
 - No Docker: MLX can't use the GPU inside it. Processes run natively from a `Procfile`.
 - Verified in a spike with delta-rs 1.6.6: the conditional MERGE ignores stale writes, MERGE writes the change feed, and 8 processes writing disjoint partitions had 0 conflicts. One unexplained MERGE hang was seen, and a heartbeat watchdog restarts stuck workers.

@@ -196,3 +196,9 @@ def test_content_hash():
     assert content_hash(base) != content_hash(listing(price_micros=2))
     assert content_hash(None) != content_hash(base)
     assert Change("m_1", "x", 1, "upsert", base).content_hash == content_hash(base)
+
+
+def test_changes_are_never_hashable():
+    # Content holds a dict, so a hashable Change would fail only for upserts; fail always.
+    with pytest.raises(TypeError):
+        hash(Change("m_1", "x", 1, "delete"))

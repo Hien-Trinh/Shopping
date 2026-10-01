@@ -67,7 +67,7 @@ _ITEM: TypeAdapter[_Upsert | _Delete] = TypeAdapter(
 
 def content_hash(listing: Content | None) -> str:
     """SHA-256 of the canonical JSON of a Listing's content; None is a Tombstone."""
-    doc = None if listing is None else listing.model_dump()
+    doc = None if listing is None else listing.model_dump(mode="json")
     canonical = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -79,6 +79,9 @@ class Change:
     source_version: int
     op: Op
     listing: Content | None = None
+
+    # Content holds a dict, so hashing would fail only for upserts; fail for every Change instead.
+    __hash__ = None
 
     @property
     def key(self) -> Key:

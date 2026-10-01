@@ -16,7 +16,8 @@ def expected_store(
 ) -> dict[Key, Fingerprint]:
     """The Listing Store after applying the Landing log to an empty store.
 
-    `failed` holds landing positions whose Change failed and was skipped.
+    `failed` holds indexes into `landed` (not Landing log positions) of Changes that failed and
+    were skipped.
     """
     best: dict[Key, Change] = {}
     for i, c in enumerate(landed):

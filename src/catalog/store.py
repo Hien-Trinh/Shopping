@@ -8,42 +8,57 @@ from datetime import datetime
 import pyarrow as pa
 import pyarrow.compute as pc
 from deltalake import DeltaTable
-from deltalake.exceptions import TableNotFoundError
 
+from catalog import delta
 from catalog.envelope import Content, Key, content_hash
 from catalog.keys import partition
 from catalog.plan import Classification, Stored, Write
-from catalog.replay import Fingerprint
+from catalog.replay import Fingerprint, fingerprint
+
+# Copy-on-write MERGE rewrites every file holding a matched row, so files stay small: a 1 MiB
+# file is ~1-3k Listings rewritten per change, not a whole partition (measured).
+COMPACT_TARGET = 1 << 20
+
+
+def _required(name: str, kind: pa.DataType) -> pa.Field:
+    return pa.field(name, kind, nullable=False)
+
 
 SCHEMA = pa.schema(
     [
-        ("partition", pa.int32()),
-        ("merchant_id", pa.string()),
-        ("merchant_product_id", pa.string()),
-        ("source_version", pa.int64()),
-        ("content_hash", pa.string()),
-        ("is_tombstone", pa.bool_()),
+        _required("partition", pa.int32()),
+        _required("merchant_id", pa.string()),
+        _required("merchant_product_id", pa.string()),
+        _required("source_version", pa.int64()),
+        _required("content_hash", pa.string()),
+        _required("is_tombstone", pa.bool_()),
         ("title", pa.string()),
         ("description", pa.string()),
         ("price_micros", pa.int64()),
         ("currency", pa.string()),
         ("availability", pa.string()),
-        ("attributes", pa.string()),  # JSON object
+        ("attributes", pa.string()),  # canonical JSON object (sorted keys)
         ("primary_category", pa.string()),
         ("classify_confidence", pa.float64()),
         ("taxonomy_version", pa.string()),
-        ("needs_reclassify", pa.bool_()),
-        ("updated_at", pa.timestamp("us", tz="UTC")),
+        _required("needs_reclassify", pa.bool_()),
+        _required("updated_at", pa.timestamp("us", tz="UTC")),
     ]
 )
-_COLUMNS = SCHEMA.names
-_CONTENT = ("title", "description", "price_micros", "currency", "availability")
+_CONTENT = tuple(f for f in Content.model_fields if f != "attributes")
+_FINGERPRINT = [
+    "merchant_id",
+    "merchant_product_id",
+    "source_version",
+    "content_hash",
+    "is_tombstone",
+]
 
-# Single writer per partition makes this a safety net against a zombie worker, not the main rule.
+# One writer per partition makes this a safety net against a zombie worker, not the main rule.
+# An equal version with equal content is the same Listing state (a reclassify keeps both).
 _APPLY_IF = (
     "s.source_version > t.source_version"
-    " OR (s._reclassify_only AND s.source_version = t.source_version"
-    " AND s.content_hash = t.content_hash)"
+    " OR (s.source_version = t.source_version AND s.content_hash = t.content_hash)"
 )
 
 
@@ -53,49 +68,44 @@ class Merged:
     version: int  # the Listing Store version after the MERGE
 
 
-def ensure(path: str) -> None:
-    try:
-        DeltaTable(path)
-    except TableNotFoundError:
-        DeltaTable.create(
-            path,
-            schema=SCHEMA,
-            partition_by=["partition"],
-            configuration={"delta.enableChangeDataFeed": "true"},
-        )
+def ensure(path: str) -> DeltaTable:
+    return delta.ensure(path, SCHEMA)
 
 
-def read(path: str, keys: Collection[Key]) -> dict[Key, Stored]:
+def read(dt: DeltaTable, keys: Collection[Key]) -> dict[Key, Stored]:
     if not keys:
         return {}
-    parts = sorted({partition(*k) for k in keys})
-    table = DeltaTable(path).to_pyarrow_dataset().to_table(filter=pc.field("partition").isin(parts))
+    dt.update_incremental()
+    scanned = delta.plain(
+        dt.to_pyarrow_dataset().to_table(
+            filter=pc.field("partition").isin(sorted({partition(*k) for k in keys}))
+        )
+    )
+    # Narrow to the wanted products in Arrow (not in the scan filter: delta-rs reports string_view
+    # columns, which Arrow can't compare with file statistics), so only candidates reach Python.
+    candidates = scanned.filter(
+        pc.is_in(scanned["merchant_product_id"], pa.array({p for _, p in keys}))
+    )
     wanted = set(keys)
-    out = {}
-    for r in table.to_pylist():
-        k = (r["merchant_id"], r["merchant_product_id"])
-        if k in wanted:
-            out[k] = _stored(r)
-    return out
+    return {
+        k: _stored(r)
+        for r in candidates.to_pylist()
+        if (k := (r["merchant_id"], r["merchant_product_id"])) in wanted
+    }
 
 
-def merge(path: str, writes: Sequence[Write], updated_at: datetime) -> Merged:
-    """Apply classified Writes in one commit.
-
-    A live Write must carry its Classification by now; `needs_classify` still being True means
-    the classifier failed, and is stored as needs_reclassify.
-    """
-    dt = DeltaTable(path)
+def merge(dt: DeltaTable, writes: Sequence[Write], updated_at: datetime) -> Merged:
+    """Apply Writes in one commit. A live Write must be classified by now."""
+    if updated_at.utcoffset() is None:
+        raise ValueError("updated_at must be timezone-aware")
+    dt.update_incremental()
     if not writes:
         return Merged(0, dt.version())
     rows = [_row(w, updated_at) for w in writes]
-    source = pa.Table.from_pylist(
-        rows, schema=SCHEMA.append(pa.field("_reclassify_only", pa.bool_()))
-    )
     parts = ", ".join(str(p) for p in sorted({r["partition"] for r in rows}))
     metrics = (
         dt.merge(
-            source,
+            pa.Table.from_pylist(rows, schema=SCHEMA),
             predicate=(
                 f"t.partition IN ({parts}) AND t.partition = s.partition"
                 " AND t.merchant_id = s.merchant_id"
@@ -104,66 +114,72 @@ def merge(path: str, writes: Sequence[Write], updated_at: datetime) -> Merged:
             source_alias="s",
             target_alias="t",
         )
-        .when_matched_update(updates={c: f"s.{c}" for c in _COLUMNS}, predicate=_APPLY_IF)
-        .when_not_matched_insert(updates={c: f"s.{c}" for c in _COLUMNS})
+        .when_matched_update_all(predicate=_APPLY_IF)
+        .when_not_matched_insert_all()
         .execute()
     )
     applied = metrics["num_target_rows_updated"] + metrics["num_target_rows_inserted"]
     return Merged(applied, dt.version())
 
 
-def compact(path: str, partitions: Iterable[int]) -> None:
-    """Rewrite small files; only the partitions' owner calls this (ADR-0001)."""
-    DeltaTable(path).optimize.compact(
-        partition_filters=[("partition", "in", [str(p) for p in partitions])]
+def compact(dt: DeltaTable, partitions: Iterable[int], target_size: int = COMPACT_TARGET) -> None:
+    """Merge small files up to `target_size`; only the partitions' owner calls this (ADR-0001)."""
+    dt.update_incremental()
+    dt.optimize.compact(
+        partition_filters=[("partition", "in", [str(p) for p in partitions])],
+        target_size=target_size,
     )
 
 
-def fingerprints(path: str, version: int | None = None) -> dict[Key, Fingerprint]:
+def fingerprints(dt: DeltaTable, version: int | None = None) -> dict[Key, Fingerprint]:
     """Every Listing as the replay oracles see it, optionally at an older version."""
-    dt = DeltaTable(path, version=version)
-    cols = ["merchant_id", "merchant_product_id", "source_version", "content_hash", "is_tombstone"]
-    return {
-        (r["merchant_id"], r["merchant_product_id"]): (
-            r["source_version"],
-            r["content_hash"],
-            r["is_tombstone"],
-        )
-        for r in dt.to_pyarrow_dataset().to_table(columns=cols).to_pylist()
-    }
+    if version is None:
+        dt.update_incremental()
+    else:
+        dt = DeltaTable(dt.table_uri, version=version)
+    rows = dt.to_pyarrow_dataset().to_table(columns=_FINGERPRINT).to_pylist()
+    return {(r["merchant_id"], r["merchant_product_id"]): fingerprint(r) for r in rows}
 
 
 def _row(w: Write, updated_at: datetime) -> dict:
-    k_merchant, k_product = w.key
-    row = dict.fromkeys(_COLUMNS) | {
-        "partition": partition(k_merchant, k_product),
-        "merchant_id": k_merchant,
-        "merchant_product_id": k_product,
+    row = {
+        "partition": partition(*w.key),
+        "merchant_id": w.key[0],
+        "merchant_product_id": w.key[1],
         "source_version": w.source_version,
         "content_hash": content_hash(w.listing),
         "is_tombstone": w.listing is None,
         "needs_reclassify": False,
         "updated_at": updated_at,
-        "_reclassify_only": not w.content_changed,
     }
     if w.listing is None:
-        return row
+        return row  # content columns are left null
     if w.classification is None:
         raise ValueError(f"{w.key}: classify (or mark Uncategorized) before merging")
-    row |= w.listing.model_dump(include=set(_CONTENT))
-    row |= {
-        "attributes": json.dumps(w.listing.attributes, sort_keys=True, ensure_ascii=False),
-        "primary_category": w.classification.category,
-        "classify_confidence": w.classification.confidence,
-        "taxonomy_version": w.classification.taxonomy_version,
-        "needs_reclassify": w.needs_classify,
-    }
-    return row
+    return (
+        row
+        | w.listing.model_dump(include=set(_CONTENT))
+        | {
+            "attributes": json.dumps(w.listing.attributes, sort_keys=True, ensure_ascii=False),
+            "primary_category": w.classification.category,
+            "classify_confidence": w.classification.confidence,
+            "taxonomy_version": w.classification.taxonomy_version,
+            "needs_reclassify": w.classification.needs_reclassify,
+        }
+    )
 
 
 def _stored(r: dict) -> Stored:
     if r["is_tombstone"]:
         return Stored(r["source_version"], None)
-    listing = Content(**{c: r[c] for c in _CONTENT}, attributes=json.loads(r["attributes"]))
-    cls = Classification(r["primary_category"], r["classify_confidence"], r["taxonomy_version"])
-    return Stored(r["source_version"], listing, cls, r["needs_reclassify"])
+    # Trusted data: decode without re-validating, so tightening a limit later can't strand rows.
+    listing = Content.model_construct(
+        **{c: r[c] for c in _CONTENT}, attributes=json.loads(r["attributes"])
+    )
+    cls = Classification(
+        r["primary_category"],
+        r["classify_confidence"],
+        r["taxonomy_version"],
+        r["needs_reclassify"],
+    )
+    return Stored(r["source_version"], listing, cls)

@@ -58,12 +58,12 @@ Only the Ingestion API and the backfill job write to the Landing log, both appen
 | Ingestion API | Authenticates the Merchant, checks the envelope, group-commits accepted changes to the Landing log, returns 202 + `submission_id`. Serves `GET /submissions/{id}`. Rejects bodies over 32 MB (413) and returns 503 when free disk is under 5 GB. | Merchant requests, merchant registry, events | Landing log, events |
 | Merchant registry | SQLite: `merchant_id`, `currency`, `key_hash`, `status`. An admin CLI creates Merchants and rotates keys. | — | — |
 | Landing log | Append-only Delta table (change feed enabled), partitioned by `partition`. It doubles as the work queue. Landing order is `(commit version, seq)`, where `seq` is a row's position in its commit. The content is stored as JSON (`listing`). Retained 7 days. | — | — |
-| Ingestion worker | Owns partitions where `partition * N // 64 == index`, holding an `flock` per partition. Loop: read up to 1,000 changes or 200 ms past each partition's offset → plan → classify the batch → one conditional MERGE → events → offsets → heartbeat. Compacts its own partitions every K batches. | Landing log, Listing Store | Listing Store, offsets, events |
+| Ingestion worker | Owns partitions where `partition * N // 64 == index`, holding an `flock` per partition. Loop: read up to 1,000 changes or 200 ms from each partition's next position → plan → classify the batch → one conditional MERGE → events → offsets → heartbeat. Compacts its own partitions every K batches. | Landing log, Listing Store | Listing Store, offsets, events |
 | Listing Store | Delta table (change feed enabled), partitioned by `partition`. Current state of every Listing, including Tombstones. | — | — |
 | Change Export | Every minute: reads the change feed since its watermark and writes one Parquet file (latest row per changed Listing key; tombstone → `op=delete`), named by version range, then advances the watermark. If the watermark is older than what cleanup kept, it exports a full snapshot instead. Files kept 3 days. | Listing Store | Export files, watermark, events |
 | Catalog Snapshots | Every 6 h: copies the Listing Store at a pinned version. Keeps 7 days. Never read to serve shoppers. | Listing Store | Snapshot folders |
 | Backfill | Appends `op=reclassify` changes for `needs_reclassify` rows and after taxonomy version bumps. | Listing Store | Landing log |
-| Supervisor | Starts processes from a `Procfile`. Restarts any worker whose heartbeat is more than 60 s old. | Heartbeat files | — |
+| Supervisor | Starts processes from a `Procfile`. Restarts a worker whose last sign of life (its latest heartbeat, or its start time if it has not beaten yet) is more than 60 s old. Workers beat once at startup, before their first batch. | Heartbeat files | — |
 
 ### Change lifecycle
 
@@ -80,7 +80,7 @@ Only the Ingestion API and the backfill job write to the Landing log, both appen
 
    `op=reclassify` ignores `source_version`: it re-classifies whatever the Listing holds now (`reclassified`), or does nothing if the Listing is missing or deleted (`skipped`). Tying it to a version would let a price-only update make it skip, leaving the Listing on the old taxonomy.
 5. **Classify** the Listings the batch leaves live that are new, re-created after a delete, have a changed title, description or attributes, are flagged `needs_reclassify`, were classified under an older taxonomy version, or got `op=reclassify`. A price or stock change never reclassifies. The timeout (200 ms) covers the whole batch. On a timeout or error, those Listings get Primary Category = Uncategorized and `needs_reclassify = true`.
-6. **MERGE** the batch in one commit: update only if `s.source_version > t.source_version`, or, for a reclassify-only row, `s.source_version = t.source_version` with an unchanged content hash. An upsert replaces the whole Listing. A delete writes a Tombstone (merchant content cleared, key and `source_version` kept).
+6. **MERGE** the batch in one commit: update only if `s.source_version > t.source_version`, or `s.source_version = t.source_version` with an equal content hash (the same Listing state, which is what a reclassify writes). An upsert replaces the whole Listing. A delete writes a Tombstone (merchant content cleared, key and `source_version` kept).
 7. Emit one event per change (`written`, `stale`, `already_applied`, `conflict`, `failed`, or the internal `reclassified` / `skipped`), then write each partition's offset atomically, then the heartbeat.
 8. **Errors:**
    - An exception in one change's logic: retry, then mark `failed` and skip it. If a MERGE fails on the data itself, bisect the batch to isolate the bad change.
@@ -104,7 +104,7 @@ A Listing is one sellable variant (the medium red t-shirt), identified by its **
 | price_micros | int64 | Merchant | Required for upserts, > 0 |
 | currency | string | Merchant | Required for upserts. Must equal the Merchant's currency |
 | availability | enum | Merchant | Required for upserts: `in_stock`, `out_of_stock` or `preorder` |
-| attributes | map<string,string> | Merchant | ≤ 100 keys; names 1–100 characters, values ≤ 1,000. Includes `gtin`, `brand` and `mpn` (for future Product matching) and `group_id` (Variant group) |
+| attributes | map<string,string> | Merchant | ≤ 100 keys; names 1–100 characters, values ≤ 1,000. Includes `gtin`, `brand` and `mpn` (for future Product matching) and `group_id` (Variant group). Stored and exported as canonical JSON text (sorted keys) |
 | content_hash | string | Ingestion worker | SHA-256 of the canonical JSON (sorted keys) of the merchant content; a Tombstone hashes `null`. Drives step 4's rules |
 
 All merchant fields are validated in strict mode: `"5"`, `5.0` and `true` are not integers, and unknown fields are rejected, both at the top level and inside `listing`. The request shape is `{"changes": [{"op", "merchant_product_id", "source_version", "listing": {…}}]}`. A delete carries no `listing`.
@@ -128,15 +128,21 @@ All merchant fields are validated in strict mode: `"5"`, `5.0` and `true` are no
 ```
 data/landing_log/  data/listing_store/  data/snapshots/<ts>/  data/export/<v1>-<v2>.parquet
 data/events/<yyyy-mm-ddThh>/<process>.jsonl   data/merchants.sqlite
-state/offsets/pNN.json ([version, seq])  state/export_watermark.json  state/locks/pNN.lock  state/heartbeat/<worker>.json
+state/offsets/pNN.json ({table, next: [version, seq]})  state/export_watermark.json  state/locks/pNN.lock  state/heartbeat/<worker>.json
 ```
 
-Offsets and watermarks are written atomically (write to a temp file, then `os.replace`). Retention: Landing log 7 days, events and export files 3 days, snapshots 7 days. All are configurable.
+Offsets and watermarks are written atomically (write to a temp file, then `os.replace`). An offset is the **next** Landing log position to read, `(commit version, seq)`, plus the id of the Landing log it belongs to. A worker refuses offsets saved against another Landing log (one recreated since), because trusting them would silently skip every row below them. Retention: Landing log 7 days, events and export files 3 days, snapshots 7 days. All are configurable.
+
+Durability: everything survives a process crash or `kill -9` (atomic Delta commits, atomic state files). **Power loss is not covered:** delta-rs doesn't fsync local commits, so a commit and the offset after it can be lost or reordered. This is a deliberate v1 ceiling for a laptop. The upgrade path is to fsync new Delta log and data files after each commit, then use `F_FULLFSYNC` for state files.
+
+Tables are created by whichever process opens them first. A lock file next to each table serializes creation: without it, processes started together race, and the losers crash or land a second CREATE with a new table id. Every timestamp passed in must be timezone-aware; naive datetimes are refused.
+
+The Listing Store is compacted to about 1 MiB files. A copy-on-write MERGE rewrites every file holding a matched row, so a 1 MiB file bounds the rewrite to roughly 1–3k Listings per change, instead of a whole partition (measured: one changed key across 10 small files rewrote 1 file).
 
 ## Observability and testing
 
 - **Events:** one JSONL line per stage per change, carrying `submission_id`, `change_index`, the Listing key, `partition`, the Listing Store version where relevant, and a timestamp. Each process writes its own files.
-- **Reading events:** a plain line reader trusts only complete lines, and skips a line still being written or one torn by a crash. After a crash, the writer ends its own torn last line before appending. (DuckDB's `read_json` with `ignore_errors` returns a *partial* event instead, which could look real, so it isn't used for events that drive status.)
+- **Reading events:** each process run writes its own file (`<process>-<pid>.jsonl`), so a restarted process never appends after its predecessor's torn last line. The reader streams files and trusts only complete lines, skipping a line still being written or one torn by a crash. (DuckDB's `read_json` with `ignore_errors` returns a *partial* event instead, which could look real, so it isn't used for events that drive status.)
 - **DuckDB is a read-only query engine** for metrics and ad-hoc SQL. Each query uses a throwaway in-memory connection over Delta (via `to_pyarrow_dataset()`) and Parquet. The pipeline never writes to DuckDB.
 - **Metrics (saved SQL):** freshness p50/p99, worker lag per partition, classify latency, rates of stale, conflict, failed and Uncategorized changes, worker utilization.
 - **Three oracles:**

@@ -243,7 +243,7 @@ tests/unit  tests/integration  tests/stress
 
 ## Review process (from Oct 1)
 
-Every step PR (under about 300 changed lines) goes through `/lean-review` (`.claude/skills/lean-review`): deterministic gates first (`make check`, plus `make mutate` for pure modules), then 2–3 Sonnet reviewer agents (`.claude/agents/reviewer-*.md`), verification in-context, and one round, with a second in-context round only if correctness bugs were found. A max-effort fan-out (11 agents, about 1.7M tokens for one PR) hit the usage limit. The deterministic gates found most of the real bugs anyway. Reuse, simplification and altitude reviews run once at the end of the project.
+Every step PR (under about 300 changed lines) goes through `/lean-review` (`.claude/skills/lean-review`): deterministic gates first (`make check`, plus `make mutate` for pure modules), then 10 Sonnet finder agents, one per angle (`.claude/agents/reviewer-*.md`, about 300k tokens per review), deduped and verified in-context, and one round, with a second in-context round only if correctness bugs were found. An earlier max-effort fan-out (11 Opus agents, about 1.7M tokens for one PR) hit the usage limit; Sonnet finders on PRs under 300 lines cost about a sixth of that. The deterministic gates found most of the real bugs anyway. Reuse, simplification and altitude reviews run once at the end of the project.
 
 **Mutation baseline** (`make mutate`, after step 2r): 373 of 382 mutants killed. The 9 survivors are equivalent mutants, so a new survivor outside this list is a real gap:
 - `keys.partition`: `from_bytes(..., "big")` without the byte order (big is the default)

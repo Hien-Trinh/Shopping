@@ -83,8 +83,8 @@ Only the Ingestion API and the backfill job write to the Landing log, both appen
 6. **MERGE** the batch in one commit: update only if `s.source_version > t.source_version`, or `s.source_version = t.source_version` with an equal content hash (the same Listing state, which is what a reclassify writes). An upsert replaces the whole Listing. A delete writes a Tombstone (merchant content cleared, key and `source_version` kept).
 7. Emit one event per change (`written`, `stale`, `already_applied`, `conflict`, `failed`, or the internal `reclassified` / `skipped`), then write each partition's offset atomically, then the heartbeat.
 8. **Errors:**
-   - An exception in one change's logic: retry, then mark `failed` and skip it. If a MERGE fails on the data itself, bisect the batch to isolate the bad change.
-   - Storage errors (Landing log read, MERGE commit, offset write): back off. The offset is never advanced, and the worker crashes after N attempts so the supervisor restarts it.
+   - A change whose data can't be stored (a value that slipped past validation): marked `failed` and skipped. Before planning, each change goes through the same conversion the MERGE uses, so a bad change fails alone, the same way on every replay, whatever the batch boundaries. The check is deterministic, so it isn't retried.
+   - Any other error, whether storage (Landing log read, Listing Store read, MERGE commit, offset write) or a bug in our code: back off. The offset is never advanced, and the worker crashes after N attempts so the supervisor restarts it. Nothing is marked `failed`, so a full disk or a bug can never skip valid changes.
 9. On its next tick, Change Export exports the changes, then records the new watermark.
 
 Delivery is at least once throughout. Reprocessing is safe because of step 4's rules and because export consumers upsert by Listing key.

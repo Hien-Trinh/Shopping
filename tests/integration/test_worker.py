@@ -1,6 +1,7 @@
 import random
 from datetime import UTC, datetime
 
+import pyarrow as pa
 import pytest
 from support import delete, listing, product_in, reclassify, up
 
@@ -17,10 +18,14 @@ NOW = datetime(2026, 9, 30, 12, tzinfo=UTC)
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")  # pydantic, on poison content
 
 
-def poison(mpid, sv) -> Change:
-    """An upsert whose price slipped past validation: storing it fails on the data itself."""
-    bad = Content.model_construct(**listing().model_dump() | {"price_micros": "free"})
-    return Change("m_1", mpid, sv, "upsert", bad)
+def poison(mpid, sv, **bad) -> Change:
+    """An upsert whose content slipped past validation: storing it fails on the data itself."""
+    content = Content.model_construct(**listing().model_dump() | (bad or {"price_micros": "free"}))
+    return Change("m_1", mpid, sv, "upsert", content)
+
+
+def is_poison(c: Change) -> bool:  # the default poison above
+    return c.listing is not None and c.listing.price_micros == "free"
 
 
 A, B = product_in(3), product_in(40)
@@ -28,6 +33,7 @@ A, B = product_in(3), product_in(40)
 
 class Env:
     def __init__(self, tmp_path, classifier=None):
+        self.tmp = tmp_path
         self.landing = landing.ensure(str(tmp_path / "landing"))
         self.store = store.ensure(str(tmp_path / "store"))
         self.state, self.events_root = tmp_path / "state", tmp_path / "events"
@@ -174,6 +180,46 @@ def test_a_poison_change_is_isolated_and_skipped(env):
     assert "free" in error
 
 
+@pytest.mark.parametrize(
+    ("bad", "error"),
+    [
+        ({"price_micros": "free"}, "ArrowInvalid"),
+        ({"title": 123}, "ArrowTypeError"),
+        ({"price_micros": 2**70}, "OverflowError"),
+    ],
+)
+def test_every_kind_of_unstorable_data_fails_only_its_change(env, bad, error):
+    env.land(up(A, 1), poison(B, 1, **bad), up(B, 2))
+    env.run()
+    assert env.outcomes() == {0: "written", 1: "failed", 2: "written"}
+    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "failed"]
+    assert failed["error"].startswith(error)
+
+
+@pytest.mark.parametrize("limit", [1, 2, 10])
+def test_a_superseded_poison_change_fails_whatever_the_batch_size(tmp_path, limit):
+    env = Env(tmp_path)
+    env.land(poison(A, 2), up(A, 3))  # plan would fold both into A@3, hiding the poison
+    env.drain(limit)
+    assert env.outcomes() == {0: "failed", 1: "written"}
+
+
+def test_a_poison_change_never_reaches_the_classifier(env, monkeypatch):
+    calls = []
+    real = env.classifier.classify
+    monkeypatch.setattr(env.classifier, "classify", lambda ls: calls.append(len(ls)) or real(ls))
+    env.land(up(A, 1), poison(B, 1), up(B, 2, listing("Hat")))
+    env.run()
+    assert calls == [2]  # one call, for the two good Listings
+
+
+def test_a_long_error_is_truncated(env):
+    env.land(poison(A, 1, price_micros="x" * 5000))  # Arrow echoes the value in its message
+    env.run()
+    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "failed"]
+    assert len(failed["error"]) == 500
+
+
 def assert_nothing_advanced(env):
     assert env.load_offsets() == {p: START for p in range(PARTITIONS)}
     assert [e for e in events.read(env.events_root) if "change_index" in e] == []
@@ -190,8 +236,21 @@ def test_a_storage_error_never_fails_changes_or_moves_offsets(env, monkeypatch):
     env.land(up(A, 1), up(B, 1))
     with pytest.raises(OSError):
         env.run()
-    assert len(calls) == 1  # not bisected: it isn't the data's fault
+    assert len(calls) == 1  # tried once: it isn't the data's fault
     assert_nothing_advanced(env)
+
+
+def test_a_corrupt_store_file_is_a_storage_error_not_bad_data(env):
+    env.land(up(A, 1))
+    env.run()
+    for f in (env.tmp / "store" / "partition=3").glob("*.parquet"):
+        f.write_bytes(b"\0" * f.stat().st_size)  # pyarrow raises ArrowInvalid reading it
+    saved = env.load_offsets()
+    env.land(up(A, 2), submission="s2")
+    with pytest.raises(pa.ArrowInvalid):
+        env.run()
+    assert env.load_offsets() == saved
+    assert failed_indexes(env) == set()
 
 
 def test_a_bug_in_our_code_is_not_blamed_on_the_data(env):
@@ -207,7 +266,7 @@ def test_a_bug_in_our_code_is_not_blamed_on_the_data(env):
 def test_being_overtaken_by_another_writer_stops_the_batch(env, monkeypatch):
     monkeypatch.setattr(store, "merge", lambda *a: store.Merged(0, 1))
     env.land(up(A, 1))
-    with pytest.raises(worker.Overtaken, match="applied 0 of 1"):
+    with pytest.raises(worker.Overtaken, match=r"applied 0 of 1 rows \(partitions \[3\]\)"):
         env.run()
     assert_nothing_advanced(env)
 
@@ -245,16 +304,13 @@ def test_replay_oracle_for_any_batching(env, seed):
         env.land(*commit)
     env.drain(limit=rng.randint(1, 5))
     failed = failed_indexes(env)
+    assert failed == {i for i, c in enumerate(env.landed) if is_poison(c)}  # exactly, any batching
     assert diff(expected_store(env.landed, failed), store.fingerprints(env.store)) == []
     merchant = [i for i, c in enumerate(env.landed) if c.op != "reclassify"]
     first = env.outcomes()
     env.offsets = {p: START for p in env.offsets}  # crash replay of the whole log
     env.drain()
-    assert failed_indexes(env) == failed  # a replay never fails a Change that once succeeded
+    assert failed_indexes(env) == failed
     assert diff(expected_store(env.landed, failed), store.fingerprints(env.store)) == []
-    # A merchant Change's status never changes on replay, except that a failed (poison) Change
-    # re-planned against newer state replays as stale or conflict: never as applied, since its
-    # data can't be stored. Internal reclassifies may improve too.
-    after = env.outcomes()
-    changed = {i: (first[i], after[i]) for i in merchant if after[i] != first[i]}
-    assert set(changed.values()) <= {("failed", "stale"), ("failed", "conflict")}
+    # A merchant Change's status never changes on replay (internal reclassifies may improve).
+    assert {i: env.outcomes()[i] for i in merchant} == {i: first[i] for i in merchant}

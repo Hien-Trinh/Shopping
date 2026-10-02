@@ -9,7 +9,6 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pyarrow as pa
 from deltalake import DeltaTable
 
 from catalog import landing, state, store
@@ -38,7 +37,12 @@ def process_batch(
     on one partition would redo each other's work and could pick the wrong conflict winner.
     """
     batch = landing.read(landing_dt, offsets, limit)
-    results = _apply(store_dt, batch.changes, classifier, events, now)
+    # A Change whose data can't be stored fails alone, before planning, so the rest plan without it
+    # (design doc, lifecycle step 8). Any other error propagates: storage or a bug, never the data.
+    errors = store.unstorable([x.change.listing for x in batch.changes])
+    good = [x for x, error in zip(batch.changes, errors, strict=True) if error is None]
+    merged = iter(_merge(store_dt, good, classifier, events, now))
+    results = [{"type": FAILED, "error": error} if error else next(merged) for error in errors]
     events.emit(
         {
             "submission_id": landed.submission_id,
@@ -57,30 +61,9 @@ def process_batch(
 
 _WRITES = {Outcome.WRITTEN, Outcome.RECLASSIFIED}
 
-# Errors converting one Change's data (a value that slipped past validation). Anything else, such
-# as OSError, DeltaError or a bug in our code, is not the data's fault: it propagates, the offset
-# isn't advanced, and the loop backs off (design doc, lifecycle step 8; plan-v1.md A6).
-_DATA_ERRORS = (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError, UnicodeError)
-
 
 class Overtaken(RuntimeError):
     """The MERGE applied fewer rows than planned: another writer got there first (ADR-0001)."""
-
-
-def _apply(store_dt, landed: Sequence[Landed], classifier, events, now) -> list[dict]:
-    """Event fields per Change. A data error is bisected down to the Change that causes it.
-
-    Halves run in landing order, so this equals applying the Changes one at a time (plan.py).
-    """
-    try:
-        return _merge(store_dt, landed, classifier, events, now)
-    except _DATA_ERRORS as e:
-        if len(landed) == 1:  # tried twice by now: in the bigger batch, then alone
-            return [{"type": FAILED, "error": repr(e)[:500]}]
-        mid = len(landed) // 2
-        return _apply(store_dt, landed[:mid], classifier, events, now) + _apply(
-            store_dt, landed[mid:], classifier, events, now
-        )
 
 
 def _merge(store_dt, landed: Sequence[Landed], classifier, events, now) -> list[dict]:
@@ -90,7 +73,10 @@ def _merge(store_dt, landed: Sequence[Landed], classifier, events, now) -> list[
     writes = _classify(planned.writes, classifier, events)
     merged = store.merge(store_dt, writes, now())
     if merged.applied != len(writes):
-        raise Overtaken(f"MERGE applied {merged.applied} of {len(writes)} rows")
+        parts = sorted({partition(*w.key) for w in writes})
+        raise Overtaken(
+            f"MERGE applied {merged.applied} of {len(writes)} rows (partitions {parts})"
+        )
     return [
         {"type": o} | ({"store_version": merged.version} if o in _WRITES else {})
         for o in planned.outcomes

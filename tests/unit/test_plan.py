@@ -104,7 +104,15 @@ def test_row_without_classification_is_classified():
 def test_reclassify_live_listing():
     p = run([reclassify("a")], {K: stored(5)})
     assert p.outcomes == (Outcome.RECLASSIFIED,)
-    assert only_write(p) == Write(K, 5, listing(), None, needs_classify=True)
+    assert only_write(p) == Write(K, 5, listing(), None, True, fallback=classified())
+
+
+def test_fallback_is_the_stored_answer_only_when_classified_fields_are_unchanged():
+    old_taxonomy = classified(taxonomy="shopify-2025-01")
+    assert only_write(run([up("a", 6)], {K: stored(5, cls=old_taxonomy)})).fallback == old_taxonomy
+    assert only_write(run([up("a", 6, listing(title="new"))], {K: stored(5)})).fallback is None
+    assert only_write(run([up("a", 6)], {K: stored(5, tombstone=True)})).fallback is None
+    assert only_write(run([up("a", 6)])).fallback is None
 
 
 def test_reclassify_missing_or_deleted_listing_is_skipped():

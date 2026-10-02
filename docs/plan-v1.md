@@ -259,9 +259,9 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | Phase | Step | PR |
 | --- | --- | --- |
 | 2 | 2r ✅ | Mutation-survivor triage: pin `content_hash` bytes, kill or justify the rest |
-| 3 | 3a | `worker.process_batch`: one batch from read to plan, classify (FakeClassifier), merge, events and offsets, plus the replay oracle test |
+| 3 | 3a ✅ | `worker.process_batch`: one batch from read to plan, classify (FakeClassifier), merge, events and offsets, plus the replay oracle test |
 | 3 | 3b | Error policy: per-change failure isolation and bisecting; a storage error never advances the offset |
-| 3 | 3c | Worker process: claim, startup beat, poll loop, owner compaction cadence, CLI entry, `Procfile` |
+| 3 | 3c | Worker process: claim (a second worker on a claimed partition gets `PartitionTaken`), startup beat, poll loop, owner compaction cadence, a per-batch event (offsets, duration, changes) for lag and utilization, CLI entry, `Procfile` |
 | 3 | 3d | Supervisor: heartbeat watchdog (start time counts as a beat), restart |
 | 3 | 3e | Chaos tests: `kill -9` mid-batch, rescale from 4 to 3 workers |
 | 4 | 4a | Merchant registry (SQLite) and admin CLI: create a merchant, rotate a key |

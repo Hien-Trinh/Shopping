@@ -79,7 +79,7 @@ Only the Ingestion API and the backfill job write to the Landing log, both appen
    A batch behaves exactly like applying its changes one at a time in landing order. Each change is compared with the state left by the changes before it, so batching only decides when writes are flushed, never what they are. A property test checks that outcomes are the same for any batching. A delete of an unknown Listing still writes a Tombstone, so an older upsert that arrives later can't bring it back.
 
    `op=reclassify` ignores `source_version`: it re-classifies whatever the Listing holds now (`reclassified`), or does nothing if the Listing is missing or deleted (`skipped`). Tying it to a version would let a price-only update make it skip, leaving the Listing on the old taxonomy.
-5. **Classify** the Listings the batch leaves live that are new, re-created after a delete, have a changed title, description or attributes, are flagged `needs_reclassify`, were classified under an older taxonomy version, or got `op=reclassify`. A price or stock change never reclassifies. The timeout (200 ms) covers the whole batch. On a timeout or error, those Listings get Primary Category = Uncategorized and `needs_reclassify = true`.
+5. **Classify** the Listings the batch leaves live that are new, re-created after a delete, have a changed title, description or attributes, are flagged `needs_reclassify`, were classified under an older taxonomy version, or got `op=reclassify`. A price or stock change never reclassifies. The timeout (200 ms) covers the whole batch. On a timeout or error, those Listings get Primary Category = Uncategorized and `needs_reclassify = true`, except a Listing whose title, description and attributes are unchanged (a reclassify or a taxonomy bump): it keeps its stored category, flagged `needs_reclassify = true`, so an outage never downgrades a good answer.
 6. **MERGE** the batch in one commit: update only if `s.source_version > t.source_version`, or `s.source_version = t.source_version` with an equal content hash (the same Listing state, which is what a reclassify writes). An upsert replaces the whole Listing. A delete writes a Tombstone (merchant content cleared, key and `source_version` kept).
 7. Emit one event per change (`written`, `stale`, `already_applied`, `conflict`, `failed`, or the internal `reclassified` / `skipped`), then write each partition's offset atomically, then the heartbeat.
 8. **Errors:**
@@ -127,7 +127,7 @@ All merchant fields are validated in strict mode: `"5"`, `5.0` and `true` are no
 
 ```
 data/landing_log/  data/listing_store/  data/snapshots/<ts>/  data/export/<v1>-<v2>.parquet
-data/events/<yyyy-mm-ddThh>/<process>.jsonl   data/merchants.sqlite
+data/events/<yyyy-mm-ddThh>/<process>-<pid>-<nonce>.jsonl   data/merchants.sqlite
 state/offsets/pNN.json ({table, next: [version, seq]})  state/export_watermark.json  state/locks/pNN.lock  state/heartbeat/<worker>.json
 ```
 
@@ -142,7 +142,7 @@ The Listing Store is compacted to about 1 MiB files. A copy-on-write MERGE rewri
 ## Observability and testing
 
 - **Events:** one JSONL line per stage per change, carrying `submission_id`, `change_index`, the Listing key, `partition`, the Listing Store version where relevant, and a timestamp. Each process writes its own files.
-- **Reading events:** each process run writes its own file (`<process>-<pid>.jsonl`), so a restarted process never appends after its predecessor's torn last line. The reader streams files and trusts only complete lines, skipping a line still being written or one torn by a crash. (DuckDB's `read_json` with `ignore_errors` returns a *partial* event instead, which could look real, so it isn't used for events that drive status.)
+- **Reading events:** each process run writes its own file (`<process>-<pid>-<nonce>.jsonl`), so a restarted process never appends after its predecessor's torn last line. The reader streams files and trusts only complete lines, skipping a line still being written or one torn by a crash. (DuckDB's `read_json` with `ignore_errors` returns a *partial* event instead, which could look real, so it isn't used for events that drive status.)
 - **DuckDB is a read-only query engine** for metrics and ad-hoc SQL. Each query uses a throwaway in-memory connection over Delta (via `to_pyarrow_dataset()`) and Parquet. The pipeline never writes to DuckDB.
 - **Metrics (saved SQL):** freshness p50/p99, worker lag per partition, classify latency, rates of stale, conflict, failed and Uncategorized changes, worker utilization.
 - **Three oracles:**

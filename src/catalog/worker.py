@@ -9,14 +9,16 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pyarrow as pa
 from deltalake import DeltaTable
 
 from catalog import landing, state, store
 from catalog.classify import UNCATEGORIZED
 from catalog.events import EventLog
 from catalog.keys import partition
-from catalog.landing import Position
+from catalog.landing import Landed, Position
 from catalog.plan import Classification, Outcome, Write, plan
+from catalog.status import FAILED
 
 
 def process_batch(
@@ -36,24 +38,17 @@ def process_batch(
     on one partition would redo each other's work and could pick the wrong conflict winner.
     """
     batch = landing.read(landing_dt, offsets, limit)
-    changes = [landed.change for landed in batch.changes]
-    stored = store.read(store_dt, {c.key for c in changes})
-    planned = plan(changes, stored, classifier.taxonomy_version)
-    writes = _classify(planned.writes, classifier, events)
-    # ponytail: trusts the single-writer lock; merged.applied < len(writes) would mean a zombie
-    # overtook this worker and some `written` outcomes are wrong. Step 3b checks it.
-    merged = store.merge(store_dt, writes, now())
+    results = _apply(store_dt, batch.changes, classifier, events, now)
     events.emit(
         {
-            "type": outcome,
             "submission_id": landed.submission_id,
             "change_index": landed.change_index,
             "merchant_id": landed.change.merchant_id,
             "merchant_product_id": landed.change.merchant_product_id,
             "partition": landed.partition,
         }
-        | ({"store_version": merged.version} if outcome in _WRITES else {})
-        for landed, outcome in zip(batch.changes, planned.outcomes, strict=True)
+        | result
+        for landed, result in zip(batch.changes, results, strict=True)
     )
     moved = {p: pos for p, pos in batch.offsets.items() if pos != offsets[p]}
     state.save_offsets(state_dir, moved, landing.table_id(landing_dt))
@@ -61,6 +56,45 @@ def process_batch(
 
 
 _WRITES = {Outcome.WRITTEN, Outcome.RECLASSIFIED}
+
+# Errors converting one Change's data (a value that slipped past validation). Anything else, such
+# as OSError, DeltaError or a bug in our code, is not the data's fault: it propagates, the offset
+# isn't advanced, and the loop backs off (design doc, lifecycle step 8; plan-v1.md A6).
+_DATA_ERRORS = (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError, UnicodeError)
+
+
+class Overtaken(RuntimeError):
+    """The MERGE applied fewer rows than planned: another writer got there first (ADR-0001)."""
+
+
+def _apply(store_dt, landed: Sequence[Landed], classifier, events, now) -> list[dict]:
+    """Event fields per Change. A data error is bisected down to the Change that causes it.
+
+    Halves run in landing order, so this equals applying the Changes one at a time (plan.py).
+    """
+    try:
+        return _merge(store_dt, landed, classifier, events, now)
+    except _DATA_ERRORS as e:
+        if len(landed) == 1:  # tried twice by now: in the bigger batch, then alone
+            return [{"type": FAILED, "error": repr(e)[:500]}]
+        mid = len(landed) // 2
+        return _apply(store_dt, landed[:mid], classifier, events, now) + _apply(
+            store_dt, landed[mid:], classifier, events, now
+        )
+
+
+def _merge(store_dt, landed: Sequence[Landed], classifier, events, now) -> list[dict]:
+    changes = [x.change for x in landed]
+    stored = store.read(store_dt, {c.key for c in changes})
+    planned = plan(changes, stored, classifier.taxonomy_version)
+    writes = _classify(planned.writes, classifier, events)
+    merged = store.merge(store_dt, writes, now())
+    if merged.applied != len(writes):
+        raise Overtaken(f"MERGE applied {merged.applied} of {len(writes)} rows")
+    return [
+        {"type": o} | ({"store_version": merged.version} if o in _WRITES else {})
+        for o in planned.outcomes
+    ]
 
 
 def _classify(writes: Sequence[Write], classifier, events: EventLog) -> list[Write]:

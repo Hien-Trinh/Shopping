@@ -6,6 +6,7 @@ from support import delete, listing, product_in, reclassify, up
 
 from catalog import events, landing, state, store, worker
 from catalog.classify import UNCATEGORIZED, FakeClassifier
+from catalog.envelope import Change, Content
 from catalog.events import EventLog
 from catalog.keys import PARTITIONS
 from catalog.landing import START
@@ -13,6 +14,15 @@ from catalog.replay import diff, expected_store
 from catalog.status import fold
 
 NOW = datetime(2026, 9, 30, 12, tzinfo=UTC)
+pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")  # pydantic, on poison content
+
+
+def poison(mpid, sv) -> Change:
+    """An upsert whose price slipped past validation: storing it fails on the data itself."""
+    bad = Content.model_construct(**listing().model_dump() | {"price_micros": "free"})
+    return Change("m_1", mpid, sv, "upsert", bad)
+
+
 A, B = product_in(3), product_in(40)
 
 
@@ -148,6 +158,60 @@ def test_only_moved_offsets_are_saved(env, monkeypatch):
     assert saved == [{}]
 
 
+def failed_indexes(env):
+    return {e["change_index"] for e in events.read(env.events_root) if e["type"] == "failed"}
+
+
+def test_a_poison_change_is_isolated_and_skipped(env):
+    env.land(up(A, 1), up(B, 1), poison(A, 2), up(B, 2), poison(B, 3), up(A, 3, listing("New")))
+    env.run()
+    assert env.outcomes() == {0: "written", 1: "written", 2: "failed", 3: "written",
+                              4: "failed", 5: "written"}  # fmt: skip
+    assert failed_indexes(env) == {2, 4}
+    assert diff(expected_store(env.landed, {2, 4}), store.fingerprints(env.store)) == []
+    assert env.load_offsets()[3] != START  # the partition keeps moving
+    (error,) = {e["error"] for e in events.read(env.events_root) if e["type"] == "failed"}
+    assert "free" in error
+
+
+def assert_nothing_advanced(env):
+    assert env.load_offsets() == {p: START for p in range(PARTITIONS)}
+    assert [e for e in events.read(env.events_root) if "change_index" in e] == []
+
+
+def test_a_storage_error_never_fails_changes_or_moves_offsets(env, monkeypatch):
+    calls = []
+
+    def disk_full(*args):
+        calls.append(args)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(store, "merge", disk_full)
+    env.land(up(A, 1), up(B, 1))
+    with pytest.raises(OSError):
+        env.run()
+    assert len(calls) == 1  # not bisected: it isn't the data's fault
+    assert_nothing_advanced(env)
+
+
+def test_a_bug_in_our_code_is_not_blamed_on_the_data(env):
+    env.land(up(A, 1), up(B, 1))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        worker.process_batch(
+            env.landing, env.store, env.classifier, env.log, env.state, env.offsets,
+            now=lambda: datetime(2026, 9, 30, 12),  # naive: store.merge refuses it
+        )  # fmt: skip
+    assert_nothing_advanced(env)
+
+
+def test_being_overtaken_by_another_writer_stops_the_batch(env, monkeypatch):
+    monkeypatch.setattr(store, "merge", lambda *a: store.Merged(0, 1))
+    env.land(up(A, 1))
+    with pytest.raises(worker.Overtaken, match="applied 0 of 1"):
+        env.run()
+    assert_nothing_advanced(env)
+
+
 def test_crash_before_offsets_replays_safely(env, monkeypatch):
     env.land(up(A, 1), up(B, 1))
 
@@ -165,7 +229,7 @@ def test_crash_before_offsets_replays_safely(env, monkeypatch):
     assert env.outcomes() == {0: "written", 1: "written"}  # best outcome survives the replay
 
 
-@pytest.mark.parametrize("seed", range(3))
+@pytest.mark.parametrize("seed", range(5))
 def test_replay_oracle_for_any_batching(env, seed):
     rng = random.Random(seed)
     keys = [product_in(p) for p in (3, 3, 17, 40)] + [product_in(3, prefix="alt")]
@@ -173,16 +237,24 @@ def test_replay_oracle_for_any_batching(env, seed):
         commit = []
         for _ in range(rng.randint(1, 8)):
             k, sv = rng.choice(keys), rng.randint(1, 6)
-            commit.append(
-                rng.choice([up(k, sv, listing(rng.choice("ABC"))), delete(k, sv), reclassify(k)])
-            )
+            make = rng.choices([up, delete, reclassify, poison], weights=[4, 2, 1, 1])[0]
+            if make is up:
+                commit.append(up(k, sv, listing(rng.choice("ABC"))))
+            else:
+                commit.append(make(k) if make is reclassify else make(k, sv))
         env.land(*commit)
     env.drain(limit=rng.randint(1, 5))
-    assert diff(expected_store(env.landed), store.fingerprints(env.store)) == []
+    failed = failed_indexes(env)
+    assert diff(expected_store(env.landed, failed), store.fingerprints(env.store)) == []
     merchant = [i for i, c in enumerate(env.landed) if c.op != "reclassify"]
     first = env.outcomes()
     env.offsets = {p: START for p in env.offsets}  # crash replay of the whole log
     env.drain()
-    assert diff(expected_store(env.landed), store.fingerprints(env.store)) == []
-    # A merchant Change's status never changes on replay (internal reclassifies may improve).
-    assert {i: env.outcomes()[i] for i in merchant} == {i: first[i] for i in merchant}
+    assert failed_indexes(env) == failed  # a replay never fails a Change that once succeeded
+    assert diff(expected_store(env.landed, failed), store.fingerprints(env.store)) == []
+    # A merchant Change's status never changes on replay, except that a failed (poison) Change
+    # re-planned against newer state replays as stale or conflict: never as applied, since its
+    # data can't be stored. Internal reclassifies may improve too.
+    after = env.outcomes()
+    changed = {i: (first[i], after[i]) for i in merchant if after[i] != first[i]}
+    assert set(changed.values()) <= {("failed", "stale"), ("failed", "conflict")}

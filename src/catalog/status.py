@@ -12,7 +12,9 @@ REJECTED = "rejected"  # the Ingestion API refused the Change
 
 # A crash replay re-reports Changes, and for merchant Changes a replay can only look worse (a
 # written Change replays as already_applied or stale). So the best Outcome a Change ever got is its
-# Outcome. (An internal reclassify can replay as reclassified after skipped; that is harmless.)
+# Outcome. (An internal reclassify can replay as reclassified after skipped, and a failed Change
+# re-planned against newer state can replay as stale or conflict, which is true by then; both are
+# harmless.)
 _RANK = {
     o: r
     for r, o in enumerate(

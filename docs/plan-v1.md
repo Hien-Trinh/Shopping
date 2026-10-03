@@ -350,6 +350,7 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
   - keep one table handle per table per process
   - never fork while holding partition claims; use spawn
   - mark a classifier failure with `Classification(..., needs_reclassify=True)`, never by leaving `needs_classify` set
+  - every standalone entry point (the worker CLI, and later export, snapshot and chaos runners) flushes and exits with `os._exit`: Arrow can hang at process exit after a Delta scan ([spikes/NOTES.md](../spikes/NOTES.md), "Exit hang")
 - **Exit:** all of the above pass.
 
 **Phase 4 — Ingestion API** (`api`, `merchants`, `status`)

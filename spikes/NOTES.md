@@ -15,7 +15,16 @@ Sep 30, 2026 · delta-rs (`deltalake`) 1.6.6 · Python 3.14.3 · M4, 16 GB · sc
 
 Earlier checks (Sep 29, same versions): the conditional MERGE (`s.sv > t.sv`) ignores stale writes; MERGE writes the change feed (`insert`, `update_preimage`, `update_postimage`); 8 processes × 20 MERGEs on disjoint partitions had 0 conflicts; a checkpoint is written automatically at version 99; and DuckDB queries `DeltaTable.to_pyarrow_dataset()` directly.
 
-**Exit hang (Oct 2, same versions).** A script that MERGEs into a Delta table and then calls `to_pyarrow_dataset().to_table()` hung at process exit 4 runs out of 4: the main thread waits forever in Arrow's global `ThreadPool` destructor (`exit` → `__cxa_finalize`). The variants tried were pruned and unpruned scans, one or three files, all columns or one, with or without `update_incremental()`. The worker's own path (`process_batch`, whose `store.read` casts and converts the scan) exited cleanly 8 runs out of 8. So the worker CLI ends with `os._exit` after flushing, and a stopped worker always dies and releases its partition locks. This may be the "MERGE hang" B1 saw: a process that finished its work but never exited.
+**Exit hang (Oct 2, same versions).** A standalone Python process that has scanned a non-empty Delta table into Arrow (`to_pyarrow_dataset().to_table()`) can finish its work and then never exit. Its main thread waits forever in Arrow's global `ThreadPool` destructor (`exit` → `__cxa_finalize`).
+- **No MERGE is needed:** a fresh process that only read a table another process wrote hung 12 runs out of 12.
+- **Order matters, and the cause is unknown:**
+  - `store.fingerprints()`, the replay oracles' reader, hung 8 out of 8 after a MERGE. It also hung when called after `store.read()`, but not before it.
+  - `store.read()` and the worker's `process_batch` path exited cleanly in every run.
+  - No read path should be assumed safe.
+- **Not affected:** pytest runs, and DuckDB over `to_pyarrow_dataset()`.
+- **What doesn't help:** `pa.set_cpu_count(1)`, an `atexit` hook, `gc.collect()`.
+- **What does help:** flushing and calling `os._exit`. So every standalone entry point does that: the worker CLI (3c), and later the export, snapshot and chaos runners. Partition locks are released before exit either way (`state.claim` closes its files in `finally`), so the point is that the process actually ends.
+- **B1:** this may be the "MERGE hang" B1 saw, a process that finished its work but never exited. But B1's own reproduction (40 fresh-table MERGEs, with no scan) never hung, so that stays a hypothesis and the watchdog stays.
 
 **No fallback needed.** The "64 separate Listing Store tables" fallback from the plan isn't triggered.
 

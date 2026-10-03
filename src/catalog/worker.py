@@ -11,6 +11,7 @@ import os
 import signal
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
@@ -81,6 +82,7 @@ COMPACT_EVERY = 100  # batches with changes between compactions (ponytail: untun
 # supervisor stops instead: 2 is a bad flag, and these no restart fixes.
 FATAL = {state.PartitionTaken: 3, state.OffsetsMismatch: 4, state.CorruptState: 5}
 DATA, STATE = Path("data"), Path("state")  # the default directories, shared with the supervisor
+SUPERVISOR = "CATALOG_SUPERVISOR"  # set to the supervisor's pid in its children's environment
 
 
 def run(
@@ -160,6 +162,38 @@ def run(
         events.emit([{"type": "worker_stop", "worker": name}])
 
 
+def watch(
+    alive: Callable[[], bool],
+    stop: threading.Event,
+    deadline: float = 30.0,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    exit: Callable[[int], None] = os._exit,
+) -> None:
+    """Check `alive()` every second; once it's False, set `stop`, so the tick in progress finishes
+    and the claims are released, and exit 1 if the process still runs `deadline` seconds later.
+
+    Run it in a daemon thread: a worker that stops in time has exited by then. One that hasn't is
+    stuck in a native call, and would otherwise hold its partition locks forever. So `exit` is
+    os._exit with no flush and no log line: either could block on what the stuck thread holds.
+    """
+    while alive():
+        sleep(1)
+    stop.set()
+    sleep(deadline)
+    exit(1)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)  # a killed supervisor exists until reaped, which a shell does at once
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # it exists, as another user's: a wrapper dropped our privileges
+        pass
+    return True
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m catalog.worker")
     args.add_argument("--index", type=int, required=True)
@@ -171,6 +205,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         owned(a.index, a.workers)
     except ValueError as e:
         args.error(str(e))  # exit 2: fatal, so the supervisor doesn't restart a bad flag forever
+    pid = os.environ.get(SUPERVISOR, "")
+    if pid and not (pid.isdecimal() and 0 < int(pid) < 2**31):  # 0 or -1 would name a group
+        args.error(f"{SUPERVISOR} must be the pid of the supervisor that started it, got {pid!r}")
     stop, stopping = threading.Event(), []
 
     def on_signal(*_):  # Event.set takes a lock the interrupted thread may hold: set it elsewhere
@@ -180,6 +217,9 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
+    if pid:  # so a kill -9ed supervisor leaves no worker behind
+        supervisor = int(pid)
+        threading.Thread(target=watch, args=(lambda: _alive(supervisor), stop), daemon=True).start()
     # ponytail: FakeClassifier until the real one (step 6b) is chosen by a flag.
     run(a.data, a.state, a.index, a.workers, FakeClassifier(), stop=stop)
 

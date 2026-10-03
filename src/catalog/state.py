@@ -2,7 +2,9 @@
 
 Layout under the state directory:
   offsets/pNN.json   next Landing log position per partition, and which Landing log (A9)
+  export_watermark.json   last exported Listing Store version, and which Listing Store (A9)
   locks/pNN.lock     flock held by the partition's owner (A8)
+  locks/export.lock  flock held by the one Change Export
   heartbeat/<worker>.json   last sign of life, for the supervisor (B1)
   supervisor.lock    flock held by the one supervisor running against this directory
 """
@@ -85,6 +87,24 @@ def save_offsets(state: Path, offsets: Mapping[int, Position], table: str) -> No
         save(_offset_file(state, p), {"table": table, "next": list(position)})
 
 
+def load_watermark(state: Path, table: str) -> int:
+    """The last Listing Store version Change Export wrote out; -1 if none. Refuses a watermark
+    saved against another Listing Store, as load_offsets does."""
+    saved = load(state / "export_watermark.json", None)
+    if saved is None:
+        return -1
+    if saved["table"] != table:
+        raise OffsetsMismatch(
+            f"export watermark belongs to Listing Store {saved['table']}, not {table}:"
+            " reset the state and data directories together"
+        )
+    return saved["version"]
+
+
+def save_watermark(state: Path, version: int, table: str) -> None:
+    save(state / "export_watermark.json", {"table": table, "version": version})
+
+
 class PartitionTaken(RuntimeError):
     pass
 
@@ -96,16 +116,29 @@ def claim(state: Path, partitions: Iterable[int]) -> Iterator[None]:
     The lock lives as long as any process holds its open file, so never fork (rather than
     spawn) while claiming: a forked child would keep the partitions locked after a kill -9.
     """
-    locks = state / "locks"
-    locks.mkdir(parents=True, exist_ok=True)
+    with _hold(state, {f"p{p:02}": f"partition {p}" for p in partitions}):
+        yield
+
+
+@contextmanager
+def claim_export(state: Path) -> Iterator[None]:
+    """One Change Export per state directory: two would interleave overlapping files."""
+    with _hold(state, {"export": "Change Export"}):
+        yield
+
+
+@contextmanager
+def _hold(state: Path, locks: Mapping[str, str]) -> Iterator[None]:
+    """flock locks/<name>.lock for each name; PartitionTaken names the first one held."""
+    (state / "locks").mkdir(parents=True, exist_ok=True)
     fds = []
     try:
-        for p in partitions:
-            fds.append(os.open(locks / f"p{p:02}.lock", os.O_CREAT | os.O_RDWR))
+        for name, what in locks.items():
+            fds.append(os.open(state / "locks" / f"{name}.lock", os.O_CREAT | os.O_RDWR))
             try:
                 fcntl.flock(fds[-1], fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                raise PartitionTaken(f"partition {p} is owned by another process") from None
+                raise PartitionTaken(f"{what} is owned by another process") from None
         yield
     finally:
         for fd in fds:

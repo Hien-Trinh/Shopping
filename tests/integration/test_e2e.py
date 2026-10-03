@@ -12,13 +12,14 @@ import sys
 from pathlib import Path
 
 import httpx2
+import pyarrow.parquet as pq
 import pytest
 from test_supervisor import alive, wait_for
 
-from catalog import events, landing, store
+from catalog import events, export, landing, state, store
 from catalog.keys import PARTITIONS, partition
 from catalog.landing import START
-from catalog.replay import diff, expected_store
+from catalog.replay import diff, expected_store, live, replay_exports
 
 PROCFILE = Path(__file__).parents[2] / "Procfile"
 SUPERVISOR = [sys.executable, "-m", "catalog.supervisor"]
@@ -49,9 +50,13 @@ def bindable(port: int) -> bool:
         return True
 
 
-def worker_pids(tmp: Path) -> list[int]:
+def worker_pids(tmp: Path, start="worker_start") -> list[int]:
     found = events.read(tmp / "data" / "events")
-    return [e["pid"] for e in found if e["type"] == "worker_start"]
+    return [e["pid"] for e in found if e["type"] == start]
+
+
+def export_pids(tmp: Path) -> list[int]:
+    return worker_pids(tmp, "export_start")
 
 
 def serving(port: int) -> bool:
@@ -68,6 +73,9 @@ class System:
         text, n = re.subn(r"^api: python -m catalog\.api$", rf"\g<0> --port {port}",
                           PROCFILE.read_text(), flags=re.M)  # fmt: skip
         assert n == 1, "the Procfile's api line changed"
+        text, n = re.subn(r"^export: python -m catalog\.export$", r"\g<0> --interval 0.2",
+                          text, flags=re.M)  # fmt: skip
+        assert n == 1, "the Procfile's export line changed"
         (tmp / "Procfile").write_text(text)
         create = [sys.executable, "-m", "catalog.merchants", "create", "--currency", "USD"]
         out = subprocess.run(create, cwd=tmp, capture_output=True, text=True, check=True).stdout
@@ -101,7 +109,7 @@ class System:
         for proc in self.supervisors:
             proc.kill()
             proc.wait()
-        for pid in [*worker_pids(self.tmp), *api_pids(self.port)]:
+        for pid in [*worker_pids(self.tmp), *export_pids(self.tmp), *api_pids(self.port)]:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
 
@@ -151,8 +159,15 @@ def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system
     assert {r["primary_category"] for r in rows if not r["is_tombstone"]} == {"Fake > R"}
     assert [r["merchant_product_id"] for r in rows if r["is_tombstone"]] == [skus[0]]
 
-    pids = [*worker_pids(system.tmp), *api_pids(system.port)]
-    assert len(pids) == 5  # 4 workers and the API, each started once
+    # Change Export (step 5a): replaying its files gives the live Listing Store.
+    head = store.ensure(str(data / "listing_store")).version()
+    table = listings.metadata().id
+    wait_for(lambda: state.load_watermark(system.tmp / "state", table) == head)
+    files = [pq.read_table(p).to_pylist() for p in export.files(data / "export")]
+    assert diff(live(store.fingerprints(listings, head)), replay_exports(files)) == []
+
+    pids = [*worker_pids(system.tmp), *export_pids(system.tmp), *api_pids(system.port)]
+    assert len(pids) == 6  # 4 workers, Change Export and the API, each started once
     assert not bindable(system.port)  # so the check below can fail
     supervisor.send_signal(signal.SIGTERM)
     assert supervisor.wait(timeout=30) == 0
@@ -168,6 +183,7 @@ def test_killing_the_supervisor_stops_its_api_so_a_new_one_serves_on_its_port(sy
     first.wait()  # reaped, as by the shell that started it: until then its pid looks alive
     wait_for(lambda: not alive(api), timeout=5)
     wait_for(lambda: not any(map(alive, workers)), timeout=10)  # 3e: their locks are free
+    wait_for(lambda: not any(map(alive, export_pids(system.tmp))), timeout=10)  # and its lock
     second = system.start()  # its API binds the same port: no restart loop
     assert api_pids(system.port) not in ([], [api])
     second.send_signal(signal.SIGTERM)

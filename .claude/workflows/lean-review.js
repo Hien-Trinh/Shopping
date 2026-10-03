@@ -1,9 +1,9 @@
 export const meta = {
   name: 'lean-review',
   description: 'Lean PR review: Sonnet finders scaled to diff size, dedupe, at most 5 Sonnet verifiers',
-  whenToUse: 'Step 3-4 of the /lean-review skill. args: {pr, repo, diff, scratch, intent, lines, docsOnly, storage, focus?: {angle: hint}}',
+  whenToUse: 'Steps 3-4 of the /lean-review skill. args: {pr, repo, diff, scratch, intent, lines, docsOnly, storage, focus?: {angle: hint}}',
   phases: [
-    { title: 'Find', detail: '1-10 reviewer-* finders, by diff size' },
+    { title: 'Find', detail: '1-11 reviewer-* finders, by diff size' },
     { title: 'Dedupe', detail: 'merge candidates naming the same mechanism' },
     { title: 'Verify', detail: 'one Sonnet verifier per unreproduced medium/high candidate, max 5' },
   ],
@@ -13,13 +13,14 @@ const { pr, repo, diff, scratch, intent, lines, docsOnly, storage, focus = {} } 
 const INTENT = `PR #${pr} (checked out in ${repo}). ${intent}`
 
 // Finders scale with the diff (lines = additions + deletions, tests included).
+// The spec lane runs at every size; standards from 51 lines (both after Matt Pocock's two axes).
 const ANGLES = docsOnly
-  ? ['design']
+  ? ['spec']
   : lines <= 50
-    ? ['correctness', 'tests', 'failure']
+    ? ['correctness', 'tests', 'failure', 'spec']
     : lines <= 150
-      ? ['correctness', 'tests', 'failure', 'design', storage ? 'concurrency' : 'edge']
-      : ['correctness', 'concurrency', 'perf', 'tests', 'design', 'failure', 'security', 'data', 'observability', 'edge']
+      ? ['correctness', 'tests', 'failure', 'spec', 'standards', storage ? 'concurrency' : 'edge']
+      : ['correctness', 'concurrency', 'perf', 'tests', 'spec', 'standards', 'failure', 'security', 'data', 'observability', 'edge']
 log(`${lines} changed lines${docsOnly ? ' (docs/tooling only)' : ''}: ${ANGLES.length} finder(s): ${ANGLES.join(', ')}`)
 
 const FINDINGS = {
@@ -37,6 +38,15 @@ const FINDINGS = {
         required: ['file', 'line', 'defect', 'scenario', 'reproduced', 'severity'],
       },
     },
+    // Not defects: scope decisions for the user (spec), smells (standards). Never ranked with bugs.
+    asides: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { kind: { type: 'string', enum: ['decision', 'judgement'] }, text: { type: 'string' } },
+        required: ['kind', 'text'],
+      },
+    },
   },
   required: ['candidates'],
 }
@@ -46,11 +56,13 @@ const found = await parallel(ANGLES.map(angle => () =>
   agent(
     `${INTENT}\n\nDiff: ${diff}\nYour scratch dir (create it; put every script there, never modify the repo): ${scratch}/${angle}/\n${focus[angle] ? `\nLane hints (${angle}): ${focus[angle]}\n` : ''}\nReturn up to 4 real candidates in your lane; an empty list is a fine answer. Prove with a scratch script when you can and set reproduced accordingly.`,
     { label: `find:${angle}`, phase: 'Find', agentType: `reviewer-${angle}`, schema: FINDINGS },
-  ).then(r => (r ? r.candidates.map(c => ({ ...c, source: angle })) : []))
+  ).then(r => (r ? { candidates: r.candidates.map(c => ({ ...c, source: angle })), asides: (r.asides || []).map(a => ({ ...a, source: angle })) } : { candidates: [], asides: [] }))
 ))
-const all = found.filter(Boolean).flat()
-log(`${all.length} raw candidates`)
-if (!all.length) return { finders: ANGLES, raw: 0, results: [] }
+const ok = found.filter(Boolean)  // a finder that crashed resolves to null
+const all = ok.flatMap(f => f.candidates)
+const asides = ok.flatMap(f => f.asides)
+log(`${all.length} raw candidates, ${asides.length} asides (decisions and judgement calls)`)
+if (!all.length) return { finders: ANGLES, raw: 0, results: [], asides }
 
 phase('Dedupe')
 const DEDUPE = {
@@ -97,4 +109,4 @@ const verified = await parallel(sent.map(c => () =>
     { label: `verify:${c.id}`, phase: 'Verify', schema: VERDICT, model: 'sonnet' },
   ).then(v => ({ ...c, verdict: v }))
 ))
-return { finders: ANGLES, raw: all.length, results: [...verified.filter(Boolean), ...inContext] }
+return { finders: ANGLES, raw: all.length, results: [...verified.filter(Boolean), ...inContext], asides }

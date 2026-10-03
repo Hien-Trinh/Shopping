@@ -8,7 +8,7 @@ A learning project: merchants push product Listings through one API, and the pip
 
 ```bash
 uv sync
-make hooks   # once per clone: runs `make check` before every push
+make hooks   # once per clone: runs `make check` before every push, and refreshes graphify-out/ after a pull
 make check   # ruff + tests + coverage gates, same as CI
 ```
 

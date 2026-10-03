@@ -37,6 +37,18 @@ def api_pids(port: int) -> list[int]:
     return [int(pid) for pid in found.stdout.split()]
 
 
+def bindable(port: int) -> bool:
+    """Whether a new API could bind `port`: SO_REUSEADDR, as uvicorn sets, so closed
+    connections lingering in TIME_WAIT don't count as taking it."""
+    with socket.socket() as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+        return True
+
+
 def worker_pids(tmp: Path) -> list[int]:
     found = events.read(tmp / "data" / "events")
     return [e["pid"] for e in found if e["type"] == "worker_start"]
@@ -141,10 +153,11 @@ def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system
 
     pids = [*worker_pids(system.tmp), *api_pids(system.port)]
     assert len(pids) == 5  # 4 workers and the API, each started once
+    assert not bindable(system.port)  # so the check below can fail
     supervisor.send_signal(signal.SIGTERM)
     assert supervisor.wait(timeout=30) == 0
     assert not any(map(alive, pids))
-    assert not serving(system.port)
+    assert bindable(system.port)
 
 
 def test_killing_the_supervisor_stops_its_api_so_a_new_one_serves_on_its_port(system):

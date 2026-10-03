@@ -1,6 +1,6 @@
 # Step 4a: merchant registry and admin CLI (mini PRD)
 
-Status: draft, awaiting approval. Plan row: [plan-v1.md, PR steps, 4a](../plan-v1.md). Design: [registry row](../design-commerce-ingestion-pipeline.md) and A16 in [plan-v1.md](../plan-v1.md). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 3: the scope split (4a ships `verify`, 4b wires it), `revoke` in 4a, the hard-cutover rotate and the test points are confirmed. Plan row: [plan-v1.md, PR steps, 4a](../plan-v1.md). Design: [registry row](../design-commerce-ingestion-pipeline.md) and A16 in [plan-v1.md](../plan-v1.md). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -49,7 +49,7 @@ Each becomes a test or is named out of scope.
 ## Implementation decisions
 
 1. **One table, created on connect.** `_connect(path)` opens SQLite, sets `PRAGMA journal_mode=WAL`, and runs `CREATE TABLE IF NOT EXISTS merchants(merchant_id TEXT PRIMARY KEY, currency TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, status TEXT NOT NULL)`. No migrations in v1. Default path `data/merchants.sqlite` (design doc data layout), overridable with `--db`.
-2. **Short-lived connection per call.** Every public function opens its own connection, acts, closes. This sidesteps SQLite's cross-thread rules (FastAPI runs sync deps in a threadpool) and is cheap under WAL. `ponytail:` a connection per `verify` call; cache a per-process handle in 4b only if a stress measurement says so.
+2. **Short-lived connection per call.** Every public function opens its own connection, acts, closes. This sidesteps SQLite's cross-thread rules (FastAPI runs sync deps in a threadpool) and is cheap under WAL. Ceiling: a connection per `verify` call; cache a per-process handle in 4b only if a stress measurement says so.
 3. **Identity and keys, all stdlib.**
    - `merchant_id = "m_" + secrets.token_hex(8)` — hex is a subset of `[a-z0-9]`, satisfies `m_[a-z0-9]+`, and never contains `/` (keeps A7's partition separator safe). On the astronomically rare PRIMARY KEY collision, regenerate.
    - API key = `secrets.token_urlsafe(32)`, printed once to stdout, never stored or logged.

@@ -90,7 +90,7 @@ def partition(merchant_id: str, merchant_product_id: str) -> int:
 → Batch on both sides:
 - **Workers:** read up to 1,000 changes or 200 ms, dedupe per Listing key, then do one MERGE per batch.
 - **API:** group commit. A single appender collects requests for up to 100 ms, commits once, then answers all of them with 202.
-- **Compaction:** each worker compacts its own partitions every K batches. It's the only writer there, so compaction can't conflict.
+- **Compaction:** each worker compacts its own partitions every K batches. It's the only writer there, so compaction can't conflict with another worker's writes to the same partition. Delta can still report a `CommitFailedError` across partitions (see Phase 7), which the worker loop retries.
 
 **A11. Events can't go into a DuckDB table.** DuckDB allows only one process to hold a database open for writing, and the API, N workers and Change Export all write events.
 → Each process run appends to its own JSONL file under `events/<hour>/<process>-<pid>.jsonl`. They're read by a streaming reader that trusts only complete lines. (DuckDB's `read_json(ignore_errors=true)` returns a half-written line as a *partial* event, so it's never used on event files.) See "DuckDB's role" below.
@@ -261,8 +261,8 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 2 | 2r ✅ | Mutation-survivor triage: pin `content_hash` bytes, kill or justify the rest |
 | 3 | 3a ✅ | `worker.process_batch`: one batch from read to plan, classify (FakeClassifier), merge, events and offsets, plus the replay oracle test |
 | 3 | 3b ✅ | Error policy: per-change failure isolation (a storability check before planning); any other error never advances the offset |
-| 3 | 3c | Worker process: claim (a second worker on a claimed partition gets `PartitionTaken`), startup beat, poll loop with backoff on any error `process_batch` raises (crash after N attempts), owner compaction cadence, a per-batch event (offsets, duration, changes) for lag and utilization, CLI entry, `Procfile` |
-| 3 | 3d | Supervisor: heartbeat watchdog (start time counts as a beat), restart |
+| 3 | 3c ✅ | Worker process: claim (a second worker on a claimed partition gets `PartitionTaken`), startup beat, poll loop with backoff on any error `process_batch` raises (crash after N attempts), owner compaction cadence, a per-batch event (offsets, duration, changes) for lag and utilization, CLI entry, `Procfile` |
+| 3 | 3d | Supervisor: heartbeat watchdog (start time counts as a beat), restart; adds `honcho` to run the `Procfile`. From the 3c review: distinct worker exit codes for fatal startup errors (`PartitionTaken`, `OffsetsMismatch`, `CorruptState`) versus giving up after N failed ticks, worker start/stop events, and whether heartbeats use a monotonic clock |
 | 3 | 3e | Chaos tests: `kill -9` mid-batch, rescale from 4 to 3 workers |
 | 4 | 4a | Merchant registry (SQLite) and admin CLI: create a merchant, rotate a key |
 | 4 | 4b | `POST /listings:batch`: auth, envelope, 32 MB cap, disk guard, direct append |
@@ -398,6 +398,8 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
 - Measure three costs from the PR #4 review at full batch size (1,000 random keys, 1M Listings) before the SLO run, and fix only the ones that break it:
   - `store.read` decodes every column of the touched partitions. Fix: scan the key columns first, then `take` the matching rows.
   - A batch MERGE touches about 63% of 1 MiB files, because keys are hash-scattered. Fix: key-sorted (Z-order) compaction, or a bucket column.
+  - Every Landing log commit moves the offsets of all a worker's partitions, so a tick rewrites (and fsyncs) up to 16 offset files: 2.7 ms on the Mac. Measure on the stress run; if it matters, save offsets that moved only past other partitions' commits less often.
+  - Workers on different partitions sometimes hit Delta `CommitFailedError`: about 1 in 412 commits in the 3c design panel's 4-worker run. ADR-0002's spike saw none. The loop's backoff absorbs it; measure the rate under load.
   - `landing.read` re-reads a bulk commit once for every `limit` slice. Fix: end the change-feed range once `limit` pending rows are in hand, or cache the remainder in the worker.
 - **Exit:** every scenario ends with the three oracles passing, and the p99 freshness SLO (under 5 minutes) holds at 50/s.
 

@@ -283,7 +283,7 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 6 | 6e ⏸ | Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK |
 | 7 | 7a | Load generator (multiprocess) |
 | 7 | 7b | Chaos scenario runner and the three oracles. From 3e: a runner that kills the supervisor must reap it (`wait`), or its workers keep running until it does |
-| 7 | 7c | Metrics SQL and runbook. From the 4a review: an audit event (Merchant, action, time) for each create, rotate and revoke. From the 3d review: `process_exit` events for processes stopped at shutdown, and for every exit seen in the pass that hit a fatal one. From 3e: after a supervisor is killed, wait a few seconds for its workers to stop before starting a new one; a reason on `worker_stop` when the supervisor watch stopped it, and a trace of the watch's hard exit, written so they can't block that exit |
+| 7 | 7c | Metrics SQL and runbook. From the 4a review: an audit event (Merchant, action, time) for each create, rotate and revoke. From the 3d review: `process_exit` events for processes stopped at shutdown, and for every exit seen in the pass that hit a fatal one. From 3e: after a supervisor is killed, wait a few seconds for its workers to stop before starting a new one; a reason on `worker_stop` when the supervisor watch stopped it, and a trace of the watch's hard exit, written so they can't block that exit. From the 4e review: the API's watch too: an event when it stops the API, and the same trace of its hard exit |
 | 7 | 7d ⏸ | `stress-smoke` CI job; then full stress runs on your Mac |
 
 ## Phases

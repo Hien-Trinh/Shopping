@@ -1,0 +1,174 @@
+"""The shipped system end to end (docs/specs/step-4e.md): the supervisor runs the repo's Procfile,
+a Merchant posts over a real socket, and the workers' Outcomes come back over HTTP."""
+
+import contextlib
+import itertools
+import os
+import re
+import signal
+import socket
+import subprocess
+import sys
+from pathlib import Path
+
+import httpx2
+import pytest
+from test_supervisor import alive, wait_for
+
+from catalog import events, landing, store
+from catalog.keys import PARTITIONS, partition
+from catalog.landing import START
+from catalog.replay import diff, expected_store
+
+PROCFILE = Path(__file__).parents[2] / "Procfile"
+SUPERVISOR = [sys.executable, "-m", "catalog.supervisor"]
+
+
+def free_port() -> int:
+    # ponytail: another program could take it before the API binds; then readiness times out.
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def api_pids(port: int) -> list[int]:
+    """The API serving `port`: it logs no start event, so find it by its command line."""
+    found = subprocess.run(["pgrep", "-f", f"catalog.api --port {port}"], capture_output=True)
+    return [int(pid) for pid in found.stdout.split()]
+
+
+def bindable(port: int) -> bool:
+    """Whether a new API could bind `port`: SO_REUSEADDR, as uvicorn sets, so closed
+    connections lingering in TIME_WAIT don't count as taking it."""
+    with socket.socket() as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+        return True
+
+
+def worker_pids(tmp: Path) -> list[int]:
+    found = events.read(tmp / "data" / "events")
+    return [e["pid"] for e in found if e["type"] == "worker_start"]
+
+
+def serving(port: int) -> bool:
+    with contextlib.suppress(httpx2.TransportError):
+        return httpx2.get(f"http://127.0.0.1:{port}/submissions/x").status_code == 401
+    return False
+
+
+class System:
+    """The repo's Procfile under one supervisor in `tmp`, the API on `port`, one Merchant."""
+
+    def __init__(self, tmp: Path, port: int):
+        self.tmp, self.port, self.supervisors = tmp, port, []
+        text, n = re.subn(r"^api: python -m catalog\.api$", rf"\g<0> --port {port}",
+                          PROCFILE.read_text(), flags=re.M)  # fmt: skip
+        assert n == 1, "the Procfile's api line changed"
+        (tmp / "Procfile").write_text(text)
+        create = [sys.executable, "-m", "catalog.merchants", "create", "--currency", "USD"]
+        out = subprocess.run(create, cwd=tmp, capture_output=True, text=True, check=True).stdout
+        self.merchant_id, self.key = re.findall(r"^\w+: (\S+)$", out, flags=re.M)
+        self.http = httpx2.Client(base_url=f"http://127.0.0.1:{port}", timeout=30,
+                                 headers={"Authorization": f"Bearer {self.key}"})  # fmt: skip
+
+    def start(self) -> subprocess.Popen:
+        self.supervisors.append(subprocess.Popen(SUPERVISOR, cwd=self.tmp))
+        wait_for(lambda: serving(self.port))
+        return self.supervisors[-1]
+
+    def post(self, *changes) -> str:
+        r = self.http.post("/listings:batch", json={"changes": list(changes)})
+        assert r.status_code == 202, r.text
+        return r.json()["submission_id"]
+
+    def outcomes(self, submission: str) -> dict[int, str]:
+        """Once every Change has an Outcome."""
+
+        def done():  # fmt: skip
+            r = self.http.get(f"/submissions/{submission}")
+            assert r.status_code == 200, r.text
+            return r.json()["done"] and r.json()
+
+        return {c["index"]: c["outcome"] for c in wait_for(done)["changes"]}
+
+    def close(self):
+        """Kill whatever is left, so a failed assert leaks no process holding the port or locks."""
+        self.http.close()
+        for proc in self.supervisors:
+            proc.kill()
+            proc.wait()
+        for pid in [*worker_pids(self.tmp), *api_pids(self.port)]:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+
+
+@pytest.fixture
+def system(tmp_path):
+    made = System(tmp_path, free_port())
+    yield made
+    made.close()
+
+
+def one_per_partition(merchant_id: str) -> list[str]:
+    """A Merchant product ID in each partition."""
+    found = {}
+    for i in itertools.count():
+        found.setdefault(partition(merchant_id, f"sku-{i}"), f"sku-{i}")
+        if len(found) == PARTITIONS:
+            return list(found.values())
+
+
+def upsert(mpid, sv=2, title="Red shirt"):
+    listing = {"title": title, "price_micros": 1_000_000, "currency": "USD"}
+    listing |= {"availability": "in_stock"}
+    return {"op": "upsert", "merchant_product_id": mpid, "source_version": sv, "listing": listing}
+
+
+def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system):
+    supervisor = system.start()
+    skus = one_per_partition(system.merchant_id)  # so all 4 workers have work
+    invalid = upsert("bad", title="")
+    first = system.post(*map(upsert, skus), invalid)
+    # Sent without waiting for the first: Landing log order alone fixes these Outcomes.
+    deleted = {"op": "delete", "merchant_product_id": skus[0], "source_version": 3}
+    second = system.post(deleted, upsert(skus[1]), upsert(skus[2], sv=1))
+
+    assert system.outcomes(first) == {i: "written" for i in range(PARTITIONS)} | {
+        PARTITIONS: "rejected"
+    }
+    assert system.outcomes(second) == {0: "written", 1: "already_applied", 2: "stale"}
+    data = system.tmp / "data"
+    log = landing.ensure(str(data / "landing_log"))
+    landed = landing.read(log, dict.fromkeys(range(PARTITIONS), START), 10_000).changes
+    assert len(landed) == PARTITIONS + 3
+    listings = store.ensure(str(data / "listing_store"))
+    assert diff(expected_store([x.change for x in landed]), store.fingerprints(listings)) == []
+    rows = listings.to_pyarrow_dataset().to_table().to_pylist()
+    assert {r["primary_category"] for r in rows if not r["is_tombstone"]} == {"Fake > R"}
+    assert [r["merchant_product_id"] for r in rows if r["is_tombstone"]] == [skus[0]]
+
+    pids = [*worker_pids(system.tmp), *api_pids(system.port)]
+    assert len(pids) == 5  # 4 workers and the API, each started once
+    assert not bindable(system.port)  # so the check below can fail
+    supervisor.send_signal(signal.SIGTERM)
+    assert supervisor.wait(timeout=30) == 0
+    assert not any(map(alive, pids))
+    assert bindable(system.port)
+
+
+def test_killing_the_supervisor_stops_its_api_so_a_new_one_serves_on_its_port(system):
+    first = system.start()
+    wait_for(lambda: len(worker_pids(system.tmp)) == 4)
+    [api], workers = api_pids(system.port), worker_pids(system.tmp)
+    first.kill()
+    first.wait()  # reaped, as by the shell that started it: until then its pid looks alive
+    wait_for(lambda: not alive(api), timeout=5)
+    wait_for(lambda: not any(map(alive, workers)), timeout=10)  # 3e: their locks are free
+    second = system.start()  # its API binds the same port: no restart loop
+    assert api_pids(system.port) not in ([], [api])
+    second.send_signal(signal.SIGTERM)
+    assert second.wait(timeout=30) == 0

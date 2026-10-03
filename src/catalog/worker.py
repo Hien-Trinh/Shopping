@@ -183,6 +183,25 @@ def watch(
     exit(1)
 
 
+def supervisor_pid() -> int | None:
+    """The pid of the supervisor that started this process, or None if none did."""
+    pid = os.environ.get(SUPERVISOR, "")
+    if pid and not (pid.isdecimal() and 0 < int(pid) < 2**31):  # 0 or -1 would name a group
+        raise ValueError(
+            f"{SUPERVISOR} must be the pid of the supervisor that started it, got {pid!r}"
+        )
+    return int(pid) if pid else None
+
+
+def watch_supervisor(pid: int | None, stop) -> None:
+    """Run watch() on supervisor `pid` in a daemon thread; nothing when no supervisor started us.
+
+    `stop` needs only a set() method.
+    """
+    if pid:
+        threading.Thread(target=watch, args=(lambda: _alive(pid), stop), daemon=True).start()
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)  # a killed supervisor exists until reaped, which a shell does at once
@@ -204,9 +223,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         owned(a.index, a.workers)
     except ValueError as e:
         args.error(str(e))  # exit 2: fatal, so the supervisor doesn't restart a bad flag forever
-    pid = os.environ.get(SUPERVISOR, "")
-    if pid and not (pid.isdecimal() and 0 < int(pid) < 2**31):  # 0 or -1 would name a group
-        args.error(f"{SUPERVISOR} must be the pid of the supervisor that started it, got {pid!r}")
+    try:
+        supervisor = supervisor_pid()
+    except ValueError as e:
+        args.error(str(e))
     stop, stopping = threading.Event(), []
 
     def on_signal(*_):  # Event.set takes a lock the interrupted thread may hold: set it elsewhere
@@ -216,9 +236,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
-    if pid:  # so a kill -9ed supervisor leaves no worker behind
-        supervisor = int(pid)
-        threading.Thread(target=watch, args=(lambda: _alive(supervisor), stop), daemon=True).start()
+    watch_supervisor(supervisor, stop)  # so a kill -9ed supervisor leaves no worker behind
     # ponytail: FakeClassifier until the real one (step 6b) is chosen by a flag.
     run(a.data, a.state, a.index, a.workers, FakeClassifier(), stop=stop)
 

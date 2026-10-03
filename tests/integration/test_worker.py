@@ -573,3 +573,28 @@ def test_the_cli_exits_2_on_a_bad_flag_and_a_code_per_kind_of_crash(env):
 
 def test_the_cli_exits_cleanly_with_stdout_closed(tmp_path):
     assert cli("--help", preexec_fn=lambda: os.close(1)).returncode == 0
+
+
+def test_a_broken_stderr_neither_skips_retries_nor_changes_the_exit_code(env):
+    env.land(up(A, 1))
+    env.run()
+    for f in (env.tmp / "listing_store" / "partition=3").glob("*.parquet"):
+        f.write_bytes(b"\0" * f.stat().st_size)  # every tick fails reading it
+    env.land(up(A, 2), submission="s2")
+    script = (  # `python -m catalog.worker`, giving up after 2 attempts: 1 s of backoff, not 15
+        "from catalog import entry, worker\n"
+        "worker.ATTEMPTS = 2\n"
+        "entry.exit_with(worker.main, worker.FATAL)\n"
+    )
+    args = ["--index", "0", "--workers", "4", "--data", str(env.tmp), "--state", str(env.state)]
+    read, write = os.pipe()
+    os.close(read)  # e.g. the supervisor ran under `| tee` and tee died
+    try:
+        proc = subprocess.run([sys.executable, "-c", script, *args], stderr=write, timeout=60)
+    finally:
+        os.close(write)
+    logged = [(e["type"], e.get("attempt")) for e in events.read(env.events_root) if "worker" in e]
+    assert (proc.returncode, logged) == (
+        1,  # as with a working stderr: gave up, so the supervisor restarts it
+        [("worker_start", None), ("tick_failed", 1), ("tick_failed", 2), ("worker_stop", None)],
+    )

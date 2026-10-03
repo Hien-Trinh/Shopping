@@ -303,10 +303,22 @@ def test_the_cli_serves_on_localhost_only(tmp_path, monkeypatch):
     db = tmp_path / "data" / "merchants.sqlite"
     merchants.create(db, "USD")
     served = []
-    monkeypatch.setattr(api.uvicorn, "run", lambda app, **options: served.append(options))
+    monkeypatch.setattr(api.uvicorn.Server, "run", lambda server: served.append(server.config))
     api.main(["--data", str(tmp_path / "data"), "--db", str(db), "--port", "8123"])
-    [options] = served
-    assert (options["host"], options["port"]) == ("127.0.0.1", 8123)
+    [config] = served
+    assert (config.host, config.port) == ("127.0.0.1", 8123)
+
+
+@pytest.mark.parametrize("pid", ["abc", "0", "-1", " 7", str(2**31)])
+def test_a_malformed_supervisor_pid_is_refused_as_a_bad_flag(tmp_path, monkeypatch, capsys, pid):
+    db = tmp_path / "data" / "merchants.sqlite"
+    merchants.create(db, "USD")
+    monkeypatch.setenv("CATALOG_SUPERVISOR", pid)  # 0 or -1 would make the watch signal a group
+    monkeypatch.setattr(api.uvicorn.Server, "run", lambda _: pytest.fail("served unwatched"))
+    with pytest.raises(SystemExit) as stopped:
+        api.main(["--data", str(tmp_path / "data"), "--db", str(db)])
+    assert stopped.value.code == 2
+    assert "CATALOG_SUPERVISOR" in capsys.readouterr().err
 
 
 def test_changes_are_checked_against_the_merchants_own_currency(make_api):

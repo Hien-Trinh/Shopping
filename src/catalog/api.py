@@ -10,18 +10,20 @@ import contextlib
 import json
 import shutil
 import sqlite3
+import threading
 import time
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from catalog import entry, envelope, landing, merchants, state, status
+from catalog import entry, envelope, landing, merchants, state, status, worker
 from catalog import events as event_files
 from catalog.events import EventLog
 from catalog.keys import partition
@@ -178,11 +180,21 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--port", type=int, default=8000)
     a = args.parse_args(argv)
     try:
+        supervisor = worker.supervisor_pid()
+    except ValueError as e:
+        args.error(str(e))  # exit 2, as for a worker
+    try:
         app = create_app(a.data, a.db)
     except sqlite3.Error as e:
         args.error(f"no usable merchant registry at {a.db} ({e}): run catalog.merchants create")
     # Never wider than localhost: there is no TLS and no rate limit yet (plan-v1, section C).
-    uvicorn.run(app, host="127.0.0.1", port=a.port)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=a.port))
+    if supervisor:  # so a kill -9ed supervisor leaves no API holding the port (step 4e)
+        # watch only calls stop.set(): here that asks uvicorn to finish the requests in flight.
+        stop = SimpleNamespace(set=lambda: setattr(server, "should_exit", True))
+        watched = (lambda: worker._alive(supervisor), stop)
+        threading.Thread(target=worker.watch, args=watched, daemon=True).start()
+    server.run()
 
 
 if __name__ == "__main__":

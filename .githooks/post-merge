@@ -1,0 +1,6 @@
+#!/bin/sh
+# After a pull, refresh the local code graph (graphify-out/, gitignored) in the
+# main checkout only. Skipped when graphify or the graph is missing.
+[ "$(cd "$(git rev-parse --git-dir)" && pwd)" = "$(cd "$(git rev-parse --git-common-dir)" && pwd)" ] || exit 0
+command -v graphify >/dev/null && [ -d graphify-out ] && graphify update >/dev/null 2>&1
+exit 0

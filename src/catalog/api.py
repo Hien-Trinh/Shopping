@@ -20,7 +20,8 @@ from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from catalog import entry, envelope, events, landing, merchants, state, status
+from catalog import entry, envelope, landing, merchants, state, status
+from catalog import events as event_files
 from catalog.events import EventLog
 from catalog.keys import partition
 
@@ -42,14 +43,14 @@ def create_app(
     with contextlib.suppress(merchants.Denied):
         merchants.verify(db, "")
     log = landing.ensure(str(data / "landing_log"))
-    log_events = EventLog(data / "events", "api", clock)
+    events = EventLog(data / "events", "api", clock)
     app = FastAPI(openapi_url=None)  # no /docs: nothing here is a FastAPI model
 
     def refuse(status: int, reason: str, detail: str, merchant_id: str | None = None):
         """The refusal, and a `refused` event to count it by: never the key, its hash, the body."""
         event = {"type": "refused", "status": status, "reason": reason}
         with contextlib.suppress(OSError):  # best effort: a full disk never turns a 4xx into a 500
-            log_events.emit([event | ({"merchant_id": merchant_id} if merchant_id else {})])
+            events.emit([event | ({"merchant_id": merchant_id} if merchant_id else {})])
         challenge = {"WWW-Authenticate": "Bearer"} if status == 401 else None
         return JSONResponse({"detail": detail}, status, challenge)
 
@@ -96,34 +97,38 @@ def create_app(
         # Before the append, from the clock its events use: they fall in its hour or later (A12).
         submission = str(uuid7_at(int(received.timestamp() * 1000)))
         landing.append(log, [(submission, i, c) for i, c in checked.accepted], received)
-        log_events.emit(submission_events(submission, merchant.merchant_id, checked))
+        events.emit(submission_events(submission, merchant.merchant_id, checked))
         rejected = [{"index": i, "errors": list(errors)} for i, errors in checked.rejected]
         reply = {"submission_id": submission, "accepted": len(checked.accepted)}
         return JSONResponse(reply | {"rejected": rejected}, 202)
 
-    @app.get("/submissions/{raw}")
-    async def lookup(request: Request, raw: str):
+    @app.get("/submissions/{submission_id}")
+    async def lookup(request: Request, submission_id: str):
         merchant = authenticate(request)  # no disk guard: a read lands nothing
         if isinstance(merchant, JSONResponse):
             return merchant
+
+        def not_found(reason: str) -> JSONResponse:
+            return refuse(404, reason, NOT_FOUND, merchant.merchant_id)
+
         try:
-            parsed = uuid.UUID(raw)
+            parsed = uuid.UUID(submission_id)
             if parsed.version != 7:
                 raise ValueError
             # Only the hours from the id's own (A12). ponytail: an id dated 1970 scans every
             # hour kept, until 5d's events retention lets it 404 an id older than the horizon.
             since = datetime.fromtimestamp(0, UTC) + timedelta(milliseconds=parsed.int >> 80)
         except ValueError, OverflowError:  # a 48-bit timestamp reaches past the year 9999
-            return refuse(404, "unknown_submission", NOT_FOUND, merchant.merchant_id)
+            return not_found("unknown_submission")
         submission = str(parsed)  # canonical, so case and braces don't matter
         # In a thread, so a long scan doesn't stall the POSTs; emits stay on this one.
         found = await run_in_threadpool(
-            lambda: status.fold(submission, events.read(data / "events", since, submission))
+            lambda: status.fold(submission, event_files.read(data / "events", since, submission))
         )
         if found is None:
-            return refuse(404, "unknown_submission", NOT_FOUND, merchant.merchant_id)
+            return not_found("unknown_submission")
         if found.merchant_id != merchant.merchant_id:
-            return refuse(404, "not_owner", NOT_FOUND, merchant.merchant_id)
+            return not_found("not_owner")
         changes = [{"index": i, "outcome": o} for i, o in found.outcomes.items()]
         reply = {"submission_id": submission, "done": found.done, "counts": dict(found.counts)}
         return JSONResponse(reply | {"changes": changes})

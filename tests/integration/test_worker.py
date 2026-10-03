@@ -356,10 +356,17 @@ def test_run_beats_before_its_first_batch(env):
 def test_run_emits_worker_start_and_stop_events(env):
     run(env, Ticks(1))
     got = [e for e in events.read(env.events_root) if e["type"].startswith("worker_")]
-    assert [(e["type"], e["worker"], e.get("workers")) for e in got] == [
-        ("worker_start", "worker-0", 4),
-        ("worker_stop", "worker-0", None),  # fmt: skip
+    assert [(e["type"], e["worker"], e.get("workers"), e.get("pid")) for e in got] == [
+        ("worker_start", "worker-0", 4, os.getpid()),  # joins the supervisor's process_exit
+        ("worker_stop", "worker-0", None, None),  # fmt: skip
     ]
+
+
+def test_main_refuses_an_index_outside_the_workers_as_a_bad_flag(capsys):
+    with pytest.raises(SystemExit) as stopped:
+        worker.main(["--index", "3", "--workers", "3"])  # left over from a rescale to 3
+    assert stopped.value.code == 2  # fatal: the supervisor stops rather than restart it forever
+    assert "index must be 0..2" in capsys.readouterr().err
 
 
 def spy_beats(monkeypatch, log):
@@ -420,6 +427,26 @@ def test_errors_back_off_and_a_good_tick_resets_the_count(env, monkeypatch, caps
     assert stored(env, A).source_version == 1
     err = capsys.readouterr().err
     assert "worker-0: tick failed (2/5)" in err and "Traceback" in err and "disk busy" in err
+    failed = [e for e in events.read(env.events_root) if e["type"] == "tick_failed"]
+    assert [e["attempt"] for e in failed] == [1, 2, 1]
+    assert {e["error"] for e in failed} == {"OSError('disk busy')"}
+
+
+def test_giving_up_raises_the_real_error_even_if_logging_it_fails(env, monkeypatch):
+    def corrupt(*_, **__):
+        raise state.CorruptState("offsets unreadable")
+
+    real_emit = worker.EventLog.emit
+
+    def emit(self, logged):
+        if any(e["type"] == "tick_failed" for e in logged):
+            raise OSError(28, "No space left on device")
+        real_emit(self, logged)
+
+    monkeypatch.setattr(worker, "process_batch", corrupt)
+    monkeypatch.setattr(worker.EventLog, "emit", emit)
+    with pytest.raises(state.CorruptState):  # not the OSError: its exit code (5) is the point
+        run(env, Ticks(10))
 
 
 def test_it_gives_up_after_attempts_failed_ticks_in_a_row(env, monkeypatch):
@@ -539,7 +566,7 @@ def test_the_cli_exits_2_on_a_bad_flag_and_a_code_per_kind_of_crash(env):
     mismatch = cli(*args)
     (env.state / "offsets" / "p00.json").write_text("{")
     corrupt = cli(*args)
-    broken = cli("--index", "0", "--workers", "4", "--data", "/dev/null")  # a storage error
+    broken = cli(*args[:4], "--data", "/dev/null", "--state", str(env.state))  # a storage error
     codes = [r.returncode for r in (taken, mismatch, corrupt, broken)]
     assert codes == [3, 4, 5, 1] and "PartitionTaken" in taken.stderr
 

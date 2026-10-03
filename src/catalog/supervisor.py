@@ -1,10 +1,11 @@
 """Supervisor: runs the Procfile's processes, restarting any that exit or stop beating (plan B1).
 
-A `worker-*` process must beat (state.beat); the others are restarted only when they exit. An exit
-code over 1 (worker.FATAL) is one no restart can fix: everything stops, with that exit code.
+A `worker-*` process must beat (state.beat); the others are restarted only when they exit. A
+worker's fatal exit code (FATAL_CODES) is one no restart can fix: everything stops, with that code.
 """
 
-import functools
+import contextlib
+import fcntl
 import os
 import shlex
 import signal
@@ -13,26 +14,47 @@ import sys
 import time
 from pathlib import Path
 
-from catalog import state
+from catalog import entry, state, worker
 from catalog.events import EventLog
 
 STALE = 60.0  # seconds without a sign of life (plan B1)
 TICK = 1.0  # seconds between checks, so also the fastest a crash loop can spin
-GRACE = 10.0  # seconds a process gets to stop after SIGTERM, on shutdown
+GRACE = 10.0  # seconds all processes together get to stop after SIGTERM, on shutdown
 STABLE = 10.0  # a process that exits sooner is crash looping...
 RETRY = 5.0  # ...so it restarts after this; each start costs a new events file
-_OWN_SESSION = functools.partial(subprocess.Popen, start_new_session=True)
+FATAL_CODES = {2, *worker.FATAL.values()}  # a worker's bad flag, or a fatal startup error
+ANOTHER = 3  # exit code when another supervisor holds state/supervisor.lock
+
+
+class Group(subprocess.Popen):
+    """A child in its own session, so a Ctrl-C or a closed terminal reaches only the supervisor.
+
+    Its signals go to the whole process group, so a wrapper command's own child (sh -c, uv run)
+    is stopped too, and never left holding partition locks.
+    """
+
+    def __init__(self, argv: list[str]):
+        super().__init__(argv, start_new_session=True)
+
+    def send_signal(self, sig: int) -> None:  # terminate() and kill() come through here
+        if self.poll() is None:  # not reaped, so its pid still names its group
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(self.pid, sig)
 
 
 def parse_procfile(text: str) -> dict[str, list[str]]:
-    """`name: command` per line, in order; blank lines and #comments are skipped."""
+    """`name: command` per line, in order; blank lines and #comments are skipped.
+
+    A bare `python` runs as this interpreter: the one on PATH may not have catalog installed.
+    """
     procs = {}
     for n, line in enumerate(text.splitlines(), 1):
         if line.strip() and not line.lstrip().startswith("#"):
             name, _, command = line.partition(":")
             if not (name := name.strip()) or not command.strip() or name in procs:
                 raise ValueError(f"Procfile line {n}: want a new `name: command`, got {line!r}")
-            procs[name] = shlex.split(command)
+            argv = shlex.split(command)
+            procs[name] = [sys.executable, *argv[1:]] if argv[0] == "python" else argv
     return procs
 
 
@@ -42,31 +64,46 @@ def verdict(
     """What to do: "exit" (restart it), "fatal" (stop all), "stale" (kill, restart it), or None.
 
     The start counts as a beat. A beat from before it is the predecessor's, and one from after
-    `now` another clock's (a reboot): neither keeps this run alive.
+    `now` another clock's (a reboot): neither keeps this run alive. Only a worker's exit code
+    can be fatal; another process means something else by its codes.
     """
     if code is not None:
-        return "fatal" if code > 1 else "exit"
+        return "fatal" if watched and code in FATAL_CODES else "exit"
     last = beat if beat is not None and started <= beat <= now else started
     return "stale" if watched and now - last > STALE else None
 
 
-def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=time.monotonic,
-        spawn=_OWN_SESSION) -> int:  # fmt: skip
-    """Run `procs` until `stopping` is non-empty (returns 0) or one fails fatally (its code).
+def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=state.CLOCK,
+        spawn=Group) -> int:  # fmt: skip
+    """Run `procs` until `stopping` is non-empty (returns 0) or a worker fails fatally (its code).
 
-    `clock` is the one the workers beat with. Children get their own session, so a Ctrl-C reaches
-    only the supervisor, which then stops them in order.
+    `clock` must be the workers' beat clock.
     """
-    live, due = {}, {}  # name -> (child, its start time); name -> when a crash looper restarts
+    live, due, killed = {}, {}, set()  # name -> (child, start); name -> restart time; stale kills
+    fatal = None
 
-    def start(name):
+    def note(event):  # best effort: a full disk must not stop the supervisor and its workers
+        try:
+            events.emit([event])
+        except OSError as e:
+            print(f"supervisor: couldn't log {event}: {e!r}", file=sys.stderr)
+
+    def start(name, first=False):
         started = clock()  # before the spawn, so no beat of the new run can predate it
-        live[name] = spawn(procs[name]), started
+        try:
+            live[name] = spawn(procs[name]), started
+        except OSError as e:
+            if first:
+                raise  # a command that can't start at all: fail fast
+            due[name] = started + RETRY  # e.g. EAGAIN under memory pressure: try again later
+            error = repr(e)[:500]
+            note({"type": "process_exit", "process": name, "reason": "spawn", "error": error})
 
+    note({"type": "supervisor_start", "processes": list(procs), "pid": os.getpid()})
     try:
         for name in procs:
-            start(name)
-        while not stopping:
+            start(name, first=True)
+        while not stopping and fatal is None:
             for name in procs:
                 if name in due:
                     if clock() >= due[name]:
@@ -74,45 +111,74 @@ def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=time.mono
                         start(name)
                     continue
                 child, started = live[name]
-                watched = name.startswith("worker-")
+                watched = name.startswith(state.WORKER)
                 beat = state.last_beat(state_dir, name) if watched else None
                 now = clock()  # after the read: a beat landing in between must not look future
                 why = verdict(child.poll(), now, started, beat, watched)
                 if why == "stale":
-                    child.kill()  # SIGTERM isn't heard while a native MERGE blocks the main thread
-                    child.wait()  # its partition locks are free only once it's gone
+                    if name not in killed:  # SIGTERM isn't heard while a native MERGE blocks
+                        child.kill()
+                        killed.add(name)
+                    continue  # restarted once reaped: its partition locks are free only then
                 if why:
-                    event = {"type": "process_exit", "process": name, "reason": why}
-                    events.emit([event | {"code": child.returncode, "pid": child.pid}])
+                    if name in killed:
+                        why = "stale"
+                        killed.discard(name)
+                    pid, code = child.pid, child.returncode
+                    note({"type": "process_exit", "process": name, "reason": why, "code": code,
+                          "pid": pid})  # fmt: skip
                     if why == "fatal":
-                        return child.returncode
+                        fatal = code
+                        break
                     if now - started < STABLE:
                         due[name] = now + RETRY
                     else:
                         start(name)
-            sleep(TICK)
+            if fatal is None:
+                sleep(TICK)
     finally:  # also on a bug here: never leave workers running unsupervised
-        children = [child for child, _ in live.values()]
-        for child in children:
-            child.terminate()
-        for child in children:
-            try:
-                child.wait(GRACE)
-            except subprocess.TimeoutExpired:
-                child.kill()
-                child.wait()
-    return 0
+        _stop([child for child, _ in live.values()], clock)
+    note({"type": "supervisor_stop", "code": fatal or 0})
+    return fatal or 0
 
 
-def main(procfile: str = "Procfile") -> int:
-    # ponytail: ./data and ./state, the workers' defaults. A flag when something needs others.
-    procs = parse_procfile(Path(procfile).read_text())
+def _stop(children, clock) -> None:
+    """SIGTERM every child, then SIGKILL any still running once one shared GRACE has passed."""
+    for child in children:
+        child.terminate()
+    deadline = clock() + GRACE
+    for child in children:
+        try:
+            child.wait(max(0.0, deadline - clock()))
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+
+
+def _only_supervisor(state_dir: Path) -> bool:
+    """Hold state/supervisor.lock for this process's life; False if another supervisor has it."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(state_dir / "supervisor.lock", os.O_CREAT | os.O_RDWR)  # children don't inherit
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return False
+    return True  # fd stays open: the lock lasts until this process ends
+
+
+def main() -> int:
+    """Run ./Procfile against the workers' default directories."""
+    if not _only_supervisor(worker.STATE):
+        print(f"supervisor: another one holds {worker.STATE}/supervisor.lock", file=sys.stderr)
+        return ANOTHER
+    procs = parse_procfile(Path("Procfile").read_text())
     stopping = []
-    for sig in (signal.SIGTERM, signal.SIGINT):  # append can't deadlock the way Event.set can
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):  # list.append can't deadlock
         signal.signal(sig, lambda *_: stopping.append(True))
-    events = EventLog(Path("data") / "events", "supervisor")
-    return run(procs, Path("state"), events, stopping=stopping)
+    events = EventLog(worker.DATA / "events", "supervisor")
+    return run(procs, worker.STATE, events, stopping=stopping)
 
 
 if __name__ == "__main__":
-    os._exit(main(*sys.argv[1:2]))  # not sys.exit: the entry-point rule (Arrow's exit hang)
+    entry.exit_with(main)

@@ -104,3 +104,10 @@ def test_heartbeat(tmp_path):
     assert state.last_beat(tmp_path, "w0") is None
     state.beat(tmp_path, "w0", 100.0)
     assert state.last_beat(tmp_path, "w0") == 100.0
+
+
+@pytest.mark.parametrize("text", ["", "{", "{}", "[]", '{"ts": "x"}', "null"])
+def test_a_torn_or_malformed_heartbeat_counts_as_none(tmp_path, text):
+    (tmp_path / "heartbeat").mkdir()
+    (tmp_path / "heartbeat" / "w0.json").write_text(text)
+    assert state.last_beat(tmp_path, "w0") is None  # the next beat rewrites it

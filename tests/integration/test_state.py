@@ -3,7 +3,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -102,6 +101,6 @@ def test_lock_blocks_other_processes_and_dies_with_its_holder(tmp_path):
 
 
 def test_heartbeat(tmp_path):
-    assert state.heartbeat_age(tmp_path, "w0", time.time()) is None
+    assert state.last_beat(tmp_path, "w0") is None
     state.beat(tmp_path, "w0", 100.0)
-    assert state.heartbeat_age(tmp_path, "w0", 160.0) == 60.0
+    assert state.last_beat(tmp_path, "w0") == 100.0

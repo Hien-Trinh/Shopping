@@ -78,6 +78,9 @@ def process_batch(
 POLL = 0.2  # seconds between reads when caught up: the design doc's "1,000 changes or 200 ms"
 ATTEMPTS = 5  # failed ticks in a row before crashing; backoff 1+2+4+8 s stays under 3d's 60 s
 COMPACT_EVERY = 100  # batches with changes between compactions (ponytail: untuned until Phase 7)
+# Exit codes: 0 stopped, 1 gave up on failed ticks (a restart may fix it), over 1 fatal, so the
+# supervisor stops instead: 2 is a bad flag, and these no restart fixes.
+FATAL = {state.PartitionTaken: 3, state.OffsetsMismatch: 4, state.CorruptState: 5}
 
 
 def run(
@@ -90,7 +93,7 @@ def run(
     stop: threading.Event,
     limit: int = 1000,
     compact_every: int = COMPACT_EVERY,
-    clock: Callable[[], float] = time.time,
+    clock: Callable[[], float] = time.monotonic,  # for beats: system-wide, ignores sleep and NTP
 ) -> None:
     """Process the partitions worker `index` of `workers` owns until `stop` is set.
 
@@ -104,6 +107,7 @@ def run(
         events = EventLog(data / "events", name)
         offsets = state.load_offsets(state_dir, mine, landing.table_id(landing_dt))
         state.beat(state_dir, name, clock())  # before the first batch
+        events.emit([{"type": "worker_start", "worker": name, "workers": workers}])
         failures = busy = 0
         while not stop.is_set():
             started = clock()
@@ -130,9 +134,10 @@ def run(
                 if busy >= compact_every:  # owner-only (ADR-0001); a failure retries next tick
                     store.compact(store_dt, mine)
                     busy = 0
-            except Exception:
+            except Exception as e:
                 failures += 1
                 if failures >= ATTEMPTS:
+                    events.emit([{"type": "worker_stop", "worker": name, "error": repr(e)[:500]}])
                     raise
                 print(f"{name}: tick failed ({failures}/{ATTEMPTS}):", file=sys.stderr)
                 traceback.print_exc()
@@ -141,6 +146,7 @@ def run(
             failures = 0
             if min(v for v, _ in offsets.values()) > landing_dt.version():  # caught up
                 stop.wait(POLL)
+        events.emit([{"type": "worker_stop", "worker": name}])
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -241,9 +247,9 @@ if __name__ == "__main__":
         code = 0
     except SystemExit as e:  # argparse: --help or a bad flag
         code = e.code or 0
-    except BaseException:  # gave up after ATTEMPTS failed ticks: exit 1 for the supervisor
+    except BaseException as e:  # a fatal startup error, or gave up after ATTEMPTS failed ticks
         traceback.print_exc()
-        code = 1
+        code = FATAL.get(type(e), 1)
     for stream in (sys.stdout, sys.stderr):
         with contextlib.suppress(Exception):  # closed, or a broken pipe: exit anyway
             stream.flush()

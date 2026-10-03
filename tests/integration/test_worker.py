@@ -349,8 +349,17 @@ def stored(env, mpid):
 def test_run_beats_before_its_first_batch(env):
     env.land(up(A, 1))
     run(env, Ticks(0))
-    assert state.heartbeat_age(env.state, "worker-0", NOW.timestamp()) == 0
+    assert state.last_beat(env.state, "worker-0") == NOW.timestamp()
     assert stored(env, A) is None
+
+
+def test_run_emits_worker_start_and_stop_events(env):
+    run(env, Ticks(1))
+    got = [e for e in events.read(env.events_root) if e["type"].startswith("worker_")]
+    assert [(e["type"], e["worker"], e.get("workers")) for e in got] == [
+        ("worker_start", "worker-0", 4),
+        ("worker_stop", "worker-0", None),  # fmt: skip
+    ]
 
 
 def spy_beats(monkeypatch, log):
@@ -423,7 +432,9 @@ def test_it_gives_up_after_attempts_failed_ticks_in_a_row(env, monkeypatch):
     with pytest.raises(OSError, match="disk full"):
         run(env, ticks, clock=itertools.count(1000).__next__)
     assert ticks.waits == [1, 2, 4, 8]
-    assert state.heartbeat_age(env.state, "worker-0", 1000) == 0  # failed ticks never beat
+    (stop,) = [e for e in events.read(env.events_root) if e["type"] == "worker_stop"]
+    assert "disk full" in stop["error"]
+    assert state.last_beat(env.state, "worker-0") == 1000  # failed ticks never beat
     assert env.load_offsets() == {p: START for p in range(PARTITIONS)}
     with state.claim(env.state, range(16)):  # the crash released the claim
         pass
@@ -519,12 +530,18 @@ def cli(*args, **kwargs):
     )  # fmt: skip
 
 
-def test_the_cli_exits_2_on_a_bad_flag_and_1_when_it_gives_up(env):
+def test_the_cli_exits_2_on_a_bad_flag_and_a_code_per_kind_of_crash(env):
     assert cli("--index", "x").returncode == 2
+    args = ["--index", "0", "--workers", "4", "--data", str(env.tmp), "--state", str(env.state)]
     with state.claim(env.state, [0]):  # another worker owns partition 0
-        args = ["--index", "0", "--workers", "4", "--data", str(env.tmp)]
-        done = cli(*args, "--state", str(env.state))
-    assert done.returncode == 1 and "PartitionTaken" in done.stderr
+        taken = cli(*args)
+    state.save_offsets(env.state, {0: (1, 0)}, "another-landing-log")
+    mismatch = cli(*args)
+    (env.state / "offsets" / "p00.json").write_text("{")
+    corrupt = cli(*args)
+    broken = cli("--index", "0", "--workers", "4", "--data", "/dev/null")  # a storage error
+    codes = [r.returncode for r in (taken, mismatch, corrupt, broken)]
+    assert codes == [3, 4, 5, 1] and "PartitionTaken" in taken.stderr
 
 
 def test_the_cli_exits_cleanly_with_stdout_closed(tmp_path):

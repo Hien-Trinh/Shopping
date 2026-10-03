@@ -113,7 +113,7 @@ def beat(state: Path, worker: str, now: float) -> None:
     save(_heartbeat_file(state, worker), {"ts": now})
 
 
-def heartbeat_age(state: Path, worker: str, now: float) -> float | None:
-    """Seconds since the worker's last beat; None if it never beat."""
+def last_beat(state: Path, worker: str) -> float | None:
+    """The clock reading of the worker's last beat; None if it never beat."""
     last = load(_heartbeat_file(state, worker), None)
-    return None if last is None else now - last["ts"]
+    return None if last is None else last["ts"]

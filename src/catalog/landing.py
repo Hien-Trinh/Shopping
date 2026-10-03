@@ -4,8 +4,10 @@ Landing order is (commit version, seq): seq is a row's position within its commi
 the next row to read: everything before it has been processed.
 """
 
+import asyncio
 import json
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -68,14 +70,16 @@ def table_id(dt: DeltaTable) -> str:
     return dt.metadata().id
 
 
-def append(
-    dt: DeltaTable, entries: Sequence[tuple[str, int, Change]], received_at: datetime
-) -> int:
-    """Append (submission_id, change_index, Change) rows in one commit; returns its version.
+Entry = tuple[str, int, Change, datetime]  # submission_id, change_index, Change, received_at
 
-    With no entries nothing is committed, and the current version is returned.
+
+def append(dt: DeltaTable, entries: Sequence[Entry]) -> int:
+    """Append (submission_id, change_index, Change, received_at) rows in one commit.
+
+    Returns the commit's version. With no entries nothing is committed, and the current version is
+    returned. One commit can hold several requests, so each row carries its own received_at.
     """
-    if received_at.utcoffset() is None:
+    if any(received_at.utcoffset() is None for *_, received_at in entries):
         raise ValueError("received_at must be timezone-aware")
     if not entries:
         return dt.version()
@@ -92,10 +96,61 @@ def append(
             "change_index": index,
             "received_at": received_at,
         }
-        for seq, (submission_id, index, c) in enumerate(entries)
+        for seq, (submission_id, index, c, received_at) in enumerate(entries)
     ]
     write_deltalake(dt, pa.Table.from_pylist(rows, schema=SCHEMA), mode="append")
     return dt.version()
+
+
+WINDOW = 0.1  # seconds a request waits for others to share its commit (A10: at most 10 commits/s)
+
+
+class Appender:
+    """Group commit: one Landing log commit for every request that arrives within the window.
+
+    The window counts from the oldest waiting request, so commits never run back to back. The
+    commit runs in a thread, and requests arriving meanwhile queue for the next one.
+    """
+
+    def __init__(
+        self,
+        commit: Callable[[list[Entry]], int],
+        window: float = WINDOW,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.commit, self.window, self.clock = commit, window, clock
+        # (arrived, entries, the waiting request's future)
+        self.queue: asyncio.Queue[tuple[float, Sequence[Entry], asyncio.Future[int]]] = (
+            asyncio.Queue()
+        )
+
+    async def submit(self, entries: Sequence[Entry]) -> int:
+        """Waits for the commit holding `entries`; returns its version or raises its error."""
+        done = asyncio.get_running_loop().create_future()
+        self.queue.put_nowait((self.clock(), entries, done))
+        return await done
+
+    async def run(self) -> None:
+        """The appender's loop, one per process; only cancellation stops it."""
+        while True:
+            group = [await self.queue.get()]
+            await asyncio.sleep(group[0][0] + self.window - self.clock())
+            while not self.queue.empty():
+                group.append(self.queue.get_nowait())
+            try:
+                version = await asyncio.to_thread(
+                    self.commit, [e for _, es, _ in group for e in es]
+                )
+                error = None
+            except Exception as e:  # every request in the group gets it; the loop goes on
+                error = e
+            for *_, done in group:
+                if done.cancelled():  # its client left; its rows landed all the same
+                    continue
+                if error is None:
+                    done.set_result(version)
+                else:
+                    done.set_exception(error)
 
 
 def read(

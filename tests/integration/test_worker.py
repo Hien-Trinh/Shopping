@@ -54,8 +54,8 @@ class Env:
         return state.load_offsets(self.state, range(PARTITIONS), table)
 
     def land(self, *changes, submission="s1"):
-        entries = [(submission, len(self.landed) + i, c) for i, c in enumerate(changes)]
-        landing.append(self.landing, entries, NOW)
+        entries = [(submission, len(self.landed) + i, c, NOW) for i, c in enumerate(changes)]
+        landing.append(self.landing, entries)
         self.landed += changes
 
     def run(self, limit=1000):

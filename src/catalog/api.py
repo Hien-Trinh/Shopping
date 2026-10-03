@@ -1,4 +1,4 @@
-"""Ingestion API: POST /listings:batch (design doc, lifecycle steps 1-2; docs/specs/step-4b.md).
+"""Ingestion API: POST /listings:batch and GET /submissions/{id} (docs/specs/step-4b.md, 4d.md).
 
 Accepted Changes land in one Landing log commit per request; only then do their events go out, and
 only then the 202, so no `accepted` event ever names a Change that didn't land.
@@ -12,20 +12,22 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from catalog import entry, envelope, landing, merchants, state
+from catalog import entry, envelope, events, landing, merchants, state, status
 from catalog.events import EventLog
 from catalog.keys import partition
 
 MAX_BODY = 32 * 2**20  # bytes; uvicorn and FastAPI set no limit (plan-v1 B8)
 MIN_FREE = 5 * 2**30  # bytes of free disk below which every write gets 503 (plan-v1 A13)
 UNAUTHORIZED = "missing or invalid API key"  # the same for every reason: it tells a caller nothing
+NOT_FOUND = "no such submission"  # the same for an unknown id and another Merchant's
 
 
 def create_app(
@@ -40,29 +42,35 @@ def create_app(
     with contextlib.suppress(merchants.Denied):
         merchants.verify(db, "")
     log = landing.ensure(str(data / "landing_log"))
-    events = EventLog(data / "events", "api", clock)
+    log_events = EventLog(data / "events", "api", clock)
     app = FastAPI(openapi_url=None)  # no /docs: nothing here is a FastAPI model
 
     def refuse(status: int, reason: str, detail: str, merchant_id: str | None = None):
         """The refusal, and a `refused` event to count it by: never the key, its hash, the body."""
         event = {"type": "refused", "status": status, "reason": reason}
         with contextlib.suppress(OSError):  # best effort: a full disk never turns a 4xx into a 500
-            events.emit([event | ({"merchant_id": merchant_id} if merchant_id else {})])
+            log_events.emit([event | ({"merchant_id": merchant_id} if merchant_id else {})])
         challenge = {"WWW-Authenticate": "Bearer"} if status == 401 else None
         return JSONResponse({"detail": detail}, status, challenge)
+
+    def authenticate(request: Request) -> merchants.Merchant | JSONResponse:
+        """The Merchant the request's Bearer key belongs to, or the 401 to send instead."""
+        scheme, _, key = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "bearer":
+            return refuse(401, "no_key", UNAUTHORIZED)
+        try:
+            return merchants.verify(db, key.strip())
+        except merchants.Denied as e:
+            return refuse(401, e.reason, UNAUTHORIZED, e.merchant_id)
 
     @app.post("/listings:batch")
     async def submit(request: Request):
         received = datetime.fromtimestamp(clock(), UTC)
         if shutil.disk_usage(data).free < min_free:  # first: a low disk refuses everything
             return refuse(503, "low_disk", "the server is low on disk; retry later")
-        scheme, _, key = request.headers.get("authorization", "").partition(" ")
-        if scheme.lower() != "bearer":
-            return refuse(401, "no_key", UNAUTHORIZED)
-        try:
-            merchant = merchants.verify(db, key.strip())
-        except merchants.Denied as e:
-            return refuse(401, e.reason, UNAUTHORIZED, e.merchant_id)
+        merchant = authenticate(request)
+        if isinstance(merchant, JSONResponse):
+            return merchant
         too_large = f"the body is over {max_body} bytes"
         length = request.headers.get("content-length")  # uvicorn has checked it's a number
         if length is not None and int(length) > max_body:
@@ -85,14 +93,47 @@ def create_app(
             )
         except envelope.BadBatch as e:
             return refuse(400, "bad_batch", str(e), merchant.merchant_id)
-        submission = str(uuid.uuid7())  # before the append: its events fall in its hour or later
+        # Before the append, from the clock its events use: they fall in its hour or later (A12).
+        submission = str(uuid7_at(int(received.timestamp() * 1000)))
         landing.append(log, [(submission, i, c) for i, c in checked.accepted], received)
-        events.emit(submission_events(submission, merchant.merchant_id, checked))
+        log_events.emit(submission_events(submission, merchant.merchant_id, checked))
         rejected = [{"index": i, "errors": list(errors)} for i, errors in checked.rejected]
         reply = {"submission_id": submission, "accepted": len(checked.accepted)}
         return JSONResponse(reply | {"rejected": rejected}, 202)
 
+    @app.get("/submissions/{raw}")
+    async def lookup(request: Request, raw: str):
+        merchant = authenticate(request)  # no disk guard: a read lands nothing
+        if isinstance(merchant, JSONResponse):
+            return merchant
+        try:
+            parsed = uuid.UUID(raw)
+            if parsed.version != 7:
+                raise ValueError
+            # Only the hours from the id's own (A12). ponytail: an id dated 1970 scans every
+            # hour kept; events retention bounds it, and the API is on localhost behind auth.
+            since = datetime.fromtimestamp(0, UTC) + timedelta(milliseconds=parsed.int >> 80)
+        except ValueError, OverflowError:  # a 48-bit timestamp reaches past the year 9999
+            return refuse(404, "unknown_submission", NOT_FOUND, merchant.merchant_id)
+        submission = str(parsed)  # canonical, so case and braces don't matter
+        # In a thread, so a long scan doesn't stall the POSTs; emits stay on this one.
+        found = await run_in_threadpool(
+            lambda: status.fold(submission, events.read(data / "events", since, submission))
+        )
+        if found is None:
+            return refuse(404, "unknown_submission", NOT_FOUND, merchant.merchant_id)
+        if found.merchant_id != merchant.merchant_id:
+            return refuse(404, "not_owner", NOT_FOUND, merchant.merchant_id)
+        changes = [{"index": i, "outcome": o} for i, o in found.outcomes.items()]
+        reply = {"submission_id": submission, "done": found.done, "counts": dict(found.counts)}
+        return JSONResponse(reply | {"changes": changes})
+
     return app
+
+
+def uuid7_at(ms: int) -> uuid.UUID:
+    """A UUIDv7 whose 48-bit timestamp is `ms`, taking every other bit from uuid7()."""
+    return uuid.UUID(int=(ms << 80) | (uuid.uuid7().int & ((1 << 80) - 1)))
 
 
 def submission_events(submission: str, merchant_id: str, checked: envelope.Checked) -> list[dict]:

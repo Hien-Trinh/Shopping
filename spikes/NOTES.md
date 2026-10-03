@@ -15,6 +15,8 @@ Sep 30, 2026 · delta-rs (`deltalake`) 1.6.6 · Python 3.14.3 · M4, 16 GB · sc
 
 Earlier checks (Sep 29, same versions): the conditional MERGE (`s.sv > t.sv`) ignores stale writes; MERGE writes the change feed (`insert`, `update_preimage`, `update_postimage`); 8 processes × 20 MERGEs on disjoint partitions had 0 conflicts; a checkpoint is written automatically at version 99; and DuckDB queries `DeltaTable.to_pyarrow_dataset()` directly.
 
+**Exit hang (Oct 2, same versions).** A script that MERGEs into a Delta table and then calls `to_pyarrow_dataset().to_table()` hung at process exit 4 runs out of 4: the main thread waits forever in Arrow's global `ThreadPool` destructor (`exit` → `__cxa_finalize`). The variants tried were pruned and unpruned scans, one or three files, all columns or one, with or without `update_incremental()`. The worker's own path (`process_batch`, whose `store.read` casts and converts the scan) exited cleanly 8 runs out of 8. So the worker CLI ends with `os._exit` after flushing, and a stopped worker always dies and releases its partition locks. This may be the "MERGE hang" B1 saw: a process that finished its work but never exited.
+
 **No fallback needed.** The "64 separate Listing Store tables" fallback from the plan isn't triggered.
 
 **Caveats:** these are small samples on one machine. Phase 7's chaos scenarios re-test the same properties at volume, with the oracles as the judge.

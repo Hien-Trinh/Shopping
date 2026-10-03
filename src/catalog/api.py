@@ -19,10 +19,9 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from catalog import entry, envelope, landing, merchants
+from catalog import entry, envelope, landing, merchants, state
 from catalog.events import EventLog
 from catalog.keys import partition
-from catalog.worker import DATA
 
 MAX_BODY = 32 * 2**20  # bytes; uvicorn and FastAPI set no limit (plan-v1 B8)
 MIN_FREE = 5 * 2**30  # bytes of free disk below which every write gets 503 (plan-v1 A13)
@@ -88,31 +87,34 @@ def create_app(
             return refuse(400, "bad_batch", str(e), merchant.merchant_id)
         submission = str(uuid.uuid7())  # before the append: its events fall in its hour or later
         landing.append(log, [(submission, i, c) for i, c in checked.accepted], received)
+        events.emit(submission_events(submission, merchant.merchant_id, checked))
         rejected = [{"index": i, "errors": list(errors)} for i, errors in checked.rejected]
-        same = {"submission_id": submission, "merchant_id": merchant.merchant_id}
-        events.emit(
-            [
-                *(
-                    same
-                    | {"type": "accepted", "change_index": i}
-                    | {"merchant_product_id": c.merchant_product_id, "partition": partition(*c.key)}
-                    for i, c in checked.accepted
-                ),
-                *(
-                    same | {"type": "rejected", "change_index": r["index"], "errors": r["errors"]}
-                    for r in rejected
-                ),
-            ]
-        )
         reply = {"submission_id": submission, "accepted": len(checked.accepted)}
         return JSONResponse(reply | {"rejected": rejected}, 202)
 
     return app
 
 
+def submission_events(submission: str, merchant_id: str, checked: envelope.Checked) -> list[dict]:
+    """An `accepted` event per landed Change and a `rejected` one per invalid Change."""
+    ids = {"submission_id": submission, "merchant_id": merchant_id}
+    return [
+        *(
+            ids
+            | {"type": "accepted", "change_index": i}
+            | {"merchant_product_id": c.merchant_product_id, "partition": partition(*c.key)}
+            for i, c in checked.accepted
+        ),
+        *(
+            ids | {"type": "rejected", "change_index": i, "errors": list(errors)}
+            for i, errors in checked.rejected
+        ),
+    ]
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m catalog.api")
-    args.add_argument("--data", type=Path, default=DATA)
+    args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--db", type=Path, default=merchants.DB)
     args.add_argument("--port", type=int, default=8000)
     a = args.parse_args(argv)

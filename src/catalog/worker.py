@@ -81,7 +81,6 @@ COMPACT_EVERY = 100  # batches with changes between compactions (ponytail: untun
 # Exit codes: 0 stopped, 1 gave up on failed ticks (a restart may fix it), over 1 fatal, so the
 # supervisor stops instead: 2 is a bad flag, and these no restart fixes.
 FATAL = {state.PartitionTaken: 3, state.OffsetsMismatch: 4, state.CorruptState: 5}
-DATA, STATE = Path("data"), Path("state")  # the default directories, shared with the supervisor
 SUPERVISOR = "CATALOG_SUPERVISOR"  # set to the supervisor's pid in its children's environment
 
 
@@ -198,8 +197,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m catalog.worker")
     args.add_argument("--index", type=int, required=True)
     args.add_argument("--workers", type=int, required=True)
-    args.add_argument("--data", type=Path, default=DATA)
-    args.add_argument("--state", type=Path, default=STATE)
+    args.add_argument("--data", type=Path, default=state.DATA)
+    args.add_argument("--state", type=Path, default=state.STATE)
     a = args.parse_args(argv)
     try:
         owned(a.index, a.workers)

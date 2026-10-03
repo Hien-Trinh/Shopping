@@ -173,16 +173,16 @@ def _only_supervisor(state_dir: Path) -> bool:
 
 def main() -> int:
     """Run ./Procfile against the workers' default directories."""
-    if not _only_supervisor(worker.STATE):
+    if not _only_supervisor(state.STATE):
         with contextlib.suppress(OSError):  # stderr may be a broken pipe: still exit ANOTHER
-            print(f"supervisor: another one holds {worker.STATE}/supervisor.lock", file=sys.stderr)
+            print(f"supervisor: another one holds {state.STATE}/supervisor.lock", file=sys.stderr)
         return ANOTHER
     procs = parse_procfile(Path("Procfile").read_text())
     stopping = []
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):  # list.append can't deadlock
         signal.signal(sig, lambda *_: stopping.append(True))
-    events = EventLog(worker.DATA / "events", "supervisor")
-    return run(procs, worker.STATE, events, stopping=stopping)
+    events = EventLog(state.DATA / "events", "supervisor")
+    return run(procs, state.STATE, events, stopping=stopping)
 
 
 if __name__ == "__main__":

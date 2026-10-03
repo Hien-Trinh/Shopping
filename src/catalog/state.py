@@ -21,6 +21,7 @@ from catalog.landing import START, Position
 
 # Shared by every worker and the supervisor, so they can't disagree:
 CLOCK = time.monotonic  # heartbeats: system-wide, and laptop sleep or NTP never jumps it (B7)
+DATA, STATE = Path("data"), Path("state")  # default directories of every process
 WORKER = "worker-"  # a worker's name prefix: its Procfile name, heartbeat file and event log
 
 

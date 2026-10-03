@@ -148,6 +148,7 @@ def run(
                     events.emit(logged)
                 if gave_up:
                     raise
+                # OSError only, as in entry.exit_with (see there for why not ValueError).
                 with contextlib.suppress(OSError):  # stderr may be a broken pipe: retry anyway
                     print(f"{name}: tick failed ({failures}/{ATTEMPTS}):", file=sys.stderr)
                     traceback.print_exc()

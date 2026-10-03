@@ -6,6 +6,7 @@ last, so a crash anywhere earlier replays the batch, which plan's rules make saf
 """
 
 import argparse
+import contextlib
 import os
 import signal
 import sys
@@ -49,18 +50,25 @@ def process_batch(
     # (design doc, lifecycle step 8). Any other error propagates: storage or a bug, never the data.
     errors = store.unstorable([x.change.listing for x in batch.changes])
     good = [x for x, error in zip(batch.changes, errors, strict=True) if error is None]
-    merged = iter(_merge(store_dt, good, classifier, events, now))
+    outcomes, notes = _merge(store_dt, good, classifier, now)
+    merged = iter(outcomes)
     results = [{"type": FAILED, "error": error} if error else next(merged) for error in errors]
+    # Emitted only once the MERGE committed, so a retried batch doesn't repeat them.
     events.emit(
-        {
-            "submission_id": landed.submission_id,
-            "change_index": landed.change_index,
-            "merchant_id": landed.change.merchant_id,
-            "merchant_product_id": landed.change.merchant_product_id,
-            "partition": landed.partition,
-        }
-        | result
-        for landed, result in zip(batch.changes, results, strict=True)
+        [
+            *notes,
+            *(
+                {
+                    "submission_id": landed.submission_id,
+                    "change_index": landed.change_index,
+                    "merchant_id": landed.change.merchant_id,
+                    "merchant_product_id": landed.change.merchant_product_id,
+                    "partition": landed.partition,
+                }
+                | result
+                for landed, result in zip(batch.changes, results, strict=True)
+            ),
+        ]
     )
     moved = {p: pos for p, pos in batch.offsets.items() if pos != offsets[p]}
     state.save_offsets(state_dir, moved, landing.table_id(landing_dt))
@@ -106,10 +114,7 @@ def run(
                 moved = {p: pos for p, pos in batch.offsets.items() if pos != offsets[p]}
                 offsets = batch.offsets  # saved: never re-read, even if what follows fails
                 busy += bool(batch.changes)
-                if busy >= compact_every:  # owner-only (ADR-0001); a failure retries next tick
-                    store.compact(store_dt, mine)
-                    busy = 0
-                if moved:  # for lag per partition and utilization; quiet ticks log nothing
+                if moved:  # for lag and utilization; a tick that moves no offset logs nothing
                     tick = {
                         "type": "batch",
                         "worker": name,
@@ -119,17 +124,22 @@ def run(
                         "next": moved,
                     }
                     events.emit([tick])
-                # Only this thread beats, after a whole tick: a hung MERGE stops the beats (B1).
+                # Only this thread beats, after the batch: a hung MERGE stops the beats (B1).
+                # Before compacting, so a long compaction gets the watchdog's full budget.
                 state.beat(state_dir, name, clock())
-            except Exception as e:
+                if busy >= compact_every:  # owner-only (ADR-0001); a failure retries next tick
+                    store.compact(store_dt, mine)
+                    busy = 0
+            except Exception:
                 failures += 1
                 if failures >= ATTEMPTS:
                     raise
-                print(f"{name}: tick failed ({failures}/{ATTEMPTS}): {e!r}", file=sys.stderr)
+                print(f"{name}: tick failed ({failures}/{ATTEMPTS}):", file=sys.stderr)
+                traceback.print_exc()
                 stop.wait(2 ** (failures - 1))
                 continue
             failures = 0
-            if len(batch.changes) < limit:  # a full batch means a backlog: read again at once
+            if min(v for v, _ in offsets.values()) > landing_dt.version():  # caught up
                 stop.wait(POLL)
 
 
@@ -140,10 +150,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--data", type=Path, default=Path("data"))
     args.add_argument("--state", type=Path, default=Path("state"))
     a = args.parse_args(argv)
-    stop = threading.Event()
+    stop, stopping = threading.Event(), []
 
     def on_signal(*_):  # Event.set takes a lock the interrupted thread may hold: set it elsewhere
-        threading.Thread(target=stop.set).start()
+        if not stopping:  # once: a second signal mid-Thread.start would re-enter its lock
+            stopping.append(True)
+            threading.Thread(target=stop.set).start()
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
@@ -158,40 +170,47 @@ class Overtaken(RuntimeError):
     """The MERGE applied fewer rows than planned: another writer got there first (ADR-0001)."""
 
 
-def _merge(store_dt, landed: Sequence[Landed], classifier, events, now) -> list[dict]:
+def _merge(store_dt, landed: Sequence[Landed], classifier, now) -> tuple[list[dict], list[dict]]:
+    """Event fields per Change, and batch-level events (classify_failed) to emit with them."""
     changes = [x.change for x in landed]
     stored = store.read(store_dt, {c.key for c in changes})
     planned = plan(changes, stored, classifier.taxonomy_version)
-    writes = _classify(planned.writes, classifier, events)
+    writes, notes = _classify(planned.writes, classifier)
     merged = store.merge(store_dt, writes, now())
     if merged.applied != len(writes):
         parts = sorted({partition(*w.key) for w in writes})
         raise Overtaken(
             f"MERGE applied {merged.applied} of {len(writes)} rows (partitions {parts})"
         )
-    return [
+    outcomes = [
         {"type": o} | ({"store_version": merged.version} if o in _WRITES else {})
         for o in planned.outcomes
     ]
+    return outcomes, notes
 
 
-def _classify(writes: Sequence[Write], classifier, events: EventLog) -> list[Write]:
-    """Classify the Writes that need it in one call; on any failure they become Uncategorized."""
+def _classify(writes: Sequence[Write], classifier) -> tuple[list[Write], list[dict]]:
+    """Classify the Writes that need it in one call; on any failure they become Uncategorized.
+
+    Returns the Writes and a classify_failed event if the call failed.
+    """
     todo = [w for w in writes if w.needs_classify]
     if not todo:
-        return list(writes)
+        return list(writes), []
     version = classifier.taxonomy_version
+    notes = []
     try:
         results = classifier.classify([w.listing for w in todo])
         found = [_answer(a, version) for _, a in zip(todo, results, strict=True)]
     except Exception as e:  # an outage, a timeout or a bad answer: never stall the partition
-        failed = {
-            "type": "classify_failed",
-            "listings": len(todo),
-            "partitions": sorted({partition(*w.key) for w in todo}),
-            "error": repr(e)[:500],  # a provider error may echo listing text
-        }
-        events.emit([failed])
+        notes = [
+            {
+                "type": "classify_failed",
+                "listings": len(todo),
+                "partitions": sorted({partition(*w.key) for w in todo}),
+                "error": repr(e)[:500],  # a provider error may echo listing text
+            }
+        ]
         # Keep an answer whose inputs haven't changed, else Uncategorized; either way flagged so
         # the Backfill reclassifies it (design doc, lifecycle step 5).
         found = [
@@ -201,10 +220,11 @@ def _classify(writes: Sequence[Write], classifier, events: EventLog) -> list[Wri
             for w in todo
         ]
     answers = iter(found)
-    return [
+    classified = [
         replace(w, classification=next(answers), needs_classify=False) if w.needs_classify else w
         for w in writes
     ]
+    return classified, notes
 
 
 def _answer(answer, version: str) -> Classification:
@@ -224,6 +244,7 @@ if __name__ == "__main__":
     except BaseException:  # gave up after ATTEMPTS failed ticks: exit 1 for the supervisor
         traceback.print_exc()
         code = 1
-    sys.stdout.flush()
-    sys.stderr.flush()
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):  # closed, or a broken pipe: exit anyway
+            stream.flush()
     os._exit(code)  # not sys.exit: Arrow can hang at process exit (spikes/NOTES.md)

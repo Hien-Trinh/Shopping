@@ -1,4 +1,6 @@
+import functools
 import itertools
+import os
 import random
 import signal
 import subprocess
@@ -351,15 +353,39 @@ def test_run_beats_before_its_first_batch(env):
     assert stored(env, A) is None
 
 
-def test_run_processes_only_its_own_partitions(env):
+def spy_beats(monkeypatch, log):
+    real = state.beat
+    monkeypatch.setattr(state, "beat", lambda *a: log.append("beat") or real(*a))
+
+
+def test_run_processes_only_its_own_partitions(env, monkeypatch):
     env.land(up(A, 1), up(B, 1))  # worker 0 of 4 owns partitions 0-15: A (3), not B (40)
-    ticks = Ticks(2)
-    run(env, ticks)
+    beats, ticks, step = [], Ticks(2), itertools.count()
+    spy_beats(monkeypatch, beats)
+    run(env, ticks, clock=lambda: 1000 + next(step) * 0.05)  # 50 ms per clock reading
     assert (stored(env, A).source_version, stored(env, B)) == (1, None)
     assert ticks.waits == [worker.POLL, worker.POLL]  # caught up: each tick waits
+    assert beats == ["beat"] * 3  # at startup, then after every tick
     (tick,) = [e for e in events.read(env.events_root) if e["type"] == "batch"]  # 2nd: quiet
-    assert (tick["worker"], tick["changes"], tick["head"]) == ("worker-0", 1, 1)
+    assert (tick["worker"], tick["changes"], tick["head"], tick["ms"]) == ("worker-0", 1, 1, 50)
     assert tick["next"] == {str(p): [2, 0] for p in range(16)}
+
+
+def test_a_worker_behind_reads_again_without_waiting(env, monkeypatch):
+    monkeypatch.setattr(landing, "read", functools.partial(landing.read, max_versions=1))
+    env.land(up(A, 1))
+    env.land(up(A, 2))  # two commits, read one at a time: behind until the last
+    ticks = Ticks(3)
+    run(env, ticks)
+    assert ticks.waits == [worker.POLL]  # only once caught up, though no batch was full
+    assert stored(env, A).source_version == 2
+
+
+def test_idle_ticks_never_count_toward_compaction(env, monkeypatch):
+    calls = []
+    monkeypatch.setattr(store, "compact", lambda *a: calls.append(a))
+    run(env, Ticks(4), compact_every=2)
+    assert calls == []
 
 
 def test_a_second_worker_on_a_claimed_partition_gets_partition_taken(tmp_path):
@@ -369,7 +395,7 @@ def test_a_second_worker_on_a_claimed_partition_gets_partition_taken(tmp_path):
     assert not (tmp_path / "state" / "heartbeat").exists()
 
 
-def test_errors_back_off_and_a_good_tick_resets_the_count(env, monkeypatch):
+def test_errors_back_off_and_a_good_tick_resets_the_count(env, monkeypatch, capsys):
     real, fails = worker.process_batch, iter([True, True, False, True, False])
 
     def flaky(*args, **kwargs):
@@ -383,6 +409,8 @@ def test_errors_back_off_and_a_good_tick_resets_the_count(env, monkeypatch):
     run(env, ticks)
     assert ticks.waits == [1, 2, worker.POLL, 1, worker.POLL]
     assert stored(env, A).source_version == 1
+    err = capsys.readouterr().err
+    assert "worker-0: tick failed (2/5)" in err and "Traceback" in err and "disk busy" in err
 
 
 def test_it_gives_up_after_attempts_failed_ticks_in_a_row(env, monkeypatch):
@@ -409,13 +437,19 @@ def test_it_compacts_every_k_busy_batches_and_retries_a_failed_compaction(env, m
         if error := next(results):
             raise error
 
-    monkeypatch.setattr(store, "compact", compact)
+    ops = []
+    monkeypatch.setattr(store, "compact", lambda *a: ops.append("compact") or compact(*a))
+    spy_beats(monkeypatch, ops)
     env.land(up(A, 1), up(A, 2), up(A, 3), up(A, 4))
     ticks = Ticks(6)
-    run(env, ticks, limit=1, compact_every=2)  # full batches don't wait; then caught up
+    run(env, ticks, limit=1, compact_every=2)  # behind: no waits; then caught up
     assert calls == [list(range(16))] * 3  # after batches 2 and 4, and the retry
     assert ticks.waits == [1, worker.POLL, worker.POLL]
     assert stored(env, A).source_version == 4
+    # Each tick beats before compacting, and the 4th tick's event survives its failed compaction.
+    assert ops == ["beat", "beat", "beat", "compact", "beat", "beat", "compact", "beat",
+                   "compact", "beat"]  # fmt: skip
+    assert [e["changes"] for e in events.read(env.events_root) if e["type"] == "batch"] == [1] * 4
 
 
 def test_main_wires_the_flags_and_stops_on_sigterm_or_sigint(tmp_path, monkeypatch):
@@ -446,3 +480,52 @@ def test_the_cli_works_until_sigterm_then_exits_cleanly(env):
     assert proc.wait(timeout=30) == 0
     with state.claim(env.state, range(16)):  # released on exit
         pass
+
+
+def test_a_retried_batch_reports_a_classifier_outage_once(env, monkeypatch):
+    env.classifier.fail = True
+    env.land(up(A, 1))
+    real = store.merge
+    monkeypatch.setattr(store, "merge", lambda *a: (_ for _ in ()).throw(OSError("busy")))
+    with pytest.raises(OSError):
+        env.run()
+    monkeypatch.setattr(store, "merge", real)
+    env.run()  # the retry
+    assert [e["type"] for e in events.read(env.events_root)] == ["classify_failed", "written"]
+
+
+def test_a_second_signal_does_not_start_a_second_stopper(tmp_path, monkeypatch):
+    handlers, started = {}, []
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.update({sig: handler}))
+
+    class Thread:
+        def __init__(self, target):
+            self.target = target
+
+        def start(self):
+            started.append(self)
+            self.target()
+
+    monkeypatch.setattr(worker.threading, "Thread", Thread)
+    monkeypatch.setattr(worker, "run", lambda *a, stop: [h(0, None) for h in handlers.values()])
+    worker.main(["--index", "0", "--workers", "4"])
+    assert len(started) == 1
+
+
+def cli(*args, **kwargs):
+    return subprocess.run(
+        [sys.executable, "-m", "catalog.worker", *args],
+        capture_output=True, text=True, timeout=60, **kwargs
+    )  # fmt: skip
+
+
+def test_the_cli_exits_2_on_a_bad_flag_and_1_when_it_gives_up(env):
+    assert cli("--index", "x").returncode == 2
+    with state.claim(env.state, [0]):  # another worker owns partition 0
+        args = ["--index", "0", "--workers", "4", "--data", str(env.tmp)]
+        done = cli(*args, "--state", str(env.state))
+    assert done.returncode == 1 and "PartitionTaken" in done.stderr
+
+
+def test_the_cli_exits_cleanly_with_stdout_closed(tmp_path):
+    assert cli("--help", preexec_fn=lambda: os.close(1)).returncode == 0

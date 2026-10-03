@@ -100,3 +100,21 @@ def test_a_restart_with_the_same_pid_never_appends_to_a_torn_file(tmp_path):
         f.write('{"type":"b","sta')  # killed mid-write
     EventLog(tmp_path, "worker-0", clock(T0 + 1)).emit([{"type": "c"}])  # same pid
     assert [e["type"] for e in events.read(tmp_path)] == ["a", "c"]
+
+
+def test_a_failed_write_never_leaves_the_next_events_after_a_torn_line(tmp_path, monkeypatch):
+    log = EventLog(tmp_path, "worker-0", clock(T0, T0 + 1, T0 + 2))
+    log.emit([{"type": "a"}])
+    (first,) = (tmp_path / HOUR).iterdir()
+    with first.open("a") as f:
+        f.write('{"type":"b","sta')  # the disk filled mid-write
+
+    def full(*_):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(events, "open", full, raising=False)
+    with pytest.raises(OSError):
+        log.emit([{"type": "b"}])
+    monkeypatch.undo()
+    log.emit([{"type": "c"}])  # the retry
+    assert [e["type"] for e in events.read(tmp_path)] == ["a", "c"]

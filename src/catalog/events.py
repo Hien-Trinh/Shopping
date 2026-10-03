@@ -17,10 +17,13 @@ _HOUR = "%Y-%m-%dT%H"
 
 class EventLog:
     def __init__(self, root: Path, process: str, clock: Callable[[], float] = time.time):
-        # The nonce keeps a restart that reuses the pid (pid 1 in a container) out of its
-        # predecessor's file, whose last line may be torn.
-        self.name = f"{process}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-        self.root, self.clock = root, clock
+        self.root, self.process, self.clock = root, process, clock
+        self._new_file()
+
+    def _new_file(self) -> None:
+        # Never append after a line that may be torn: a fresh nonce per process run (a restart
+        # can reuse the pid, e.g. pid 1 in a container) and after any failed write.
+        self.name = f"{self.process}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
     def emit(self, events: Iterable[Mapping]) -> None:
         """Append events with a shared timestamp (ms) that the events can't override."""
@@ -31,8 +34,12 @@ class EventLog:
             return
         hour = self.root / datetime.fromtimestamp(now, UTC).strftime(_HOUR)
         hour.mkdir(parents=True, exist_ok=True)
-        with open(hour / f"{self.name}.jsonl", "a") as f:
-            f.write(lines)
+        try:
+            with open(hour / f"{self.name}.jsonl", "a") as f:
+                f.write(lines)
+        except OSError:  # e.g. a full disk mid-write: the next emit starts a new file
+            self._new_file()
+            raise
 
 
 def read(root: Path, since: datetime | None = None, submission_id: str | None = None) -> list[dict]:

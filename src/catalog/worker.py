@@ -193,6 +193,15 @@ def supervisor_pid() -> int | None:
     return int(pid) if pid else None
 
 
+def watch_supervisor(pid: int | None, stop) -> None:
+    """Run watch() on supervisor `pid` in a daemon thread; nothing when no supervisor started us.
+
+    `stop` needs only a set() method.
+    """
+    if pid:
+        threading.Thread(target=watch, args=(lambda: _alive(pid), stop), daemon=True).start()
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)  # a killed supervisor exists until reaped, which a shell does at once
@@ -227,8 +236,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
-    if supervisor:  # so a kill -9ed supervisor leaves no worker behind
-        threading.Thread(target=watch, args=(lambda: _alive(supervisor), stop), daemon=True).start()
+    watch_supervisor(supervisor, stop)  # so a kill -9ed supervisor leaves no worker behind
     # ponytail: FakeClassifier until the real one (step 6b) is chosen by a flag.
     run(a.data, a.state, a.index, a.workers, FakeClassifier(), stop=stop)
 

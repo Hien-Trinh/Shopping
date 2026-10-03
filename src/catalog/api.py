@@ -10,7 +10,6 @@ import contextlib
 import json
 import shutil
 import sqlite3
-import threading
 import time
 import uuid
 from collections.abc import Callable, Sequence
@@ -189,11 +188,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.error(f"no usable merchant registry at {a.db} ({e}): run catalog.merchants create")
     # Never wider than localhost: there is no TLS and no rate limit yet (plan-v1, section C).
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=a.port))
-    if supervisor:  # so a kill -9ed supervisor leaves no API holding the port (step 4e)
-        # watch only calls stop.set(): here that asks uvicorn to finish the requests in flight.
-        stop = SimpleNamespace(set=lambda: setattr(server, "should_exit", True))
-        watched = (lambda: worker._alive(supervisor), stop)
-        threading.Thread(target=worker.watch, args=watched, daemon=True).start()
+    # So a kill -9ed supervisor leaves no API holding the port: uvicorn finishes the requests in
+    # flight and stops (step 4e).
+    stop = SimpleNamespace(set=lambda: setattr(server, "should_exit", True))
+    worker.watch_supervisor(supervisor, stop)
     server.run()
 
 

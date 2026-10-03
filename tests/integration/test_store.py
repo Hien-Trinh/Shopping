@@ -216,3 +216,17 @@ def test_unstorable_names_the_bad_listing_only():
     errors = store.unstorable([listing(), None, surrogate])
     assert errors[:2] == [None, None]  # a live Listing and a Tombstone store fine
     assert errors[2].startswith("UnicodeEncodeError")
+
+
+def test_read_lists_only_the_partitions_it_needs(db, monkeypatch):
+    store.merge(db, [write(5, listing()), write(1, listing(), key=("m_1", product_in(40)))], NOW)
+    asked = []
+    real = DeltaTable.to_pyarrow_dataset
+
+    def spy(self, *args, **kwargs):
+        asked.append(kwargs.get("file_pruning_predicate"))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(DeltaTable, "to_pyarrow_dataset", spy)
+    assert list(store.read(db, [K])) == [K]
+    assert asked == ["partition IN (5)"]

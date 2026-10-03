@@ -1,3 +1,4 @@
+import contextlib
 import fcntl
 import inspect
 import os
@@ -13,6 +14,25 @@ from catalog import events, state, supervisor, worker
 from catalog.supervisor import GRACE, STALE, parse_procfile, run, verdict
 
 REPO = Path(__file__).parents[2]
+
+
+@pytest.fixture(params=["working", "broken"])
+def stderr(request, monkeypatch):
+    """Call first in the test (capsys swaps sys.stderr in only then); True if it works.
+
+    Broken: a pipe whose reader died, as when the supervisor runs under `| tee` and tee dies.
+    """
+    read, write = os.pipe()
+    os.close(read)
+    # Closing flushes what the test couldn't write, so it raises BrokenPipeError too.
+    with contextlib.suppress(OSError), open(write, "w", buffering=1) as broken:  # line-buffered
+
+        def use():
+            if request.param == "broken":
+                monkeypatch.setattr(sys, "stderr", broken)
+            return request.param == "working"
+
+        yield use
 
 
 def test_parse_procfile():
@@ -185,17 +205,17 @@ class FullDisk:
         raise OSError(28, "No space left on device")
 
 
-def test_a_full_disk_never_stops_the_supervisor(tmp_path, capsys):
+def test_a_full_disk_never_stops_the_supervisor(tmp_path, capsys, stderr):
     def script(w):
         if w.t == 1:
             w.kids[0].returncode = 1
         if w.t == 20:
             w.kids[1].returncode = 3
 
-    w = World(tmp_path, 100, script)
+    works, w = stderr(), World(tmp_path, 100, script)
     assert w.run("worker-0", "worker-1", log=FullDisk()) == 3  # the fatal code still comes out
     assert w.started == [0, 0, 6]  # worker-0 was restarted though its exit couldn't be logged
-    assert "No space left on device" in capsys.readouterr().err
+    assert ("No space left on device" in capsys.readouterr().err) == works
 
 
 def test_a_failed_restart_is_retried_and_spares_the_others(tmp_path):
@@ -281,7 +301,8 @@ def test_main_wires_the_procfile_and_stops_on_sigterm_sigint_or_sighup(tmp_path,
     assert set(handlers) == {signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
 
 
-def test_a_second_supervisor_exits_at_once(tmp_path, monkeypatch, capsys):
+def test_a_second_supervisor_exits_at_once(tmp_path, monkeypatch, capsys, stderr):
+    works = stderr()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(supervisor, "run", lambda *a, **k: pytest.fail("a second one ran"))
     (tmp_path / "state").mkdir()
@@ -291,7 +312,7 @@ def test_a_second_supervisor_exits_at_once(tmp_path, monkeypatch, capsys):
         assert supervisor.main() == supervisor.ANOTHER
     finally:
         os.close(held)
-    assert "another one holds" in capsys.readouterr().err
+    assert ("another one holds" in capsys.readouterr().err) == works
 
 
 def wait_for(condition, timeout=30):

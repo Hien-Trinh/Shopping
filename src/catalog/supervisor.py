@@ -89,7 +89,8 @@ def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=state.CLO
         try:
             events.emit([event])
         except OSError as e:
-            print(f"supervisor: couldn't log {event}: {e!r}", file=sys.stderr)
+            with contextlib.suppress(OSError):  # and stderr may be a broken pipe
+                print(f"supervisor: couldn't log {event}: {e!r}", file=sys.stderr)
 
     def start(name, first=False):
         started = clock()  # before the spawn, so no beat of the new run can predate it
@@ -173,7 +174,8 @@ def _only_supervisor(state_dir: Path) -> bool:
 def main() -> int:
     """Run ./Procfile against the workers' default directories."""
     if not _only_supervisor(worker.STATE):
-        print(f"supervisor: another one holds {worker.STATE}/supervisor.lock", file=sys.stderr)
+        with contextlib.suppress(OSError):  # stderr may be a broken pipe: still exit ANOTHER
+            print(f"supervisor: another one holds {worker.STATE}/supervisor.lock", file=sys.stderr)
         return ANOTHER
     procs = parse_procfile(Path("Procfile").read_text())
     stopping = []

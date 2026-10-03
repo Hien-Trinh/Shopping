@@ -33,6 +33,14 @@ class UnknownMerchant(LookupError):
     pass
 
 
+class Denied(Exception):
+    """A key that authenticates no one. Raised, not returned, so a forgotten check fails closed."""
+
+    def __init__(self, reason: str, merchant_id: str | None = None):
+        super().__init__(reason)  # unknown_key or revoked; never the key itself
+        self.reason, self.merchant_id = reason, merchant_id  # whose key, if it was a revoked one
+
+
 @contextlib.contextmanager
 def _connect(db: Path):
     db.parent.mkdir(parents=True, exist_ok=True)
@@ -90,17 +98,19 @@ def _update(db: Path, merchant_id: str, assignment: str, value: str) -> None:
             raise UnknownMerchant(f"no merchant {merchant_id!r}")
 
 
-def verify(db: Path, key: str) -> Merchant | None:
-    """The active Merchant this key belongs to, else None."""
+def verify(db: Path, key: str) -> Merchant:
+    """The active Merchant this key belongs to; raises Denied otherwise."""
     presented = _hash(key)
     with contextlib.closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as c:
         row = c.execute(
             "SELECT merchant_id, currency, key_hash, status FROM merchants WHERE key_hash = ?",
             (presented,),
         ).fetchone()
-    if row and hmac.compare_digest(row[2], presented) and row[3] == "active":
-        return Merchant(row[0], row[1])
-    return None
+    if not row or not hmac.compare_digest(row[2], presented):
+        raise Denied("unknown_key")
+    if row[3] != "active":
+        raise Denied("revoked", row[0])
+    return Merchant(row[0], row[1])
 
 
 def main(argv: Sequence[str] | None = None) -> int | None:

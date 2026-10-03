@@ -295,8 +295,8 @@ def test_main_wires_the_procfile_and_stops_on_sigterm_sigint_or_sighup(tmp_path,
     assert supervisor.main() == 1  # stopping was set by the handler
     assert seen == {
         "procs": {"worker-0": [sys.executable, "-m", "catalog.worker", "--index", "0"]},
-        "state": worker.STATE,
-        "events": worker.DATA / "events",
+        "state": state.STATE,
+        "events": state.DATA / "events",
     }
     assert set(handlers) == {signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
 

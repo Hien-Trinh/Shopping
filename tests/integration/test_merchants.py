@@ -22,6 +22,13 @@ def rows(db):
         return c.execute("SELECT merchant_id, currency, key_hash, status FROM merchants").fetchall()
 
 
+def refused(db, key) -> tuple[str, str | None]:
+    """Why verify refuses `key`, and whose key it was, if anyone's."""
+    with pytest.raises(merchants.Denied) as denied:
+        merchants.verify(db, key)
+    return denied.value.reason, denied.value.merchant_id
+
+
 def test_create_then_verify_returns_the_merchant(db):
     merchant_id, key = merchants.create(db, "USD")
     assert re.fullmatch(r"m_[a-z0-9]+", merchant_id)
@@ -68,21 +75,21 @@ def test_rotate_kills_the_old_key_and_issues_a_new_one(db):
     merchant_id, old = merchants.create(db, "USD")
     new = merchants.rotate(db, merchant_id)
     assert new != old
-    assert merchants.verify(db, old) is None
+    assert refused(db, old) == ("unknown_key", None)
     assert merchants.verify(db, new) == Merchant(merchant_id, "USD")
 
 
 def test_revoke_kills_the_key_and_keeps_the_row(db):
     merchant_id, key = merchants.create(db, "USD")
     merchants.revoke(db, merchant_id)
-    assert merchants.verify(db, key) is None
+    assert refused(db, key) == ("revoked", merchant_id)
     assert rows(db) == [(merchant_id, "USD", hashlib.sha256(key.encode()).hexdigest(), "revoked")]
 
 
 def test_rotate_does_not_revive_a_revoked_merchant(db):
     merchant_id, _ = merchants.create(db, "USD")
     merchants.revoke(db, merchant_id)
-    assert merchants.verify(db, merchants.rotate(db, merchant_id)) is None
+    assert refused(db, merchants.rotate(db, merchant_id)) == ("revoked", merchant_id)
 
 
 @pytest.mark.parametrize("change", [merchants.rotate, merchants.revoke])
@@ -95,9 +102,9 @@ def test_an_unknown_merchant_is_an_error_and_writes_nothing(db, change):
 
 
 @pytest.mark.parametrize("key", ["", "x", "not a key", "\x00", "é" * 43, "\ud800"])
-def test_verify_of_a_wrong_or_malformed_key_is_none(db, key):
+def test_verify_refuses_a_wrong_or_malformed_key_as_unknown(db, key):
     merchants.create(db, "USD")
-    assert merchants.verify(db, key) is None
+    assert refused(db, key) == ("unknown_key", None)
 
 
 def test_verify_of_a_missing_registry_raises_and_creates_nothing(db):
@@ -133,7 +140,7 @@ def test_cli_rotate_prints_a_working_new_key(db, capsys):
     merchant_id, old = merchants.create(db, "USD")
     merchants.main(["--db", str(db), "rotate", merchant_id])
     new = re.search(r"key: (\S+)", capsys.readouterr().out)[1]
-    assert merchants.verify(db, old) is None
+    assert refused(db, old) == ("unknown_key", None)
     assert merchants.verify(db, new) == Merchant(merchant_id, "USD")
 
 
@@ -141,7 +148,7 @@ def test_cli_revoke(db, capsys):
     merchant_id, key = merchants.create(db, "USD")
     merchants.main(["--db", str(db), "revoke", merchant_id])
     assert merchant_id in capsys.readouterr().out
-    assert merchants.verify(db, key) is None
+    assert refused(db, key) == ("revoked", merchant_id)
 
 
 def test_cli_reports_a_key_it_could_not_deliver(db, capsys, monkeypatch):

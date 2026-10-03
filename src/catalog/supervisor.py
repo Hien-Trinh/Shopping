@@ -30,11 +30,14 @@ class Group(subprocess.Popen):
     """A child in its own session, so a Ctrl-C or a closed terminal reaches only the supervisor.
 
     Its signals go to the whole process group, so a wrapper command's own child (sh -c, uv run)
-    is stopped too, and never left holding partition locks.
+    is stopped too, and never left holding partition locks. Its environment carries this
+    process's pid, so a worker stops by itself if the supervisor dies without stopping it
+    (worker.watch).
     """
 
     def __init__(self, argv: list[str]):
-        super().__init__(argv, start_new_session=True)
+        env = os.environ | {worker.SUPERVISOR: str(os.getpid())}
+        super().__init__(argv, start_new_session=True, env=env)
 
     def send_signal(self, sig: int) -> None:  # terminate() and kill() come through here
         if self.poll() is None:  # not reaped, so its pid still names its group

@@ -265,7 +265,7 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 3 | 3b ✅ | Error policy: per-change failure isolation (a storability check before planning); any other error never advances the offset |
 | 3 | 3c ✅ | Worker process: claim (a second worker on a claimed partition gets `PartitionTaken`), startup beat, poll loop with backoff on any error `process_batch` raises (crash after N attempts), owner compaction cadence, a per-batch event (offsets, duration, changes) for lag and utilization, CLI entry, `Procfile` |
 | 3 | 3d ✅ | Supervisor (`python -m catalog.supervisor`, no `honcho`): heartbeat watchdog (start time counts as a beat), restart. From the 3c review: distinct worker exit codes for fatal startup errors (`PartitionTaken`, `OffsetsMismatch`, `CorruptState`) versus giving up after N failed ticks, worker start/stop events, and whether heartbeats use a monotonic clock |
-| 3 | 3e | Spec: [step-3e.md](specs/step-3e.md). Chaos tests: `kill -9` mid-batch, rescale from 4 to 3 workers, and a `kill -9`ed supervisor: its workers keep running and keep their locks (the next supervisor's workers exit 3), so workers should watch their parent |
+| 3 | 3e ✅ | Spec: [step-3e.md](specs/step-3e.md). Chaos tests: `kill -9` mid-batch, rescale from 4 to 3 workers, and a `kill -9`ed supervisor: its workers keep running and keep their locks (the next supervisor's workers exit 3), so workers should watch their parent |
 | 4 | 4a | Merchant registry (SQLite) and admin CLI: create a merchant, rotate a key |
 | 4 | 4b | `POST /listings:batch`: auth, envelope, 32 MB cap, disk guard, direct append |
 | 4 | 4c | Group-commit appender (≤100 ms window) |
@@ -277,13 +277,13 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 5 | 5d | Landing log retention and compaction (never past the slowest offset) |
 | 5 | 5e | Retention-horizon bootstrap for workers below the horizon |
 | 6 | 6a ⏸ | Taxonomy loader (asks before downloading the Shopify taxonomy) |
-| 6 | 6b ⏸ | Embedding classifier with a batch timeout (asks before downloading the model) |
+| 6 | 6b ⏸ | Embedding classifier with a batch timeout (asks before downloading the model). From 3e: its native calls must release the GIL, or the supervisor watch can't exit a worker stuck in one |
 | 6 | 6c | Backfill job (`op=reclassify` for flagged rows and taxonomy bumps) |
 | 6 | 6d | Eval harness and report format |
 | 6 | 6e ⏸ | Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK |
 | 7 | 7a | Load generator (multiprocess) |
-| 7 | 7b | Chaos scenario runner and the three oracles |
-| 7 | 7c | Metrics SQL and runbook. From the 3d review: `process_exit` events for processes stopped at shutdown, and for every exit seen in the pass that hit a fatal one |
+| 7 | 7b | Chaos scenario runner and the three oracles. From 3e: a runner that kills the supervisor must reap it (`wait`), or its workers keep running until it does |
+| 7 | 7c | Metrics SQL and runbook. From the 3d review: `process_exit` events for processes stopped at shutdown, and for every exit seen in the pass that hit a fatal one. From 3e: after a supervisor is killed, wait a few seconds for its workers to stop before starting a new one; a reason on `worker_stop` when the supervisor watch stopped it, and a trace of the watch's hard exit, written so they can't block that exit |
 | 7 | 7d ⏸ | `stress-smoke` CI job; then full stress runs on your Mac |
 
 ## Phases
@@ -340,7 +340,7 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
   - **Accepted ceiling, documented:** power-loss durability.
   - **Planted-bug check:** reverting each fix fails its regression test. Two tests had to be strengthened before they caught their bug: one now uses a barrier-released race, the other checks the idle partition after every cut-off read.
 
-**Phase 3 — Worker end to end** (with `FakeClassifier`)
+**Phase 3 — Worker end to end** (with `FakeClassifier`) ✅
 - Tests:
   - Poison change: isolated and skipped, and the partition keeps moving.
   - Storage error: the offset does not advance.
@@ -354,6 +354,13 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
   - mark a classifier failure with `Classification(..., needs_reclassify=True)`, never by leaving `needs_classify` set
   - every standalone entry point (the worker and supervisor CLIs, and later export, snapshot and chaos runners) exits through `entry.exit_with`, which flushes and calls `os._exit`: Arrow can hang at process exit after a Delta scan ([spikes/NOTES.md](../spikes/NOTES.md), "Exit hang")
 - **Exit:** all of the above pass.
+- Result: 295 tests in about 45 s, 99.6% branch coverage across the package and the six pure modules at 100%. The chaos tests run real processes. A worker killed with `kill -9` at each step of a batch, during compaction or at a random moment leaves the store equal to the replay oracle, with no Change pending. A rescale from 4 to 3 workers rereads nothing. The workers of a `kill -9`ed supervisor stop on their own. Reviews caught real bugs before merge, each now with a test:
+  - bisecting a batch on a data error also caught a corrupt store file's error, failing valid Changes and advancing the offset (3b); a storability check before planning replaced it
+  - a classifier outage downgraded good categories to Uncategorized (3a); the stored answer is now kept, flagged
+  - a worker still behind after a capped read waited 200 ms anyway, and a failed compaction dropped its batch event (3c)
+  - a `kill -9`ed supervisor left its workers running with their locks (found in 3d's review, fixed in 3e)
+
+  Also: pruning partitions before the scan took `store.read` from 1.7 s to 33 ms at 1,280 files, and an Arrow hang at process exit is why every entry point leaves through `os._exit`. Deferred, now written into later steps: 7b's runner must reap a supervisor it kills, 7c adds a reason to the watch's stops and a trace of its hard exit, and 6b's native calls must release the GIL.
 
 **Phase 4 — Ingestion API** (`api`, `merchants`, `status`)
 - Tests:

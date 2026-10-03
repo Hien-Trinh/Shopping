@@ -266,8 +266,8 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 3 | 3c ✅ | Worker process: claim (a second worker on a claimed partition gets `PartitionTaken`), startup beat, poll loop with backoff on any error `process_batch` raises (crash after N attempts), owner compaction cadence, a per-batch event (offsets, duration, changes) for lag and utilization, CLI entry, `Procfile` |
 | 3 | 3d ✅ | Supervisor (`python -m catalog.supervisor`, no `honcho`): heartbeat watchdog (start time counts as a beat), restart. From the 3c review: distinct worker exit codes for fatal startup errors (`PartitionTaken`, `OffsetsMismatch`, `CorruptState`) versus giving up after N failed ticks, worker start/stop events, and whether heartbeats use a monotonic clock |
 | 3 | 3e ✅ | Spec: [step-3e.md](specs/step-3e.md). Chaos tests: `kill -9` mid-batch, rescale from 4 to 3 workers, and a `kill -9`ed supervisor: its workers keep running and keep their locks (the next supervisor's workers exit 3), so workers should watch their parent |
-| 4 | 4a | Spec: [step-4a.md](specs/step-4a.md). Merchant registry (SQLite) and admin CLI: create a merchant, rotate (and revoke) a key, plus `verify` for 4b's auth |
-| 4 | 4b | `POST /listings:batch`: auth, envelope, 32 MB cap, disk guard, direct append |
+| 4 | 4a ✅ | Spec: [step-4a.md](specs/step-4a.md). Merchant registry (SQLite) and admin CLI: create a merchant, rotate (and revoke) a key, plus `verify` for 4b's auth |
+| 4 | 4b | `POST /listings:batch`: auth, envelope, 32 MB cap, disk guard, direct append. From the 4a review: `merchants.verify` raises on a missing registry rather than refusing every key, so the API checks the registry at startup; count auth failures by reason (unknown key or revoked Merchant) without ever logging the key |
 | 4 | 4c | Group-commit appender (≤100 ms window) |
 | 4 | 4d | `GET /submissions/{id}`: status from events, IDOR check |
 | 4 | 4e | End-to-end test: HTTP → Landing log → worker → Listing Store |
@@ -283,7 +283,7 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 6 | 6e ⏸ | Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK |
 | 7 | 7a | Load generator (multiprocess) |
 | 7 | 7b | Chaos scenario runner and the three oracles. From 3e: a runner that kills the supervisor must reap it (`wait`), or its workers keep running until it does |
-| 7 | 7c | Metrics SQL and runbook. From the 3d review: `process_exit` events for processes stopped at shutdown, and for every exit seen in the pass that hit a fatal one. From 3e: after a supervisor is killed, wait a few seconds for its workers to stop before starting a new one; a reason on `worker_stop` when the supervisor watch stopped it, and a trace of the watch's hard exit, written so they can't block that exit |
+| 7 | 7c | Metrics SQL and runbook. From the 4a review: an audit event (Merchant, action, time) for each create, rotate and revoke. From the 3d review: `process_exit` events for processes stopped at shutdown, and for every exit seen in the pass that hit a fatal one. From 3e: after a supervisor is killed, wait a few seconds for its workers to stop before starting a new one; a reason on `worker_stop` when the supervisor watch stopped it, and a trace of the watch's hard exit, written so they can't block that exit |
 | 7 | 7d ⏸ | `stress-smoke` CI job; then full stress runs on your Mac |
 
 ## Phases

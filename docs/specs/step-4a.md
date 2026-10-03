@@ -42,7 +42,7 @@ Each becomes a test or is named out of scope.
 | `verify` of an empty or malformed key | Returns nothing; never raises |
 | `verify` of a wrong key | Returns nothing |
 | `verify` of a revoked Merchant's correct key | Returns nothing |
-| First use, no DB file yet | The file and `merchants` table are created (WAL); the operation proceeds |
+| First use, no DB file yet | `create`, `rotate` and `revoke` create the file and `merchants` table (WAL). `verify` only reads: it raises rather than creating an empty registry at a wrong path (from the review) |
 | CLI writes while a reader reads | WAL lets the read proceed; no corruption |
 | Stored `key_hash` inspected | It equals `sha256(key)` hex and is never the plaintext key |
 

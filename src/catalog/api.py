@@ -9,8 +9,9 @@ import contextlib
 import json
 import shutil
 import sqlite3
+import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,13 +30,18 @@ UNAUTHORIZED = "missing or invalid API key"  # the same for every reason: it tel
 
 
 def create_app(
-    data: Path, db: Path, *, max_body: int = MAX_BODY, min_free: int = MIN_FREE
+    data: Path,
+    db: Path,
+    *,
+    max_body: int = MAX_BODY,
+    min_free: int = MIN_FREE,
+    clock: Callable[[], float] = time.time,
 ) -> FastAPI:
     # The query every request runs, so a missing or unreadable registry fails here, at startup.
     with contextlib.suppress(merchants.Denied):
         merchants.verify(db, "")
     log = landing.ensure(str(data / "landing_log"))
-    events = EventLog(data / "events", "api")
+    events = EventLog(data / "events", "api", clock)
     app = FastAPI(openapi_url=None)  # no /docs: nothing here is a FastAPI model
 
     def refuse(status: int, reason: str, detail: str, merchant_id: str | None = None):
@@ -48,7 +54,7 @@ def create_app(
 
     @app.post("/listings:batch")
     async def submit(request: Request):
-        received = datetime.now(UTC)
+        received = datetime.fromtimestamp(clock(), UTC)
         if shutil.disk_usage(data).free < min_free:  # first: a low disk refuses everything
             return refuse(503, "low_disk", "the server is low on disk; retry later")
         scheme, _, key = request.headers.get("authorization", "").partition(" ")

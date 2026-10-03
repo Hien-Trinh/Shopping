@@ -1,6 +1,7 @@
 import hashlib
 import json
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,12 +21,17 @@ def change(mpid, sv=1, **listing):
     return {"op": "upsert", "merchant_product_id": mpid, "source_version": sv, "listing": content}
 
 
+NOW = datetime(2026, 9, 30, 12, tzinfo=UTC)
+DAY_MS = 24 * 60 * 60 * 1000
+
+
 class Api:
-    def __init__(self, tmp_path, **limits):
+    def __init__(self, tmp_path, currency="USD", **limits):
         self.data = tmp_path / "data"
         self.db = self.data / "merchants.sqlite"
-        self.merchant_id, self.key = merchants.create(self.db, "USD")
-        app = api.create_app(self.data, self.db, **{"min_free": 0} | limits)
+        self.merchant_id, self.key = merchants.create(self.db, currency)
+        options = {"min_free": 0, "clock": NOW.timestamp} | limits
+        app = api.create_app(self.data, self.db, **options)
         self.client = TestClient(app, raise_server_exceptions=False)
         self.log = landing.ensure(str(self.data / "landing_log"))
 
@@ -140,8 +146,8 @@ def test_a_revoked_key_gets_the_same_401_and_names_its_merchant_in_the_event(cli
 
 
 def test_the_scheme_is_case_insensitive_and_no_event_holds_the_key(client):
-    r = client.post({"changes": [change("a")]}, headers={"Authorization": f"bearer {client.key}"})
-    assert r.status_code == 202
+    r = client.post({"changes": [change("a")]}, headers={"Authorization": f"bearer  {client.key}"})
+    assert r.status_code == 202  # any case, any spacing
     merchants.revoke(client.db, client.merchant_id)
     assert client.post({"changes": [change("a")]}).status_code == 401
     logged = b"".join(f.read_bytes() for f in (client.data / "events").rglob("*.jsonl"))
@@ -248,3 +254,18 @@ def test_the_cli_serves_on_localhost_only(tmp_path, monkeypatch):
     api.main(["--data", str(tmp_path / "data"), "--db", str(db), "--port", "8123"])
     [options] = served
     assert (options["host"], options["port"]) == ("127.0.0.1", 8123)
+
+
+def test_changes_are_checked_against_the_merchants_own_currency(tmp_path):
+    client = Api(tmp_path, currency="EUR")
+    r = client.post({"changes": [change("a", currency="EUR"), change("b", currency="USD")]})
+    assert (r.json()["accepted"], [x["index"] for x in r.json()["rejected"]]) == (1, [1])
+
+
+def test_the_request_time_stamps_the_landing_and_bounds_source_versions(client):
+    now_ms = int(NOW.timestamp() * 1000)
+    r = client.post({"changes": [change("a", now_ms + DAY_MS), change("b", now_ms + DAY_MS + 1)]})
+    assert [x["index"] for x in r.json()["rejected"]] == [1]  # more than 24 h ahead (A14)
+    client.log.update_incremental()
+    assert client.log.to_pyarrow_table(columns=["received_at"])["received_at"].to_pylist() == [NOW]
+    assert {e["ts"] for e in client.events()} == {now_ms}

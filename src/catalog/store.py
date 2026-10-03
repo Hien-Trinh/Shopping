@@ -76,10 +76,11 @@ def read(dt: DeltaTable, keys: Collection[Key]) -> dict[Key, Stored]:
     if not keys:
         return {}
     dt.update_incremental()
+    # Prune by partition when listing files, not after: an unpruned dataset lists every file in
+    # the table (about 1 ms each), which dominated a batch once the store had grown.
+    parts = ", ".join(str(p) for p in sorted({partition(*k) for k in keys}))
     scanned = delta.plain(
-        dt.to_pyarrow_dataset().to_table(
-            filter=pc.field("partition").isin(sorted({partition(*k) for k in keys}))
-        )
+        dt.to_pyarrow_dataset(file_pruning_predicate=f"partition IN ({parts})").to_table()
     )
     # Narrow to the wanted products in Arrow (not in the scan filter: delta-rs reports string_view
     # columns, which Arrow can't compare with file statistics), so only candidates reach Python.

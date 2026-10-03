@@ -243,7 +243,7 @@ tests/unit  tests/integration  tests/stress
 
 ## Review process (from Oct 1)
 
-Every step PR (under about 300 changed lines) goes through `/lean-review` (`.claude/skills/lean-review`): deterministic gates first (`make check`, plus `make mutate` for pure modules), then 10 Sonnet finder agents, one per angle (`.claude/agents/reviewer-*.md`, about 300k tokens per review), deduped and verified in-context, and one round, with a second in-context round only if correctness bugs were found. An earlier max-effort fan-out (11 Opus agents, about 1.7M tokens for one PR) hit the usage limit; Sonnet finders on PRs under 300 lines cost about a sixth of that. The deterministic gates found most of the real bugs anyway. Reuse, simplification and altitude reviews run once at the end of the project.
+Every step PR (under about 300 changed lines) goes through `/lean-review` (`.claude/skills/lean-review`): deterministic gates first (`make check`, plus `make mutate` for pure modules), then Sonnet finder agents scaled to the diff (`.claude/agents/reviewer-*.md`, run by `.claude/workflows/lean-review.js`): 1 for docs or tooling, 3 up to 50 changed lines, 5 up to 150, all 10 above that. Candidates are deduped, at most 5 unreproduced medium- or high-severity ones go to a Sonnet verifier, and I verify every candidate in-context. One round, with a second in-context round only if correctness bugs were found. An earlier max-effort fan-out (11 Opus agents, about 1.7M tokens for one PR) hit the usage limit. A fixed 10-finder pass with 3 verifiers per candidate spent 2.4M tokens on a 21-line PR with no code findings, hence the scaling. The deterministic gates found most of the real bugs anyway. Reuse, simplification and altitude reviews run once at the end of the project.
 
 **Mutation baseline** (`make mutate`, after step 2r): 373 of 382 mutants killed. The 9 survivors are equivalent mutants, so a new survivor outside this list is a real gap:
 - `keys.partition`: `from_bytes(..., "big")` without the byte order (big is the default)
@@ -350,6 +350,7 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
   - keep one table handle per table per process
   - never fork while holding partition claims; use spawn
   - mark a classifier failure with `Classification(..., needs_reclassify=True)`, never by leaving `needs_classify` set
+  - every standalone entry point (the worker CLI, and later export, snapshot and chaos runners) flushes and exits with `os._exit`: Arrow can hang at process exit after a Delta scan ([spikes/NOTES.md](../spikes/NOTES.md), "Exit hang")
 - **Exit:** all of the above pass.
 
 **Phase 4 — Ingestion API** (`api`, `merchants`, `status`)

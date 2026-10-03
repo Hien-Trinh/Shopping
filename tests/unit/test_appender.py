@@ -1,6 +1,7 @@
 """The group-commit appender, driven with a fake commit: no Delta table (docs/specs/step-4c.md)."""
 
 import asyncio
+import threading
 
 from catalog.landing import Appender
 
@@ -30,12 +31,19 @@ def run(scenario, commit, **options):
     return asyncio.run(main())
 
 
+async def until(done):
+    """Yields to the loop's other tasks until `done()`: ordering by awaits, never by wall clock."""
+    while not done():
+        await asyncio.sleep(0)
+
+
 def test_requests_within_the_window_share_one_commit_in_arrival_order():
     commits = Commits()
 
     async def scenario(appender):
         first = asyncio.create_task(appender.submit(["a0", "a1"]))
-        await asyncio.sleep(0.01)  # the appender has picked up `first` and is waiting
+        await asyncio.sleep(0)  # `first` is queued
+        await until(appender.queue.empty)  # and the appender has picked it up: it is waiting
         second = asyncio.create_task(appender.submit(["b0"]))
         return await asyncio.gather(first, second)
 
@@ -91,9 +99,29 @@ def test_a_request_cancelled_while_waiting_still_lands_and_breaks_no_other():
     async def scenario(appender):
         gone = asyncio.create_task(appender.submit(["a0"]))
         stays = asyncio.create_task(appender.submit(["b0"]))
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0)  # both are queued
         gone.cancel()  # its client disconnected; its rows are already queued
         return await stays
 
     assert run(scenario, commits, window=0.1) == 1
     assert commits.groups == [["a0", "b0"]]  # it got no 202, so its Merchant retries (A3)
+
+
+def test_the_commit_runs_off_the_event_loop():
+    # The commit only finishes once the loop sets `release`, which it can do only if the commit
+    # isn't blocking it: an inline commit times out instead.
+    started, release = threading.Event(), threading.Event()
+
+    def commit(entries):
+        started.set()
+        if not release.wait(2):
+            raise TimeoutError("the commit blocked the event loop")
+        return 1
+
+    async def scenario(appender):
+        waiting = asyncio.create_task(appender.submit(["a0"]))
+        await asyncio.to_thread(started.wait, 2)
+        release.set()
+        return await waiting
+
+    assert run(scenario, commit, window=0) == 1

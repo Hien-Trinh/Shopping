@@ -35,13 +35,16 @@ class _Strict(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
 
 
+CURRENCY = r"^[A-Z]{3}$"  # a Merchant's currency too (merchants.create)
+
+
 class Content(_Strict):
     """A Listing's complete merchant-owned state. An upsert replaces all of it (A2)."""
 
     title: str = Field(min_length=1, max_length=150)
     description: str = Field(default="", max_length=5000)
     price_micros: int = Field(gt=0, le=INT64_MAX)
-    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    currency: str = Field(pattern=CURRENCY)
     availability: Literal["in_stock", "out_of_stock", "preorder"]
     attributes: dict[AttributeName, AttributeValue] = Field(default_factory=dict, max_length=100)
 

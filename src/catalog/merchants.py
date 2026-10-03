@@ -3,7 +3,8 @@
 
 A key is shown once and never stored: only its SHA-256 is, and `verify` confirms a match in
 constant time. Every call opens its own short-lived connection, so the API's threads never share
-one; WAL lets them read while the CLI writes.
+one; WAL lets them read while the CLI writes. `verify` only reads: a wrong path raises instead of
+creating an empty registry that refuses every key.
 """
 
 import argparse
@@ -18,10 +19,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
-from catalog import entry
+from catalog import entry, envelope
 
 DB = Path("data/merchants.sqlite")
-CURRENCY = re.compile(r"[A-Z]{3}")  # the envelope's listing.currency rule
 
 
 class Merchant(NamedTuple):
@@ -37,7 +37,8 @@ class UnknownMerchant(LookupError):
 def _connect(db: Path):
     db.parent.mkdir(parents=True, exist_ok=True)
     with contextlib.closing(sqlite3.connect(db)) as c:
-        c.execute("PRAGMA journal_mode=WAL")
+        if c.execute("PRAGMA journal_mode").fetchone() != ("wal",):  # switch once: it locks
+            c.execute("PRAGMA journal_mode=WAL")
         c.execute(
             "CREATE TABLE IF NOT EXISTS merchants (merchant_id TEXT PRIMARY KEY,"
             " currency TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, status TEXT NOT NULL)"
@@ -47,12 +48,12 @@ def _connect(db: Path):
 
 
 def _hash(key: str) -> str:
-    return hashlib.sha256(key.encode()).hexdigest()
+    return hashlib.sha256(key.encode(errors="surrogatepass")).hexdigest()  # never raises
 
 
 def create(db: Path, currency: str) -> tuple[str, str]:
     """Add an active Merchant; returns its id and its key, which nothing can recover later."""
-    if not CURRENCY.fullmatch(currency):
+    if not re.fullmatch(envelope.CURRENCY, currency):
         raise ValueError(f"currency must be 3 capital letters (ISO 4217), got {currency!r}")
     key = secrets.token_urlsafe(32)
     with _connect(db) as c:
@@ -92,7 +93,7 @@ def _update(db: Path, merchant_id: str, assignment: str, value: str) -> None:
 def verify(db: Path, key: str) -> Merchant | None:
     """The active Merchant this key belongs to, else None."""
     presented = _hash(key)
-    with _connect(db) as c:
+    with contextlib.closing(sqlite3.connect(db.resolve().as_uri() + "?mode=ro", uri=True)) as c:
         row = c.execute(
             "SELECT merchant_id, currency, key_hash, status FROM merchants WHERE key_hash = ?",
             (presented,),
@@ -102,7 +103,7 @@ def verify(db: Path, key: str) -> Merchant | None:
     return None
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def main(argv: Sequence[str] | None = None) -> int | None:
     args = argparse.ArgumentParser(prog="python -m catalog.merchants")
     args.add_argument("--db", type=Path, default=DB)
     commands = args.add_subparsers(dest="command", required=True)
@@ -121,8 +122,15 @@ def main(argv: Sequence[str] | None = None) -> None:
             return
     except (ValueError, UnknownMerchant) as e:
         args.error(str(e))  # exit 2, and no key was printed
-    print(f"merchant_id: {merchant_id}\nkey: {key}")
+    try:
+        print(f"merchant_id: {merchant_id}\nkey: {key}", flush=True)
+    except OSError:  # a closed pipe or a full disk: the key is lost, so say so and fail
+        print(
+            f"The key was not delivered: run rotate {merchant_id} for a new one.", file=sys.stderr
+        )
+        return 1
     print("Store the key now: it is not shown again.", file=sys.stderr)
+    return None
 
 
 if __name__ == "__main__":

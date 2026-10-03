@@ -1,7 +1,9 @@
 import contextlib
 import hashlib
+import io
 import re
 import sqlite3
+import sys
 import threading
 
 import pytest
@@ -92,14 +94,16 @@ def test_an_unknown_merchant_is_an_error_and_writes_nothing(db, change):
     assert len(rows(db)) == 1
 
 
-@pytest.mark.parametrize("key", ["", "x", "not a key", "\x00", "é" * 43])
+@pytest.mark.parametrize("key", ["", "x", "not a key", "\x00", "é" * 43, "\ud800"])
 def test_verify_of_a_wrong_or_malformed_key_is_none(db, key):
     merchants.create(db, "USD")
     assert merchants.verify(db, key) is None
 
 
-def test_verify_before_any_merchant_exists_is_none(db):
-    assert merchants.verify(db, "anything") is None
+def test_verify_of_a_missing_registry_raises_and_creates_nothing(db):
+    with pytest.raises(sqlite3.OperationalError):  # a wrong path is loud, not a silent 401
+        merchants.verify(db, "anything")
+    assert not db.parent.exists()
 
 
 def test_a_reader_is_not_blocked_by_an_open_write(db):
@@ -138,6 +142,17 @@ def test_cli_revoke(db, capsys):
     merchants.main(["--db", str(db), "revoke", merchant_id])
     assert merchant_id in capsys.readouterr().out
     assert merchants.verify(db, key) is None
+
+
+def test_cli_reports_a_key_it_could_not_deliver(db, capsys, monkeypatch):
+    class Closed(io.StringIO):  # a closed pipe: the write buffers, the flush fails
+        def flush(self):
+            raise BrokenPipeError
+
+    monkeypatch.setattr(sys, "stdout", Closed())
+    assert merchants.main(["--db", str(db), "create", "--currency", "USD"]) == 1
+    merchant_id = rows(db)[0][0]
+    assert f"rotate {merchant_id}" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

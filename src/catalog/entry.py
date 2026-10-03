@@ -19,7 +19,10 @@ def exit_with(main: Callable[[], int | None], codes: Mapping[type, int] | None =
     except SystemExit as e:  # argparse: --help or a bad flag
         code = e.code or 0
     except BaseException as e:
-        traceback.print_exc()
+        # OSError only: a broken or closed stderr fd raises it, and one closed at startup is None,
+        # which print handles. A ValueError needs our own code to close sys.stderr; none does.
+        with contextlib.suppress(OSError):  # a broken pipe: still os._exit, with e's code
+            traceback.print_exc()
         code = (codes or {}).get(type(e), 1)
     for stream in (sys.stdout, sys.stderr):
         with contextlib.suppress(Exception):  # closed, or a broken pipe: exit anyway

@@ -24,6 +24,7 @@ Earlier checks (Sep 29, same versions): the conditional MERGE (`s.sv > t.sv`) ig
 - **Not affected:** pytest runs, and DuckDB over `to_pyarrow_dataset()`.
 - **What doesn't help:** `pa.set_cpu_count(1)`, an `atexit` hook, `gc.collect()`.
 - **What does help:** flushing and calling `os._exit`. So every standalone entry point does that: the worker CLI (3c), and later the export, snapshot and chaos runners. Partition locks are released before exit either way (`state.claim` closes its files in `finally`), so the point is that the process actually ends.
+  - A broken stderr (say the supervisor ran under `| tee` and tee died) must not skip `os._exit` either, so `entry.exit_with`'s traceback print, like the worker's tick-failure print, ignores `OSError`. Only `OSError`: a broken or closed stderr fd raises it, and an fd closed at startup leaves `sys.stderr` as `None`, which `print` handles. A `ValueError` would need our own code to close `sys.stderr`, and none does. If some code ever does, widen both guards.
 - **B1:** this may be the "MERGE hang" B1 saw, a process that finished its work but never exited. But B1's own reproduction (40 fresh-table MERGEs, with no scan) never hung, so that stays a hypothesis and the watchdog stays.
 
 **No fallback needed.** The "64 separate Listing Store tables" fallback from the plan isn't triggered.

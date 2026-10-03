@@ -19,7 +19,7 @@ def log(tmp_path):
 
 
 def add(log, *changes, submission="s1"):
-    return landing.append(log, [(submission, i, c) for i, c in enumerate(changes)], NOW)
+    return landing.append(log, [(submission, i, c, NOW) for i, c in enumerate(changes)])
 
 
 def test_ensure_never_touches_an_existing_table(log):
@@ -96,13 +96,21 @@ def test_a_handle_sees_other_writers(log):
 
 def test_empty_append_makes_no_commit(log):
     v = log.version()
-    assert landing.append(log, [], NOW) == v
+    assert landing.append(log, []) == v
     assert DeltaTable(log.table_uri).version() == v
 
 
 def test_naive_received_at_is_refused(log):
     with pytest.raises(ValueError, match="timezone-aware"):
-        landing.append(log, [("s1", 0, up(A, 1))], datetime(2026, 9, 30, 12))
+        landing.append(log, [("s1", 0, up(A, 1), NOW), ("s1", 1, up(B, 1), datetime(2026, 9, 30))])
+
+
+def test_each_row_keeps_its_own_received_at(log):
+    later = datetime(2026, 9, 30, 12, 0, 1, tzinfo=UTC)
+    landing.append(log, [("s1", 0, up(A, 1), NOW), ("s2", 0, up(B, 1), later)])
+    # One file per partition, so the table's order isn't seq order.
+    rows = log.to_pyarrow_table(columns=["seq", "received_at"]).sort_by("seq")
+    assert rows["received_at"].to_pylist() == [NOW, later]
 
 
 def test_null_keys_are_refused_by_the_table(log):

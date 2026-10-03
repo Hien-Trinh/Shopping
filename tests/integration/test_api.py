@@ -1,7 +1,9 @@
 import hashlib
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from itertools import count
 
 import pytest
 from fastapi.testclient import TestClient
@@ -30,9 +32,10 @@ class Api:
         self.data = tmp_path / "data"
         self.db = self.data / "merchants.sqlite"
         self.merchant_id, self.key = merchants.create(self.db, currency)
-        options = {"min_free": 0, "clock": NOW.timestamp} | limits
+        options = {"min_free": 0, "clock": NOW.timestamp, "window": 0.01} | limits
         app = api.create_app(self.data, self.db, **options)
         self.client = TestClient(app, raise_server_exceptions=False)
+        self.client.__enter__()  # runs the lifespan, which starts the appender
         self.log = landing.ensure(str(self.data / "landing_log"))
 
     def post(self, body=None, key=None, **kwargs):
@@ -48,8 +51,22 @@ class Api:
 
 
 @pytest.fixture
-def client(tmp_path):
-    return Api(tmp_path)
+def make_api(tmp_path):
+    """Builds an Api, and stops its client (and so its appender) after the test."""
+    made = []
+
+    def make(**options):
+        made.append(Api(tmp_path, **options))
+        return made[-1]
+
+    yield make
+    for a in made:
+        a.client.__exit__(None, None, None)
+
+
+@pytest.fixture
+def client(make_api):
+    return make_api()
 
 
 def test_a_valid_batch_lands_in_one_commit_and_gets_202(client):
@@ -76,6 +93,31 @@ def test_a_valid_batch_lands_in_one_commit_and_gets_202(client):
     assert {e["submission_id"] for e in accepted} == {submission}
     assert {e["merchant_id"] for e in accepted} == {mid}
     assert fold(submission, client.events()).outcomes == {0: "pending", 1: "pending", 2: "pending"}
+
+
+def post_together(client, *mpids):
+    """One request per Merchant product ID, all sent at once from threads."""
+    with ThreadPoolExecutor(len(mpids)) as pool:
+        return list(pool.map(lambda mpid: client.post({"changes": [change(mpid)]}), mpids))
+
+
+def test_concurrent_requests_share_one_commit_and_keep_their_own_submissions(make_api):
+    ticks = count(NOW.timestamp(), 0.001)  # every request gets its own received_at
+    client = make_api(window=1, clock=lambda: next(ticks))
+    before = client.log.version()
+    replies = post_together(client, "a", "b", "c")
+    assert [r.status_code for r in replies] == [202, 202, 202]
+    client.log.update_incremental()
+    assert client.log.version() == before + 1
+    submissions = [r.json()["submission_id"] for r in replies]
+    landed = client.landed()
+    assert sorted((x.submission_id, x.change.merchant_product_id) for x in landed) == sorted(
+        zip(submissions, "abc", strict=True)
+    )
+    stamps = client.log.to_pyarrow_table(columns=["received_at"])["received_at"].to_pylist()
+    assert len(set(stamps)) == 3
+    for s in submissions:
+        assert fold(s, client.events()).outcomes == {0: "pending"}
 
 
 def test_invalid_changes_are_rejected_one_by_one_and_the_rest_land(client):
@@ -155,8 +197,8 @@ def test_the_scheme_is_case_insensitive_and_no_event_holds_the_key(client):
     assert hashlib.sha256(client.key.encode()).hexdigest().encode() not in logged
 
 
-def test_low_disk_refuses_every_write_before_auth_or_the_body(tmp_path):
-    client = Api(tmp_path, min_free=2**62)
+def test_low_disk_refuses_every_write_before_auth_or_the_body(make_api):
+    client = make_api(min_free=2**62)
     unauthenticated = client.client.post("/listings:batch", content=UNREAD)
     assert unauthenticated.status_code == 503
     assert client.post({"changes": [change("a")]}).status_code == 503
@@ -167,15 +209,15 @@ def test_low_disk_refuses_every_write_before_auth_or_the_body(tmp_path):
 BATCH = json.dumps({"changes": [change("a")]}).encode()
 
 
-def test_a_declared_length_over_the_cap_gets_413_before_the_body_is_read(tmp_path):
-    client = Api(tmp_path, max_body=100)
+def test_a_declared_length_over_the_cap_gets_413_before_the_body_is_read(make_api):
+    client = make_api(max_body=100)
     r = client.post(content=UNREAD, headers={"Content-Length": "101"})
     assert r.status_code == 413
     assert refused(client) == [(413, "too_large", client.merchant_id)]
 
 
-def test_a_streamed_body_is_counted_and_refused_once_it_passes_the_cap(tmp_path):
-    client = Api(tmp_path, max_body=len(BATCH) - 1)
+def test_a_streamed_body_is_counted_and_refused_once_it_passes_the_cap(make_api):
+    client = make_api(max_body=len(BATCH) - 1)
     r = client.post(content=iter([BATCH[:10], BATCH[10:]]))
     assert "content-length" not in r.request.headers
     assert r.status_code == 413
@@ -183,8 +225,8 @@ def test_a_streamed_body_is_counted_and_refused_once_it_passes_the_cap(tmp_path)
     assert client.landed() == []
 
 
-def test_a_body_exactly_at_the_cap_is_accepted(tmp_path):
-    client = Api(tmp_path, max_body=len(BATCH))
+def test_a_body_exactly_at_the_cap_is_accepted(make_api):
+    client = make_api(max_body=len(BATCH))
     assert client.post(content=BATCH).status_code == 202
     assert client.post(content=iter([BATCH[:10], BATCH[10:]])).status_code == 202
 
@@ -217,6 +259,13 @@ def test_a_failed_append_is_a_500_with_no_events(client, monkeypatch):
     monkeypatch.setattr(landing, "append", fail)
     assert client.post({"changes": [change("a"), change("b", 0)]}).status_code == 500
     assert client.events() == []  # never an accepted event for a Change that didn't land
+
+
+def test_a_failed_shared_commit_is_a_500_for_every_request_in_it(make_api, monkeypatch):
+    client = make_api(window=1)
+    monkeypatch.setattr(landing, "append", fail)
+    assert [r.status_code for r in post_together(client, "a", "b")] == [500, 500]
+    assert client.events() == []
 
 
 def test_failed_events_after_the_commit_are_a_500_so_the_merchant_retries(client, monkeypatch):
@@ -256,8 +305,8 @@ def test_the_cli_serves_on_localhost_only(tmp_path, monkeypatch):
     assert (options["host"], options["port"]) == ("127.0.0.1", 8123)
 
 
-def test_changes_are_checked_against_the_merchants_own_currency(tmp_path):
-    client = Api(tmp_path, currency="EUR")
+def test_changes_are_checked_against_the_merchants_own_currency(make_api):
+    client = make_api(currency="EUR")
     r = client.post({"changes": [change("a", currency="EUR"), change("b", currency="USD")]})
     assert (r.json()["accepted"], [x["index"] for x in r.json()["rejected"]]) == (1, [1])
 

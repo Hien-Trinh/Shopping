@@ -1,10 +1,11 @@
 """Ingestion API: POST /listings:batch (design doc, lifecycle steps 1-2; docs/specs/step-4b.md).
 
-Accepted Changes land in one Landing log commit per request; only then do their events go out, and
-only then the 202, so no `accepted` event ever names a Change that didn't land.
+Accepted Changes land through the group commit (docs/specs/step-4c.md); only then do their events
+go out, and only then the 202, so no `accepted` event ever names a Change that didn't land.
 """
 
 import argparse
+import asyncio
 import contextlib
 import json
 import shutil
@@ -35,13 +36,24 @@ def create_app(
     max_body: int = MAX_BODY,
     min_free: int = MIN_FREE,
     clock: Callable[[], float] = time.time,
+    window: float = landing.WINDOW,
 ) -> FastAPI:
     # The query every request runs, so a missing or unreadable registry fails here, at startup.
     with contextlib.suppress(merchants.Denied):
         merchants.verify(db, "")
     log = landing.ensure(str(data / "landing_log"))
     events = EventLog(data / "events", "api", clock)
-    app = FastAPI(openapi_url=None)  # no /docs: nothing here is a FastAPI model
+    # Looked up at each commit, not bound here, so a test can make the append fail.
+    appender = landing.Appender(lambda entries: landing.append(log, entries), window)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_: FastAPI):
+        # uvicorn drains the requests in flight before this resumes, so they all get their commit.
+        task = asyncio.create_task(appender.run())
+        yield
+        task.cancel()
+
+    app = FastAPI(openapi_url=None, lifespan=lifespan)  # no /docs: nothing here is a model
 
     def refuse(status: int, reason: str, detail: str, merchant_id: str | None = None):
         """The refusal, and a `refused` event to count it by: never the key, its hash, the body."""
@@ -86,7 +98,8 @@ def create_app(
         except envelope.BadBatch as e:
             return refuse(400, "bad_batch", str(e), merchant.merchant_id)
         submission = str(uuid.uuid7())  # before the append: its events fall in its hour or later
-        landing.append(log, [(submission, i, c) for i, c in checked.accepted], received)
+        if checked.accepted:  # shares a commit with the other requests in its window
+            await appender.submit([(submission, i, c, received) for i, c in checked.accepted])
         events.emit(submission_events(submission, merchant.merchant_id, checked))
         rejected = [{"index": i, "errors": list(errors)} for i, errors in checked.rejected]
         reply = {"submission_id": submission, "accepted": len(checked.accepted)}

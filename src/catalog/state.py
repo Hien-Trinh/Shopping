@@ -4,11 +4,13 @@ Layout under the state directory:
   offsets/pNN.json   next Landing log position per partition, and which Landing log (A9)
   locks/pNN.lock     flock held by the partition's owner (A8)
   heartbeat/<worker>.json   last sign of life, for the supervisor (B1)
+  supervisor.lock    flock held by the one supervisor running against this directory
 """
 
 import fcntl
 import json
 import os
+import time
 import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -16,6 +18,10 @@ from pathlib import Path
 from typing import Any
 
 from catalog.landing import START, Position
+
+# Shared by every worker and the supervisor, so they can't disagree:
+CLOCK = time.monotonic  # heartbeats: system-wide, and laptop sleep or NTP never jumps it (B7)
+WORKER = "worker-"  # a worker's name prefix: its Procfile name, heartbeat file and event log
 
 
 class CorruptState(RuntimeError):
@@ -113,7 +119,14 @@ def beat(state: Path, worker: str, now: float) -> None:
     save(_heartbeat_file(state, worker), {"ts": now})
 
 
-def heartbeat_age(state: Path, worker: str, now: float) -> float | None:
-    """Seconds since the worker's last beat; None if it never beat."""
-    last = load(_heartbeat_file(state, worker), None)
-    return None if last is None else now - last["ts"]
+def last_beat(state: Path, worker: str) -> float | None:
+    """The clock reading of the worker's last beat; None if it never beat or the file is bad.
+
+    A heartbeat is disposable (the next beat rewrites it), so a torn or malformed one counts as
+    none rather than stopping the supervisor that reads it.
+    """
+    try:
+        ts = load(_heartbeat_file(state, worker), {})["ts"]
+    except CorruptState, KeyError, TypeError:
+        return None
+    return ts if isinstance(ts, int | float) else None

@@ -129,7 +129,7 @@ def partition(merchant_id: str, merchant_product_id: str) -> int:
 | B3 | Reading the Landing log change feed per partition without reading every partition | Phase 0 spike: `load_cdf` with a partition predicate on a table partitioned by `partition`. |
 | B4 | Classifier throughput on bulk uploads | Batch-embedding a whole worker batch is fine. Laya does about 13 ms per decision, one at a time, so roughly 75/s per process. Jev is capped at 40 requests/s, so a 1M-Listing initial load through Jev takes about 7 h, and most of it would time out into Uncategorized. The **timeout applies to the whole batch**, not to each change. |
 | B5 | Memory with 16 GB | Laya at FP16 is about 0.85 GB per process, so 8 workers use about 7 GB. If Laya wins the eval, run **one shared classifier process** instead of loading the model into every worker. |
-| B6 | Docker | Ruled out: MLX can't use the GPU inside Docker on macOS. Processes run natively from a `Procfile` via `honcho` (Python). |
+| B6 | Docker | Ruled out: MLX can't use the GPU inside Docker on macOS. Processes run natively from a `Procfile`, under our own supervisor (honcho stops everything when one process exits and never restarts). |
 | B7 | Laptop sleep pauses every process and skews freshness numbers | Run stress tests under `caffeinate -dims`. |
 | B8 | Unbounded request bodies | FastAPI and uvicorn don't limit body size. Add middleware that caps bodies at 32 MB and returns 413 above that. |
 | B9 | The load generator becomes the bottleneck | Run the load generator as several processes. Its own send rate goes in the report, and a run is invalid if the generator is at 100% CPU. |
@@ -222,6 +222,8 @@ src/catalog/
   state.py        atomic offset/watermark files, partition flocks, heartbeat
   events.py       JSONL writer, event types
   worker.py       loop + error policy (A6)
+  supervisor.py   runs the Procfile: restarts, heartbeat watchdog, fatal exits
+  entry.py        how every standalone entry point exits (flush, os._exit)
   api.py          FastAPI app, auth, body cap, disk guard
   export.py       Change Export + gap recovery
   snapshots.py    pinned copy + pruning
@@ -262,8 +264,8 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 3 | 3a ✅ | `worker.process_batch`: one batch from read to plan, classify (FakeClassifier), merge, events and offsets, plus the replay oracle test |
 | 3 | 3b ✅ | Error policy: per-change failure isolation (a storability check before planning); any other error never advances the offset |
 | 3 | 3c ✅ | Worker process: claim (a second worker on a claimed partition gets `PartitionTaken`), startup beat, poll loop with backoff on any error `process_batch` raises (crash after N attempts), owner compaction cadence, a per-batch event (offsets, duration, changes) for lag and utilization, CLI entry, `Procfile` |
-| 3 | 3d | Supervisor: heartbeat watchdog (start time counts as a beat), restart; adds `honcho` to run the `Procfile`. From the 3c review: distinct worker exit codes for fatal startup errors (`PartitionTaken`, `OffsetsMismatch`, `CorruptState`) versus giving up after N failed ticks, worker start/stop events, and whether heartbeats use a monotonic clock |
-| 3 | 3e | Chaos tests: `kill -9` mid-batch, rescale from 4 to 3 workers |
+| 3 | 3d ✅ | Supervisor (`python -m catalog.supervisor`, no `honcho`): heartbeat watchdog (start time counts as a beat), restart. From the 3c review: distinct worker exit codes for fatal startup errors (`PartitionTaken`, `OffsetsMismatch`, `CorruptState`) versus giving up after N failed ticks, worker start/stop events, and whether heartbeats use a monotonic clock |
+| 3 | 3e | Chaos tests: `kill -9` mid-batch, rescale from 4 to 3 workers, and a `kill -9`ed supervisor: its workers keep running and keep their locks (the next supervisor's workers exit 3), so workers should watch their parent |
 | 4 | 4a | Merchant registry (SQLite) and admin CLI: create a merchant, rotate a key |
 | 4 | 4b | `POST /listings:batch`: auth, envelope, 32 MB cap, disk guard, direct append |
 | 4 | 4c | Group-commit appender (≤100 ms window) |
@@ -281,7 +283,7 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 6 | 6e ⏸ | Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK |
 | 7 | 7a | Load generator (multiprocess) |
 | 7 | 7b | Chaos scenario runner and the three oracles |
-| 7 | 7c | Metrics SQL and runbook |
+| 7 | 7c | Metrics SQL and runbook. From the 3d review: `process_exit` events for processes stopped at shutdown, and for every exit seen in the pass that hit a fatal one |
 | 7 | 7d ⏸ | `stress-smoke` CI job; then full stress runs on your Mac |
 
 ## Phases
@@ -350,7 +352,7 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
   - keep one table handle per table per process
   - never fork while holding partition claims; use spawn
   - mark a classifier failure with `Classification(..., needs_reclassify=True)`, never by leaving `needs_classify` set
-  - every standalone entry point (the worker CLI, and later export, snapshot and chaos runners) flushes and exits with `os._exit`: Arrow can hang at process exit after a Delta scan ([spikes/NOTES.md](../spikes/NOTES.md), "Exit hang")
+  - every standalone entry point (the worker and supervisor CLIs, and later export, snapshot and chaos runners) exits through `entry.exit_with`, which flushes and calls `os._exit`: Arrow can hang at process exit after a Delta scan ([spikes/NOTES.md](../spikes/NOTES.md), "Exit hang")
 - **Exit:** all of the above pass.
 
 **Phase 4 — Ingestion API** (`api`, `merchants`, `status`)

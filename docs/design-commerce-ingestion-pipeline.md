@@ -63,7 +63,7 @@ Only the Ingestion API and the backfill job write to the Landing log, both appen
 | Change Export | Every minute: reads the change feed since its watermark and writes one Parquet file (latest row per changed Listing key; tombstone → `op=delete`), named by version range, then advances the watermark. If the watermark is older than what cleanup kept, it exports a full snapshot instead. Files kept 3 days. | Listing Store | Export files, watermark, events |
 | Catalog Snapshots | Every 6 h: copies the Listing Store at a pinned version. Keeps 7 days. Never read to serve shoppers. | Listing Store | Snapshot folders |
 | Backfill | Appends `op=reclassify` changes for `needs_reclassify` rows and after taxonomy version bumps. | Listing Store | Landing log |
-| Supervisor | Starts processes from a `Procfile`. Restarts a worker whose last sign of life (its latest heartbeat, or its start time if it has not beaten yet) is more than 60 s old. Workers beat once at startup, before their first batch. | Heartbeat files | — |
+| Supervisor | `python -m catalog.supervisor` starts the `Procfile`'s processes, restarts one that exits, and kills and restarts a `worker-*` whose last sign of life is more than 60 s old. That is its latest heartbeat, or its start if it has not beaten yet: a beat from an earlier run never counts, and a torn heartbeat file counts as none. Workers beat once at startup, before their first batch. A process that exits within 10 s of starting restarts after 5 s, so a crash loop can't spin; a restart that can't spawn is retried the same way. Only a worker's exit code can be fatal (2 for a bad flag, 3 `PartitionTaken`, 4 `OffsetsMismatch`, 5 `CorruptState`): a restart can't fix it, so everything is stopped with that code. Children get their own session and are signalled as a whole process group, so a Ctrl-C or a closed terminal reaches only the supervisor, which stops them all (SIGTERM, then SIGKILL after one shared 10 s grace), wrappers' children included. One supervisor per state directory: a second exits 3 at once (`state/supervisor.lock`). A bare `python` in the `Procfile` is the supervisor's own interpreter. Heartbeats use `time.monotonic()`, so a laptop's sleep or a clock step never looks like a hang. | Heartbeat files, exit codes | `process_exit` and `supervisor_*` events |
 
 ### Change lifecycle
 
@@ -144,6 +144,9 @@ The Listing Store is compacted to about 1 MiB files. A copy-on-write MERGE rewri
 - **Events:** one JSONL line per stage per change, carrying `submission_id`, `change_index`, the Listing key, `partition`, the Listing Store version where relevant, and a timestamp. Each process writes its own files. Workers also write two batch-level events, both only after their MERGE commits, so a retried batch doesn't repeat them:
   - `classify_failed`: `listings`, `partitions`, `error`.
   - `batch`: `worker`, `changes`, `ms` (the tick, including the MERGE), `head` (the Landing log version read up to), and `next` (`{partition: [version, seq]}` for each partition whose offset moved). A partition's lag in commits is `head + 1 - next[p][0]`. A tick that moves no offset writes nothing.
+- **Process events**, written as they happen:
+  - Worker: `worker_start` (`worker`, `workers`, `pid`); `tick_failed` (`worker`, `attempt`, `error`) for each failed tick before the retry; `worker_stop` (`worker`, and `error` if it gave up).
+  - Supervisor: `supervisor_start` (`processes`, `pid`) and `supervisor_stop` (`code`); `process_exit` (`process`, `reason` exit, stale, fatal or spawn, the exit `code` and old `pid`, or the spawn `error`). Only a fatal one isn't followed by a restart. The supervisor's own events are best effort: a full disk never stops it.
 - **Reading events:** each process run writes its own file (`<process>-<pid>-<nonce>.jsonl`), so a restarted process never appends after its predecessor's torn last line. The reader streams files and trusts only complete lines, skipping a line still being written or one torn by a crash. (DuckDB's `read_json` with `ignore_errors` returns a *partial* event instead, which could look real, so it isn't used for events that drive status.)
 - **DuckDB is a read-only query engine** for metrics and ad-hoc SQL. Each query uses a throwaway in-memory connection over Delta (via `to_pyarrow_dataset()`) and Parquet. The pipeline never writes to DuckDB.
 - **Metrics (saved SQL):** freshness p50/p99, worker lag per partition, classify latency, rates of stale, conflict, failed and Uncategorized changes, worker utilization.
@@ -159,7 +162,7 @@ The Listing Store is compacted to about 1 MiB files. A copy-on-write MERGE rewri
 Local-first on one Mac (ADR-0002), Python 3.14:
 - Delta tables through `deltalake` (delta-rs)
 - FastAPI and uvicorn, in a single process
-- worker processes, started by `honcho` from a `Procfile`
+- worker processes, run from a `Procfile` by our own supervisor, not `honcho`: it stops everything when one process exits and never restarts
 - fastembed; Laya on MLX for the experiment
 
 No Docker, because MLX can't use the GPU inside it. Stress runs go under `caffeinate`. A later move to Databricks keeps the same tables.

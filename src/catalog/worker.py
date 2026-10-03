@@ -11,7 +11,6 @@ import os
 import signal
 import sys
 import threading
-import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
@@ -20,7 +19,7 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from catalog import landing, state, store
+from catalog import entry, landing, state, store
 from catalog.classify import UNCATEGORIZED, FakeClassifier
 from catalog.events import EventLog
 from catalog.keys import owned, partition
@@ -78,6 +77,10 @@ def process_batch(
 POLL = 0.2  # seconds between reads when caught up: the design doc's "1,000 changes or 200 ms"
 ATTEMPTS = 5  # failed ticks in a row before crashing; backoff 1+2+4+8 s stays under 3d's 60 s
 COMPACT_EVERY = 100  # batches with changes between compactions (ponytail: untuned until Phase 7)
+# Exit codes: 0 stopped, 1 gave up on failed ticks (a restart may fix it), over 1 fatal, so the
+# supervisor stops instead: 2 is a bad flag, and these no restart fixes.
+FATAL = {state.PartitionTaken: 3, state.OffsetsMismatch: 4, state.CorruptState: 5}
+DATA, STATE = Path("data"), Path("state")  # the default directories, shared with the supervisor
 
 
 def run(
@@ -90,20 +93,23 @@ def run(
     stop: threading.Event,
     limit: int = 1000,
     compact_every: int = COMPACT_EVERY,
-    clock: Callable[[], float] = time.time,
+    clock: Callable[[], float] = state.CLOCK,  # the supervisor compares beats with the same one
 ) -> None:
     """Process the partitions worker `index` of `workers` owns until `stop` is set.
 
     Any error is retried with backoff and never advances an offset (lifecycle step 8); after
     ATTEMPTS failed ticks in a row it propagates, so the worker crashes and 3d restarts it.
     """
-    name, mine = f"worker-{index}", owned(index, workers)
+    name, mine = f"{state.WORKER}{index}", owned(index, workers)
     with state.claim(state_dir, mine):  # first: a duplicate worker dies before writing anything
         landing_dt = landing.ensure(str(data / "landing_log"))
         store_dt = store.ensure(str(data / "listing_store"))
         events = EventLog(data / "events", name)
         offsets = state.load_offsets(state_dir, mine, landing.table_id(landing_dt))
         state.beat(state_dir, name, clock())  # before the first batch
+        events.emit(
+            [{"type": "worker_start", "worker": name, "workers": workers, "pid": os.getpid()}]
+        )
         failures = busy = 0
         while not stop.is_set():
             started = clock()
@@ -130,9 +136,17 @@ def run(
                 if busy >= compact_every:  # owner-only (ADR-0001); a failure retries next tick
                     store.compact(store_dt, mine)
                     busy = 0
-            except Exception:
+            except Exception as e:
                 failures += 1
-                if failures >= ATTEMPTS:
+                error = repr(e)[:500]
+                logged = [
+                    {"type": "tick_failed", "worker": name, "attempt": failures, "error": error}
+                ]
+                if gave_up := failures >= ATTEMPTS:
+                    logged.append({"type": "worker_stop", "worker": name, "error": error})
+                with contextlib.suppress(OSError):  # best effort: the error itself matters more
+                    events.emit(logged)
+                if gave_up:
                     raise
                 print(f"{name}: tick failed ({failures}/{ATTEMPTS}):", file=sys.stderr)
                 traceback.print_exc()
@@ -141,15 +155,20 @@ def run(
             failures = 0
             if min(v for v, _ in offsets.values()) > landing_dt.version():  # caught up
                 stop.wait(POLL)
+        events.emit([{"type": "worker_stop", "worker": name}])
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m catalog.worker")
     args.add_argument("--index", type=int, required=True)
     args.add_argument("--workers", type=int, required=True)
-    args.add_argument("--data", type=Path, default=Path("data"))
-    args.add_argument("--state", type=Path, default=Path("state"))
+    args.add_argument("--data", type=Path, default=DATA)
+    args.add_argument("--state", type=Path, default=STATE)
     a = args.parse_args(argv)
+    try:
+        owned(a.index, a.workers)
+    except ValueError as e:
+        args.error(str(e))  # exit 2: fatal, so the supervisor doesn't restart a bad flag forever
     stop, stopping = threading.Event(), []
 
     def on_signal(*_):  # Event.set takes a lock the interrupted thread may hold: set it elsewhere
@@ -236,15 +255,4 @@ def _answer(answer, version: str) -> Classification:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-        code = 0
-    except SystemExit as e:  # argparse: --help or a bad flag
-        code = e.code or 0
-    except BaseException:  # gave up after ATTEMPTS failed ticks: exit 1 for the supervisor
-        traceback.print_exc()
-        code = 1
-    for stream in (sys.stdout, sys.stderr):
-        with contextlib.suppress(Exception):  # closed, or a broken pipe: exit anyway
-            stream.flush()
-    os._exit(code)  # not sys.exit: Arrow can hang at process exit (spikes/NOTES.md)
+    entry.exit_with(main, FATAL)  # a fatal startup error's code, or 1 after giving up

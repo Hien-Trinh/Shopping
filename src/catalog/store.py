@@ -141,32 +141,66 @@ def fingerprints(dt: DeltaTable, version: int | None = None) -> dict[Key, Finger
     return {(r["merchant_id"], r["merchant_product_id"]): fingerprint(r) for r in rows}
 
 
+# What converting a value that slipped past validation raises (plan-v1.md A6): the data's fault.
+DATA_ERRORS = (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError, UnicodeError)
+
+
+def unstorable(listings: Sequence[Content | None]) -> list[str | None]:
+    """Per listing, why merge() would fail to store it (the error, at most 500 chars), else None.
+
+    The same conversion merge() does, run before any I/O, so a bad value fails only its own Change
+    and fails it the same way every time.
+    """
+    errors: list[str | None] = [None] * len(listings)
+    rows: dict[int, dict] = {}
+    for i, listing in enumerate(listings):
+        try:
+            rows[i] = _content(listing)
+        except DATA_ERRORS as e:
+            errors[i] = repr(e)[:500]
+    try:
+        pa.Table.from_pylist(list(rows.values()), schema=_CHECKED)
+    except DATA_ERRORS:  # rare: find the bad rows one by one
+        for i, row in rows.items():
+            try:
+                pa.Table.from_pylist([row], schema=_CHECKED)
+            except DATA_ERRORS as e:
+                errors[i] = repr(e)[:500]
+    return errors
+
+
+def _content(listing: Content | None) -> dict:
+    """The row columns that come from merchant content; null content columns for a Tombstone."""
+    row = {"content_hash": content_hash(listing)}
+    if listing is None:
+        return row
+    attributes = json.dumps(listing.attributes, sort_keys=True, ensure_ascii=False)
+    return row | listing.model_dump(include=set(_CONTENT)) | {"attributes": attributes}
+
+
+_CHECKED = pa.schema([SCHEMA.field(c) for c in ("content_hash", *_CONTENT, "attributes")])
+
+
 def _row(w: Write, updated_at: datetime) -> dict:
     row = {
         "partition": partition(*w.key),
         "merchant_id": w.key[0],
         "merchant_product_id": w.key[1],
         "source_version": w.source_version,
-        "content_hash": content_hash(w.listing),
         "is_tombstone": w.listing is None,
         "needs_reclassify": False,
         "updated_at": updated_at,
-    }
+    } | _content(w.listing)
     if w.listing is None:
         return row  # content columns are left null
     if w.classification is None:
         raise ValueError(f"{w.key}: classify (or mark Uncategorized) before merging")
-    return (
-        row
-        | w.listing.model_dump(include=set(_CONTENT))
-        | {
-            "attributes": json.dumps(w.listing.attributes, sort_keys=True, ensure_ascii=False),
-            "primary_category": w.classification.category,
-            "classify_confidence": w.classification.confidence,
-            "taxonomy_version": w.classification.taxonomy_version,
-            "needs_reclassify": w.classification.needs_reclassify,
-        }
-    )
+    return row | {
+        "primary_category": w.classification.category,
+        "classify_confidence": w.classification.confidence,
+        "taxonomy_version": w.classification.taxonomy_version,
+        "needs_reclassify": w.classification.needs_reclassify,
+    }
 
 
 def _stored(r: dict) -> Stored:

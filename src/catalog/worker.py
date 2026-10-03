@@ -15,8 +15,9 @@ from catalog import landing, state, store
 from catalog.classify import UNCATEGORIZED
 from catalog.events import EventLog
 from catalog.keys import partition
-from catalog.landing import Position
+from catalog.landing import Landed, Position
 from catalog.plan import Classification, Outcome, Write, plan
+from catalog.status import FAILED
 
 
 def process_batch(
@@ -36,24 +37,22 @@ def process_batch(
     on one partition would redo each other's work and could pick the wrong conflict winner.
     """
     batch = landing.read(landing_dt, offsets, limit)
-    changes = [landed.change for landed in batch.changes]
-    stored = store.read(store_dt, {c.key for c in changes})
-    planned = plan(changes, stored, classifier.taxonomy_version)
-    writes = _classify(planned.writes, classifier, events)
-    # ponytail: trusts the single-writer lock; merged.applied < len(writes) would mean a zombie
-    # overtook this worker and some `written` outcomes are wrong. Step 3b checks it.
-    merged = store.merge(store_dt, writes, now())
+    # A Change whose data can't be stored fails alone, before planning, so the rest plan without it
+    # (design doc, lifecycle step 8). Any other error propagates: storage or a bug, never the data.
+    errors = store.unstorable([x.change.listing for x in batch.changes])
+    good = [x for x, error in zip(batch.changes, errors, strict=True) if error is None]
+    merged = iter(_merge(store_dt, good, classifier, events, now))
+    results = [{"type": FAILED, "error": error} if error else next(merged) for error in errors]
     events.emit(
         {
-            "type": outcome,
             "submission_id": landed.submission_id,
             "change_index": landed.change_index,
             "merchant_id": landed.change.merchant_id,
             "merchant_product_id": landed.change.merchant_product_id,
             "partition": landed.partition,
         }
-        | ({"store_version": merged.version} if outcome in _WRITES else {})
-        for landed, outcome in zip(batch.changes, planned.outcomes, strict=True)
+        | result
+        for landed, result in zip(batch.changes, results, strict=True)
     )
     moved = {p: pos for p, pos in batch.offsets.items() if pos != offsets[p]}
     state.save_offsets(state_dir, moved, landing.table_id(landing_dt))
@@ -61,6 +60,27 @@ def process_batch(
 
 
 _WRITES = {Outcome.WRITTEN, Outcome.RECLASSIFIED}
+
+
+class Overtaken(RuntimeError):
+    """The MERGE applied fewer rows than planned: another writer got there first (ADR-0001)."""
+
+
+def _merge(store_dt, landed: Sequence[Landed], classifier, events, now) -> list[dict]:
+    changes = [x.change for x in landed]
+    stored = store.read(store_dt, {c.key for c in changes})
+    planned = plan(changes, stored, classifier.taxonomy_version)
+    writes = _classify(planned.writes, classifier, events)
+    merged = store.merge(store_dt, writes, now())
+    if merged.applied != len(writes):
+        parts = sorted({partition(*w.key) for w in writes})
+        raise Overtaken(
+            f"MERGE applied {merged.applied} of {len(writes)} rows (partitions {parts})"
+        )
+    return [
+        {"type": o} | ({"store_version": merged.version} if o in _WRITES else {})
+        for o in planned.outcomes
+    ]
 
 
 def _classify(writes: Sequence[Write], classifier, events: EventLog) -> list[Write]:

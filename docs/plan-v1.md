@@ -62,10 +62,10 @@ This replaces the Round 6 decision that retries show up as "stale, ignored".
 
 **A6. "Retry 3 times, then skip" loses data on infrastructure errors.** With a full disk, thousands of valid changes would be skipped and marked `failed`.
 → Treat the two kinds of error differently:
-- **Errors in a single change's logic:** retry, then mark `failed` and skip.
-- **Storage errors** (Landing log read, MERGE, offset write): back off, never advance the offset, and crash loudly after N attempts.
+- **A Change whose data can't be stored** (a value that slipped past validation): mark `failed` and skip. It is found per Change before planning, by the same conversion the MERGE uses, so the check is deterministic and isn't retried.
+- **Every other error**, whether storage (Landing log read, Listing Store read, MERGE, offset write) or a bug in our code: back off, never advance the offset, and crash loudly after N attempts.
 
-If a MERGE fails on the data itself, bisect the batch to isolate the bad change.
+Step 3b first bisected a failing MERGE. Its review (Oct 2) replaced that with the per-Change check, for three reasons. Bisecting blamed a corrupt store file's read error on the data and mass-failed valid Changes. It reported a bad Change as `written` when a later Change in the same batch superseded it. And it reran reads, the classifier and MERGEs at every level.
 
 **A7. Python's `hash()` is randomized per process.** Different processes would put the same Listing key in different partitions, and ordering silently breaks. When I ran `hash('m_42/SKU-123') % 64` in fresh processes I got 21, 42 and 35. One earlier pair happened to match (55, 55), which is exactly why a quick check can make it look stable.
 → Use **SHA-256**:
@@ -260,8 +260,8 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | --- | --- | --- |
 | 2 | 2r ✅ | Mutation-survivor triage: pin `content_hash` bytes, kill or justify the rest |
 | 3 | 3a ✅ | `worker.process_batch`: one batch from read to plan, classify (FakeClassifier), merge, events and offsets, plus the replay oracle test |
-| 3 | 3b | Error policy: per-change failure isolation and bisecting; a storage error never advances the offset |
-| 3 | 3c | Worker process: claim (a second worker on a claimed partition gets `PartitionTaken`), startup beat, poll loop, owner compaction cadence, a per-batch event (offsets, duration, changes) for lag and utilization, CLI entry, `Procfile` |
+| 3 | 3b ✅ | Error policy: per-change failure isolation (a storability check before planning); any other error never advances the offset |
+| 3 | 3c | Worker process: claim (a second worker on a claimed partition gets `PartitionTaken`), startup beat, poll loop with backoff on any error `process_batch` raises (crash after N attempts), owner compaction cadence, a per-batch event (offsets, duration, changes) for lag and utilization, CLI entry, `Procfile` |
 | 3 | 3d | Supervisor: heartbeat watchdog (start time counts as a beat), restart |
 | 3 | 3e | Chaos tests: `kill -9` mid-batch, rescale from 4 to 3 workers |
 | 4 | 4a | Merchant registry (SQLite) and admin CLI: create a merchant, rotate a key |

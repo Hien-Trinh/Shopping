@@ -207,3 +207,12 @@ def test_concurrent_startup_creates_one_table(tmp_path):
 
 def _open_and_identify(path):
     return store.ensure(path).metadata().id
+
+
+def test_unstorable_names_the_bad_listing_only():
+    from catalog.envelope import Content
+
+    surrogate = Content.model_construct(**listing().model_dump() | {"title": "\ud800"})
+    errors = store.unstorable([listing(), None, surrogate])
+    assert errors[:2] == [None, None]  # a live Listing and a Tombstone store fine
+    assert errors[2].startswith("UnicodeEncodeError")

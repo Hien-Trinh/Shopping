@@ -42,6 +42,10 @@ class Api:
         headers = {"Authorization": f"Bearer {key or self.key}"} | kwargs.pop("headers", {})
         return self.client.post("/listings:batch", json=body, headers=headers, **kwargs)
 
+    def get(self, submission_id, key=None):
+        headers = {"Authorization": f"Bearer {key or self.key}"}
+        return self.client.get(f"/submissions/{submission_id}", headers=headers)
+
     def landed(self):
         return landing.read(self.log, {p: START for p in range(PARTITIONS)}, limit=10_000).changes
 
@@ -318,3 +322,143 @@ def test_the_request_time_stamps_the_landing_and_bounds_source_versions(client):
     client.log.update_incremental()
     assert client.log.to_pyarrow_table(columns=["received_at"])["received_at"].to_pylist() == [NOW]
     assert {e["ts"] for e in client.events()} == {now_ms}
+
+
+# GET /submissions/{id} (step 4d)
+
+NOT_FOUND = {"detail": "no such submission"}
+
+
+LATER = NOW.timestamp() + 60
+
+
+def report(client, submission, *outcomes, at=LATER):
+    """Outcome events as a worker writes them, as (change_index, outcome) pairs."""
+    worker = EventLog(client.data / "events", "worker", lambda: at)
+    ids = {"submission_id": submission, "merchant_id": client.merchant_id}
+    worker.emit(ids | {"change_index": i, "type": o} for i, o in outcomes)
+
+
+def uuid7_at(ms):
+    return str(api.uuid7_at(ms))
+
+
+def test_the_submission_id_carries_the_api_clock(client):
+    r = client.post({"changes": [change("a")]})
+    assert uuid.UUID(r.json()["submission_id"]).int >> 80 == int(NOW.timestamp() * 1000)
+
+
+def test_status_moves_from_pending_to_done_and_keeps_each_changes_best_outcome(client):
+    r = client.post({"changes": [change("a"), change("b"), change("c", 0)]})
+    submission = r.json()["submission_id"]
+    got = client.get(submission)
+    assert got.status_code == 200
+    assert got.json() == {
+        "submission_id": submission,
+        "done": False,
+        "counts": {"pending": 2, "rejected": 1},
+        "changes": [
+            {"index": 0, "outcome": "pending"},
+            {"index": 1, "outcome": "pending"},
+            {"index": 2, "outcome": "rejected"},
+        ],
+    }
+    report(client, submission, (0, "written"))
+    assert client.get(submission).json()["done"] is False
+    report(client, submission, (0, "already_applied"), (1, "stale"))  # a crash replay of 0
+    body = client.get(submission).json()
+    assert body["done"] is True
+    assert [c["outcome"] for c in body["changes"]] == ["written", "stale", "rejected"]
+    assert body["counts"] == {"written": 1, "stale": 1, "rejected": 1}
+
+
+def test_a_submission_with_nothing_valid_is_done_and_rejected(client):
+    submission = client.post({"changes": [change("a", 0)]}).json()["submission_id"]
+    body = client.get(submission).json()
+    assert (body["done"], body["counts"]) == (True, {"rejected": 1})
+
+
+def test_another_merchants_submission_gets_the_same_404_as_an_unknown_one(client):
+    _, other_key = merchants.create(client.db, "USD")
+    theirs = client.post({"changes": [change("a")]}, key=other_key).json()["submission_id"]
+    now_ms = int(NOW.timestamp() * 1000)
+    foreign = client.get(theirs)
+    unknown = client.get(uuid7_at(now_ms))
+    future = client.get(uuid7_at(now_ms + DAY_MS))
+    assert foreign.status_code == unknown.status_code == future.status_code == 404
+    assert foreign.content == unknown.content == future.content
+    assert unknown.json() == NOT_FOUND
+    mine = client.merchant_id
+    assert refused(client) == [
+        (404, "not_owner", mine),
+        (404, "unknown_submission", mine),
+        (404, "unknown_submission", mine),
+    ]
+    assert client.get(theirs, key=other_key).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "nope",
+        str(uuid.uuid4()),
+        "00000000-0000-0000-0000-000000000000",
+        "ffffffff-ffff-7fff-bfff-ffffffffffff",
+    ],
+)
+def test_an_id_that_isnt_a_uuid7_gets_404_without_reading_events(client, monkeypatch, raw):
+    monkeypatch.setattr(events, "read", fail)
+    r = client.get(raw)
+    assert (r.status_code, r.json()) == (404, NOT_FOUND)
+    monkeypatch.undo()  # refused() reads events itself
+    assert refused(client) == [(404, "unknown_submission", client.merchant_id)]
+
+
+def test_the_id_is_normalized_before_the_lookup(client):
+    submission = client.post({"changes": [change("a")]}).json()["submission_id"]
+    for form in (submission.upper(), "{" + submission + "}"):
+        r = client.get(form)
+        assert r.status_code == 200
+        assert r.json()["submission_id"] == submission
+
+
+@pytest.mark.parametrize("key", [None, "nope"])
+def test_a_missing_or_unknown_key_gets_the_posts_401(client, key):
+    headers = {} if key is None else {"Authorization": f"Bearer {key}"}
+    r = client.client.get(f"/submissions/{uuid7_at(0)}", headers=headers)
+    assert refusal(r) == (401, {"detail": "missing or invalid API key"}, "Bearer")
+    assert refused(client) == [(401, "no_key" if key is None else "unknown_key", None)]
+
+
+def test_a_revoked_merchant_gets_401_and_a_rotated_key_still_reads(client):
+    submission = client.post({"changes": [change("a")]}).json()["submission_id"]
+    new_key = merchants.rotate(client.db, client.merchant_id)
+    assert client.get(submission).status_code == 401  # the old key
+    assert client.get(submission, key=new_key).status_code == 200
+    merchants.revoke(client.db, client.merchant_id)
+    assert client.get(submission, key=new_key).status_code == 401
+    assert refused(client) == [(401, "unknown_key", None), (401, "revoked", client.merchant_id)]
+
+
+def test_low_disk_doesnt_refuse_a_read(make_api):
+    client = make_api(min_free=2**62)
+    submission = uuid7_at(int(NOW.timestamp() * 1000))
+    report(client, submission, (0, "written"), at=NOW.timestamp())
+    assert client.get(submission).status_code == 200
+
+
+def test_the_lookup_starts_at_the_hour_in_the_id(client):
+    submission = client.post({"changes": [change("a")]}).json()["submission_id"]
+    report(client, submission, (0, "written"), at=NOW.timestamp() - 1)  # 11:59:59, an hour early
+    assert client.get(submission).json()["changes"] == [{"index": 0, "outcome": "pending"}]
+
+
+def test_a_failed_read_is_a_500(client, monkeypatch):
+    submission = client.post({"changes": [change("a")]}).json()["submission_id"]
+    monkeypatch.setattr(events, "read", fail)
+    assert client.get(submission).status_code == 500
+
+
+def test_a_404_goes_out_even_if_its_event_cant_be_written(client, monkeypatch):
+    monkeypatch.setattr(EventLog, "emit", fail)
+    assert client.get(uuid7_at(0)).status_code == 404

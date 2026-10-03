@@ -1,4 +1,4 @@
-"""Ingestion API: POST /listings:batch (design doc, lifecycle steps 1-2; docs/specs/step-4b.md).
+"""Ingestion API: POST /listings:batch and GET /submissions/{id} (docs/specs/step-4b.md, 4d.md).
 
 Accepted Changes land through the group commit (docs/specs/step-4c.md); only then do their events
 go out, and only then the 202, so no `accepted` event ever names a Change that didn't land.
@@ -13,20 +13,23 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from catalog import entry, envelope, landing, merchants, state
+from catalog import entry, envelope, landing, merchants, state, status
+from catalog import events as event_files
 from catalog.events import EventLog
 from catalog.keys import partition
 
 MAX_BODY = 32 * 2**20  # bytes; uvicorn and FastAPI set no limit (plan-v1 B8)
 MIN_FREE = 5 * 2**30  # bytes of free disk below which every write gets 503 (plan-v1 A13)
 UNAUTHORIZED = "missing or invalid API key"  # the same for every reason: it tells a caller nothing
+NOT_FOUND = "no such submission"  # the same for an unknown id and another Merchant's
 
 
 def create_app(
@@ -63,18 +66,24 @@ def create_app(
         challenge = {"WWW-Authenticate": "Bearer"} if status == 401 else None
         return JSONResponse({"detail": detail}, status, challenge)
 
+    def authenticate(request: Request) -> merchants.Merchant | JSONResponse:
+        """The Merchant the request's Bearer key belongs to, or the 401 to send instead."""
+        scheme, _, key = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() != "bearer":
+            return refuse(401, "no_key", UNAUTHORIZED)
+        try:
+            return merchants.verify(db, key.strip())
+        except merchants.Denied as e:
+            return refuse(401, e.reason, UNAUTHORIZED, e.merchant_id)
+
     @app.post("/listings:batch")
     async def submit(request: Request):
         received = datetime.fromtimestamp(clock(), UTC)
         if shutil.disk_usage(data).free < min_free:  # first: a low disk refuses everything
             return refuse(503, "low_disk", "the server is low on disk; retry later")
-        scheme, _, key = request.headers.get("authorization", "").partition(" ")
-        if scheme.lower() != "bearer":
-            return refuse(401, "no_key", UNAUTHORIZED)
-        try:
-            merchant = merchants.verify(db, key.strip())
-        except merchants.Denied as e:
-            return refuse(401, e.reason, UNAUTHORIZED, e.merchant_id)
+        merchant = authenticate(request)
+        if isinstance(merchant, JSONResponse):
+            return merchant
         too_large = f"the body is over {max_body} bytes"
         length = request.headers.get("content-length")  # uvicorn has checked it's a number
         if length is not None and int(length) > max_body:
@@ -97,7 +106,8 @@ def create_app(
             )
         except envelope.BadBatch as e:
             return refuse(400, "bad_batch", str(e), merchant.merchant_id)
-        submission = str(uuid.uuid7())  # before the append: its events fall in its hour or later
+        # Before the append, from the clock its events use: they fall in its hour or later (A12).
+        submission = str(uuid7_at(int(received.timestamp() * 1000)))
         if checked.accepted:  # shares a commit with the other requests in its window
             await appender.submit([(submission, i, c, received) for i, c in checked.accepted])
         events.emit(submission_events(submission, merchant.merchant_id, checked))
@@ -105,7 +115,43 @@ def create_app(
         reply = {"submission_id": submission, "accepted": len(checked.accepted)}
         return JSONResponse(reply | {"rejected": rejected}, 202)
 
+    @app.get("/submissions/{submission_id}")
+    async def lookup(request: Request, submission_id: str):
+        merchant = authenticate(request)  # no disk guard: a read lands nothing
+        if isinstance(merchant, JSONResponse):
+            return merchant
+
+        def not_found(reason: str) -> JSONResponse:
+            return refuse(404, reason, NOT_FOUND, merchant.merchant_id)
+
+        try:
+            parsed = uuid.UUID(submission_id)
+            if parsed.version != 7:
+                raise ValueError
+            # Only the hours from the id's own (A12). ponytail: an id dated 1970 scans every
+            # hour kept, until 5d's events retention lets it 404 an id older than the horizon.
+            since = datetime.fromtimestamp(0, UTC) + timedelta(milliseconds=parsed.int >> 80)
+        except ValueError, OverflowError:  # a 48-bit timestamp reaches past the year 9999
+            return not_found("unknown_submission")
+        submission = str(parsed)  # canonical, so case and braces don't matter
+        # In a thread, so a long scan doesn't stall the POSTs; emits stay on this one.
+        found = await run_in_threadpool(
+            lambda: status.fold(submission, event_files.read(data / "events", since, submission))
+        )
+        if found is None:
+            return not_found("unknown_submission")
+        if found.merchant_id != merchant.merchant_id:
+            return not_found("not_owner")
+        changes = [{"index": i, "outcome": o} for i, o in found.outcomes.items()]
+        reply = {"submission_id": submission, "done": found.done, "counts": dict(found.counts)}
+        return JSONResponse(reply | {"changes": changes})
+
     return app
+
+
+def uuid7_at(ms: int) -> uuid.UUID:
+    """A UUIDv7 whose 48-bit timestamp is `ms`, taking every other bit from uuid7()."""
+    return uuid.UUID(int=(ms << 80) | (uuid.uuid7().int & ((1 << 80) - 1)))
 
 
 def submission_events(submission: str, merchant_id: str, checked: envelope.Checked) -> list[dict]:

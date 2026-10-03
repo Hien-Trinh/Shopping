@@ -1,4 +1,9 @@
+import itertools
 import random
+import signal
+import subprocess
+import sys
+import time
 from datetime import UTC, datetime
 
 import pyarrow as pa
@@ -34,8 +39,8 @@ A, B = product_in(3), product_in(40)
 class Env:
     def __init__(self, tmp_path, classifier=None):
         self.tmp = tmp_path
-        self.landing = landing.ensure(str(tmp_path / "landing"))
-        self.store = store.ensure(str(tmp_path / "store"))
+        self.landing = landing.ensure(str(tmp_path / "landing_log"))
+        self.store = store.ensure(str(tmp_path / "listing_store"))
         self.state, self.events_root = tmp_path / "state", tmp_path / "events"
         self.log = EventLog(self.events_root, "worker-0", clock=lambda: NOW.timestamp())
         self.classifier = classifier or FakeClassifier()
@@ -55,7 +60,7 @@ class Env:
         self.offsets = worker.process_batch(
             self.landing, self.store, self.classifier, self.log, self.state, self.offsets,
             limit=limit, now=lambda: NOW,
-        )  # fmt: skip
+        ).offsets  # fmt: skip
 
     def drain(self, limit=1000):
         for _ in range(100):
@@ -90,7 +95,7 @@ def test_idle_offsets_move_past_commits_of_other_partitions(env):
     env.land(up(A, 1))
     env.offsets = worker.process_batch(
         env.landing, env.store, env.classifier, env.log, env.state, {40: START}, now=lambda: NOW
-    )
+    ).offsets
     assert env.offsets == {40: (env.landing.version() + 1, 0)}
     assert store.read(env.store, [("m_1", A)]) == {}  # partition 3 isn't ours
 
@@ -243,7 +248,7 @@ def test_a_storage_error_never_fails_changes_or_moves_offsets(env, monkeypatch):
 def test_a_corrupt_store_file_is_a_storage_error_not_bad_data(env):
     env.land(up(A, 1))
     env.run()
-    for f in (env.tmp / "store" / "partition=3").glob("*.parquet"):
+    for f in (env.tmp / "listing_store" / "partition=3").glob("*.parquet"):
         f.write_bytes(b"\0" * f.stat().st_size)  # pyarrow raises ArrowInvalid reading it
     saved = env.load_offsets()
     env.land(up(A, 2), submission="s2")
@@ -314,3 +319,130 @@ def test_replay_oracle_for_any_batching(env, seed):
     assert diff(expected_store(env.landed, failed), store.fingerprints(env.store)) == []
     # A merchant Change's status never changes on replay (internal reclassifies may improve).
     assert {i: env.outcomes()[i] for i in merchant} == {i: first[i] for i in merchant}
+
+
+class Ticks:
+    """Stands in for the stop Event: lets `n` ticks run and records waits instead of sleeping."""
+
+    def __init__(self, n):
+        self.n, self.waits = n, []
+
+    def is_set(self):
+        self.n -= 1
+        return self.n < 0
+
+    def wait(self, seconds):
+        self.waits.append(seconds)
+        return False
+
+
+def run(env, ticks, clock=lambda: NOW.timestamp(), **kwargs):
+    worker.run(env.tmp, env.state, 0, 4, env.classifier, stop=ticks, clock=clock, **kwargs)
+
+
+def stored(env, mpid):
+    return store.read(env.store, [("m_1", mpid)]).get(("m_1", mpid))
+
+
+def test_run_beats_before_its_first_batch(env):
+    env.land(up(A, 1))
+    run(env, Ticks(0))
+    assert state.heartbeat_age(env.state, "worker-0", NOW.timestamp()) == 0
+    assert stored(env, A) is None
+
+
+def test_run_processes_only_its_own_partitions(env):
+    env.land(up(A, 1), up(B, 1))  # worker 0 of 4 owns partitions 0-15: A (3), not B (40)
+    ticks = Ticks(2)
+    run(env, ticks)
+    assert (stored(env, A).source_version, stored(env, B)) == (1, None)
+    assert ticks.waits == [worker.POLL, worker.POLL]  # caught up: each tick waits
+    (tick,) = [e for e in events.read(env.events_root) if e["type"] == "batch"]  # 2nd: quiet
+    assert (tick["worker"], tick["changes"], tick["head"]) == ("worker-0", 1, 1)
+    assert tick["next"] == {str(p): [2, 0] for p in range(16)}
+
+
+def test_a_second_worker_on_a_claimed_partition_gets_partition_taken(tmp_path):
+    with state.claim(tmp_path / "state", [5]), pytest.raises(state.PartitionTaken):
+        worker.run(tmp_path, tmp_path / "state", 0, 4, FakeClassifier(), stop=Ticks(1))
+    assert not (tmp_path / "landing_log").exists()  # died before writing anything
+    assert not (tmp_path / "state" / "heartbeat").exists()
+
+
+def test_errors_back_off_and_a_good_tick_resets_the_count(env, monkeypatch):
+    real, fails = worker.process_batch, iter([True, True, False, True, False])
+
+    def flaky(*args, **kwargs):
+        if next(fails):
+            raise OSError("disk busy")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(worker, "process_batch", flaky)
+    env.land(up(A, 1))
+    ticks = Ticks(5)
+    run(env, ticks)
+    assert ticks.waits == [1, 2, worker.POLL, 1, worker.POLL]
+    assert stored(env, A).source_version == 1
+
+
+def test_it_gives_up_after_attempts_failed_ticks_in_a_row(env, monkeypatch):
+    def broken(*_, **__):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(worker, "process_batch", broken)
+    env.land(up(A, 1))
+    ticks = Ticks(10)
+    with pytest.raises(OSError, match="disk full"):
+        run(env, ticks, clock=itertools.count(1000).__next__)
+    assert ticks.waits == [1, 2, 4, 8]
+    assert state.heartbeat_age(env.state, "worker-0", 1000) == 0  # failed ticks never beat
+    assert env.load_offsets() == {p: START for p in range(PARTITIONS)}
+    with state.claim(env.state, range(16)):  # the crash released the claim
+        pass
+
+
+def test_it_compacts_every_k_busy_batches_and_retries_a_failed_compaction(env, monkeypatch):
+    calls, results = [], iter([None, OSError("compact"), None])
+
+    def compact(dt, partitions):
+        calls.append(list(partitions))
+        if error := next(results):
+            raise error
+
+    monkeypatch.setattr(store, "compact", compact)
+    env.land(up(A, 1), up(A, 2), up(A, 3), up(A, 4))
+    ticks = Ticks(6)
+    run(env, ticks, limit=1, compact_every=2)  # full batches don't wait; then caught up
+    assert calls == [list(range(16))] * 3  # after batches 2 and 4, and the retry
+    assert ticks.waits == [1, worker.POLL, worker.POLL]
+    assert stored(env, A).source_version == 4
+
+
+def test_main_wires_the_flags_and_stops_on_sigterm_or_sigint(tmp_path, monkeypatch):
+    handlers, seen = {}, {}
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.update({sig: handler}))
+
+    def fake_run(data, state_dir, index, workers, classifier, *, stop):
+        seen.update(data=data, state=state_dir, index=index, workers=workers)
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+        assert stop.wait(5)  # set from another thread, so it can't deadlock the handler
+
+    monkeypatch.setattr(worker, "run", fake_run)
+    argv = ["--index", "2", "--workers", "4", "--data", str(tmp_path / "d")]
+    worker.main([*argv, "--state", str(tmp_path / "s")])
+    assert seen == {"data": tmp_path / "d", "state": tmp_path / "s", "index": 2, "workers": 4}
+    assert set(handlers) == {signal.SIGTERM, signal.SIGINT}
+
+
+def test_the_cli_works_until_sigterm_then_exits_cleanly(env):
+    env.land(up(A, 1))
+    args = ["--index", "0", "--workers", "4", "--data", str(env.tmp), "--state", str(env.state)]
+    proc = subprocess.Popen([sys.executable, "-m", "catalog.worker", *args])
+    deadline = time.monotonic() + 30
+    while stored(env, A) is None:
+        assert proc.poll() is None and time.monotonic() < deadline
+        time.sleep(0.1)
+    proc.send_signal(signal.SIGTERM)
+    assert proc.wait(timeout=30) == 0
+    with state.claim(env.state, range(16)):  # released on exit
+        pass

@@ -261,8 +261,8 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 2 | 2r ✅ | Mutation-survivor triage: pin `content_hash` bytes, kill or justify the rest |
 | 3 | 3a ✅ | `worker.process_batch`: one batch from read to plan, classify (FakeClassifier), merge, events and offsets, plus the replay oracle test |
 | 3 | 3b ✅ | Error policy: per-change failure isolation (a storability check before planning); any other error never advances the offset |
-| 3 | 3c | Worker process: claim (a second worker on a claimed partition gets `PartitionTaken`), startup beat, poll loop with backoff on any error `process_batch` raises (crash after N attempts), owner compaction cadence, a per-batch event (offsets, duration, changes) for lag and utilization, CLI entry, `Procfile` |
-| 3 | 3d | Supervisor: heartbeat watchdog (start time counts as a beat), restart |
+| 3 | 3c ✅ | Worker process: claim (a second worker on a claimed partition gets `PartitionTaken`), startup beat, poll loop with backoff on any error `process_batch` raises (crash after N attempts), owner compaction cadence, a per-batch event (offsets, duration, changes) for lag and utilization, CLI entry, `Procfile` |
+| 3 | 3d | Supervisor: heartbeat watchdog (start time counts as a beat), restart; adds `honcho` to run the `Procfile` |
 | 3 | 3e | Chaos tests: `kill -9` mid-batch, rescale from 4 to 3 workers |
 | 4 | 4a | Merchant registry (SQLite) and admin CLI: create a merchant, rotate a key |
 | 4 | 4b | `POST /listings:batch`: auth, envelope, 32 MB cap, disk guard, direct append |
@@ -397,6 +397,7 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
 - Measure three costs from the PR #4 review at full batch size (1,000 random keys, 1M Listings) before the SLO run, and fix only the ones that break it:
   - `store.read` decodes every column of the touched partitions. Fix: scan the key columns first, then `take` the matching rows.
   - A batch MERGE touches about 63% of 1 MiB files, because keys are hash-scattered. Fix: key-sorted (Z-order) compaction, or a bucket column.
+  - Workers on different partitions sometimes hit Delta `CommitFailedError`: about 1 in 412 commits in the 3c design panel's 4-worker run. ADR-0002's spike saw none. The loop's backoff absorbs it; measure the rate under load.
   - `landing.read` re-reads a bulk commit once for every `limit` slice. Fix: end the change-feed range once `limit` pending rows are in hand, or cache the remainder in the worker.
 - **Exit:** every scenario ends with the three oracles passing, and the p99 freshness SLO (under 5 minutes) holds at 50/s.
 

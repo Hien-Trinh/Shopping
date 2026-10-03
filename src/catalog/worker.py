@@ -172,7 +172,8 @@ def watch(
     and the claims are released, and exit 1 if the process still runs `deadline` seconds later.
 
     Run it in a daemon thread: a worker that stops in time has exited by then. One that hasn't is
-    stuck in a native call, and would otherwise hold its partition locks forever.
+    stuck in a native call, and would otherwise hold its partition locks forever. So `exit` is
+    os._exit with no flush and no log line: either could block on what the stuck thread holds.
     """
     while alive():
         sleep(1)
@@ -186,6 +187,8 @@ def _alive(pid: int) -> bool:
         os.kill(pid, 0)  # a killed supervisor exists until reaped, which a shell does at once
     except ProcessLookupError:
         return False
+    except PermissionError:  # it exists, as another user's: a wrapper dropped our privileges
+        pass
     return True
 
 
@@ -200,6 +203,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         owned(a.index, a.workers)
     except ValueError as e:
         args.error(str(e))  # exit 2: fatal, so the supervisor doesn't restart a bad flag forever
+    pid = os.environ.get(SUPERVISOR, "")
+    if pid and not (pid.isdecimal() and 0 < int(pid) < 2**31):  # 0 or -1 would name a group
+        args.error(f"{SUPERVISOR} must be the pid of the supervisor that started it, got {pid!r}")
     stop, stopping = threading.Event(), []
 
     def on_signal(*_):  # Event.set takes a lock the interrupted thread may hold: set it elsewhere
@@ -209,7 +215,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
-    if pid := os.environ.get(SUPERVISOR):  # so a kill -9ed supervisor leaves no worker behind
+    if pid:  # so a kill -9ed supervisor leaves no worker behind
         supervisor = int(pid)
         threading.Thread(target=watch, args=(lambda: _alive(supervisor), stop), daemon=True).start()
     # ponytail: FakeClassifier until the real one (step 6b) is chosen by a flag.

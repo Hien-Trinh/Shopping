@@ -277,13 +277,13 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 5 | 5d | Landing log retention and compaction (never past the slowest offset) |
 | 5 | 5e | Retention-horizon bootstrap for workers below the horizon |
 | 6 | 6a ⏸ | Taxonomy loader (asks before downloading the Shopify taxonomy) |
-| 6 | 6b ⏸ | Embedding classifier with a batch timeout (asks before downloading the model) |
+| 6 | 6b ⏸ | Embedding classifier with a batch timeout (asks before downloading the model). From 3e: its native calls must release the GIL, or the supervisor watch can't exit a worker stuck in one |
 | 6 | 6c | Backfill job (`op=reclassify` for flagged rows and taxonomy bumps) |
 | 6 | 6d | Eval harness and report format |
 | 6 | 6e ⏸ | Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK |
 | 7 | 7a | Load generator (multiprocess) |
-| 7 | 7b | Chaos scenario runner and the three oracles |
-| 7 | 7c | Metrics SQL and runbook. From the 3d review: `process_exit` events for processes stopped at shutdown, and for every exit seen in the pass that hit a fatal one. From 3e: after a supervisor is killed, wait a few seconds for its workers to stop before starting a new one |
+| 7 | 7b | Chaos scenario runner and the three oracles. From 3e: a runner that kills the supervisor must reap it (`wait`), or its workers keep running until it does |
+| 7 | 7c | Metrics SQL and runbook. From the 3d review: `process_exit` events for processes stopped at shutdown, and for every exit seen in the pass that hit a fatal one. From 3e: after a supervisor is killed, wait a few seconds for its workers to stop before starting a new one; a reason on `worker_stop` when the supervisor watch stopped it, and a trace of the watch's hard exit, written so they can't block that exit |
 | 7 | 7d ⏸ | `stress-smoke` CI job; then full stress runs on your Mac |
 
 ## Phases

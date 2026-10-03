@@ -5,7 +5,6 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from collections import Counter
 from pathlib import Path
 
@@ -32,6 +31,21 @@ def test_a_watched_worker_stops_when_its_supervisor_dies_and_exits_hard_if_stuck
     # Checked each second while it lived. Once it's gone, stop is set so the tick in progress
     # can finish; a worker still running a deadline later is stuck in a native call: exit 1.
     assert seen == [(1, False), (1, False), (1.5, True), 1]
+
+
+@pytest.mark.parametrize("pid", ["abc", "0", "-1", " 7", str(2**31)])
+def test_a_malformed_supervisor_pid_is_refused_as_a_bad_flag(monkeypatch, capsys, pid):
+    monkeypatch.setenv("CATALOG_SUPERVISOR", pid)  # 0 or -1 would make the watch signal a group
+    monkeypatch.setattr(signal, "signal", lambda *_: None)
+    monkeypatch.setattr(worker, "run", lambda *_, **__: pytest.fail("ran without a valid watch"))
+    with pytest.raises(SystemExit) as stopped:
+        worker.main(["--index", "0", "--workers", "4"])
+    assert stopped.value.code == 2  # fatal, like any bad flag: no restart can fix it
+    assert "CATALOG_SUPERVISOR" in capsys.readouterr().err
+
+
+def test_a_supervisor_run_by_another_user_still_counts_as_alive():
+    assert worker._alive(1)  # init: signalling it is refused (EPERM), but it runs
 
 
 def starts(tmp):
@@ -72,6 +86,8 @@ def test_killing_the_supervisor_stops_its_workers_so_a_new_one_can_start_them(tm
     first.kill()
     first.wait()  # reaped, as by the shell that started it: until then its pid looks alive
     wait_for(lambda: not any(map(alive, pids)), timeout=10)
+    stops = [e for e in events.read(tmp_path / "events") if e["type"] == "worker_stop"]
+    assert len(stops) == 2  # each stopped after its tick, rather than being cut off
     with state.claim(tmp_path / "state", range(PARTITIONS)):  # their locks are free
         pass
     second = spawn(SUPERVISOR, cwd=tmp_path)
@@ -84,10 +100,25 @@ def test_a_worker_stuck_when_its_supervisor_dies_still_exits(tmp_path, spawn):
     gone = subprocess.Popen(["true"])
     gone.wait()  # a supervisor that died: its pid names no process now
     env = os.environ | {"CATALOG_SUPERVISOR": str(gone.pid)}
-    stuck = spawn(driver(tmp_path, "landing.ensure", "hang", "1"), env=env)  # after its claim
-    assert stuck.wait(timeout=10) == 1  # the watch's deadline, 1 s here
+    argv = driver(tmp_path, "landing.ensure", "hang", "1")  # after its claim
+    stuck = spawn(argv, env=env, stderr=subprocess.PIPE, text=True)
+    _, err = stuck.communicate(timeout=10)
+    assert (stuck.returncode, err) == (1, "hung in landing.ensure\n")  # the watch, 1 s later
     with state.claim(tmp_path / "state", range(16)):  # its locks are free
         pass
+
+
+def test_a_worker_mid_batch_when_its_supervisor_dies_finishes_the_tick(tmp_path, spawn):
+    env = Env(tmp_path)
+    env.land(up(A, 1))
+    supervisor = spawn(["sleep", "60"])  # stands in for one
+    watched = os.environ | {"CATALOG_SUPERVISOR": str(supervisor.pid)}
+    busy = spawn(driver(tmp_path, "store.merge", "slow", "1"), env=watched)  # a 2 s MERGE
+    wait_for(lambda: starts(tmp_path))  # so its first batch is under way
+    supervisor.kill()
+    supervisor.wait()
+    assert busy.wait(timeout=30) == 0  # stopped, not cut off at the deadline
+    assert caught_up(env) and env.outcomes() == {0: "written"}  # once its tick was done
 
 
 def test_a_supervisor_started_while_old_workers_hold_partitions_stops_loudly(tmp_path):
@@ -161,7 +192,8 @@ def test_a_worker_killed_while_compacting_leaves_the_store_readable(tmp_path, sp
         env.land(*(up(product_in(p, prefix=f"k{i}"), 1) for p in range(16)))
         env.run()
     env.land(up(A, 1))
-    killed = spawn(driver(tmp_path, "store.compact", "during", "1"))  # after that one batch
+    ms = str(random.randint(2, 10))  # into the compaction after that batch, before its commit
+    killed = spawn(driver(tmp_path, "store.compact", ms, "1"))
     assert killed.wait(timeout=30) == -signal.SIGKILL
     assert_the_oracle_holds(env)
     store.compact(env.store, range(16))  # the next compaction succeeds
@@ -182,14 +214,11 @@ def random_change(rng):
 @pytest.mark.parametrize("kills", [3, pytest.param(40, marks=pytest.mark.slow)])
 def test_kills_at_random_moments_lose_and_duplicate_nothing(tmp_path, spawn, kills):
     env, rng = Env(tmp_path), random.Random(kills)
-    for run in range(1, kills + 1):
+    for _ in range(kills):
         for _ in range(rng.randint(1, 3)):
             env.land(*(random_change(rng) for _ in range(rng.randint(1, 8))))
-        proc = spawn(driver(tmp_path))
-        wait_for(lambda n=run: len(starts(tmp_path)) == n)
-        time.sleep(rng.uniform(0, 0.1))  # in its first batch, mostly
-        proc.kill()
-        proc.wait()
+        ms = str(rng.randint(0, 80))  # into its first batch, which starts with landing.read
+        assert spawn(driver(tmp_path, "landing.read", ms, "1")).wait(timeout=30) == -signal.SIGKILL
     drain(env, spawn)
     assert_the_oracle_holds(env)
 

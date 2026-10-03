@@ -269,7 +269,7 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 4 | 4a ✅ | Spec: [step-4a.md](specs/step-4a.md). Merchant registry (SQLite) and admin CLI: create a merchant, rotate (and revoke) a key, plus `verify` for 4b's auth |
 | 4 | 4b | Spec: [step-4b.md](specs/step-4b.md). `POST /listings:batch`: auth, envelope, 32 MB cap, disk guard, direct append. From the 4a review: `merchants.verify` raises on a missing registry rather than refusing every key, so the API checks the registry at startup; count auth failures by reason (unknown key or revoked Merchant) without ever logging the key |
 | 4 | 4c | Group-commit appender (≤100 ms window) |
-| 4 | 4d | `GET /submissions/{id}`: status from events, IDOR check |
+| 4 | 4d | Spec: [step-4d.md](specs/step-4d.md). `GET /submissions/{id}`: status from events, IDOR check |
 | 4 | 4e | Spec: [step-4e.md](specs/step-4e.md). End-to-end test: HTTP → Landing log → worker → Listing Store, under the supervisor and the shipped `Procfile`. The API watches its supervisor like the workers, so a `kill -9`ed supervisor no longer leaves it holding the port |
 | 5 | 5a | Change Export: change feed since the watermark, export files, export oracle |
 | 5 | 5b | Export gap recovery (A18) |

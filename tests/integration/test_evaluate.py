@@ -497,3 +497,15 @@ def test_the_laya_candidates_run_without_a_threshold(monkeypatch):
     assert shortlist.mode == "shortlist" and shortlist.description == 200
     assert shortlist.shortlist.threshold == 0.0 and shortlist.shortlist.budget == math.inf
     assert shortlist.shortlist.description == 200
+
+
+def test_the_jev_candidate_shortlists_with_the_embedding(monkeypatch):
+    from catalog import jev
+
+    monkeypatch.setattr(
+        evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
+    )
+    monkeypatch.setattr(jev, "http", lambda: lambda body: {})
+    got = evaluate.candidate("jev-shortlist", None, description=200)
+    assert got.description == 200 and got.shortlist.description == 200
+    assert got.shortlist.threshold == 0.0 and got.shortlist.budget == math.inf

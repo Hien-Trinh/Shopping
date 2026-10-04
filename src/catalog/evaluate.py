@@ -68,7 +68,7 @@ CATEGORIES = [  # Amazon Reviews '23's category files, less Unknown
     "Toys_and_Games",
     "Video_Games",
 ]
-CANDIDATES = (*classify.KINDS, "laya-hierarchical", "laya-shortlist")
+CANDIDATES = (*classify.KINDS, "laya-hierarchical", "laya-shortlist", "jev-shortlist")
 THRESHOLDS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 .. 0.90
 
 
@@ -338,12 +338,16 @@ def candidate(kind: str, models: Path, *, description: int = classify.DESCRIPTIO
         return classify.FakeClassifier()
     tax = taxonomy.load()
     embedding = None
-    if kind in ("embedding", "laya-shortlist"):
+    if kind in ("embedding", "laya-shortlist", "jev-shortlist"):
         embedding = classify.EmbeddingClassifier(
             tax, classify.fastembed(models), threshold=0.0, budget=math.inf, description=description
         )
     if kind == "embedding":
         return embedding
+    if kind == "jev-shortlist":
+        from catalog import jev
+
+        return jev.JevClassifier(tax, embedding, jev.http(), description=description)
     from catalog import laya  # here: it loads laya_mlx, an optional Apple Silicon only group
 
     mode = kind.removeprefix("laya-")

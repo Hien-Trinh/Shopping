@@ -9,3 +9,4 @@ __pycache__/
 
 .mutmut-cache
 mutants/
+/models/

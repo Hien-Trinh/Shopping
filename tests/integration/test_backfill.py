@@ -1,5 +1,6 @@
 """Backfill (docs/specs/step-6c.md): op=reclassify for flagged and outdated Listings."""
 
+import shutil
 import threading
 from datetime import UTC, datetime, timedelta
 
@@ -18,6 +19,14 @@ from catalog.supervisor import parse_procfile
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
 A, B, C, D = (product_in(p) for p in (3, 20, 40, 60))
 T0 = datetime(2026, 9, 1, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def roomy_disk(monkeypatch):
+    """A tick refuses below api.MIN_FREE (5 GiB) of real free disk, so these tests would fail on a
+    nearly full machine. Report plenty instead: under the 2**62 of the low-disk test."""
+    real = shutil.disk_usage
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: real(path)._replace(free=2**61))
 
 
 def put(dt, mpid, *, version="v2", flagged=False, at=T0, sv=5, tombstone=False):

@@ -215,6 +215,8 @@ src/catalog/
   status.py       events → Submission status fold                                     [pure]
   collapse.py     change-feed rows → latest row per key, tombstone → delete            [pure]
   classify.py     Classifier protocol, threshold, EmbeddingClassifier, FakeClassifier
+  laya.py         LayaClassifier for the eval (hierarchical or shortlist), laya-mlx chooser
+  evaluate.py     the classifier eval: labeled set, sample, run, score, report
   taxonomy.py     load Shopify taxonomy, trim to depth 3, version string
   merchants.py    SQLite registry, key issue/verify, CLI
   landing.py      schema, group-commit appender, read-since per partition

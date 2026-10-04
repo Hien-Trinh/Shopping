@@ -68,6 +68,7 @@ CATEGORIES = [  # Amazon Reviews '23's category files, less Unknown
     "Toys_and_Games",
     "Video_Games",
 ]
+CANDIDATES = (*classify.KINDS, "laya-hierarchical", "laya-shortlist")
 THRESHOLDS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 .. 0.90
 
 
@@ -333,22 +334,27 @@ def _result(path: Path) -> dict:
 def candidate(kind: str, models: Path, *, description: int = classify.DESCRIPTION):
     """The classifier at threshold 0 with no budget: every Listing gets its best path and raw
     confidence, and `score` applies thresholds afterwards (decision 2)."""
-    if kind == "embedding":
-        return classify.EmbeddingClassifier(
-            taxonomy.load(),
-            classify.fastembed(models),
-            threshold=0.0,
-            budget=math.inf,
-            description=description,
+    if kind == "fake":
+        return classify.FakeClassifier()
+    tax = taxonomy.load()
+    embedding = None
+    if kind in ("embedding", "laya-shortlist"):
+        embedding = classify.EmbeddingClassifier(
+            tax, classify.fastembed(models), threshold=0.0, budget=math.inf, description=description
         )
-    return classify.FakeClassifier()
+    if kind == "embedding":
+        return embedding
+    from catalog import laya  # here: it loads laya_mlx, an optional Apple Silicon only group
+
+    mode = kind.removeprefix("laya-")
+    return laya.LayaClassifier(tax, laya.mlx(models), mode, embedding, description=description)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m catalog.evaluate")
     sub = args.add_subparsers(dest="command", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--classifier", choices=classify.KINDS, required=True)
+    r.add_argument("--classifier", choices=CANDIDATES, required=True)
     r.add_argument("--labels", type=Path, default=LABELS)
     r.add_argument("--batch", type=int, default=1)
     r.add_argument("--name")

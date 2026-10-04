@@ -212,6 +212,20 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def stop_on_signals() -> threading.Event:
+    """An Event set by SIGTERM (the supervisor's stop) or SIGINT."""
+    stop, stopping = threading.Event(), []
+
+    def on_signal(*_):  # Event.set takes a lock the interrupted thread may hold: set it elsewhere
+        if not stopping:  # once: a second signal mid-Thread.start would re-enter its lock
+            stopping.append(True)
+            threading.Thread(target=stop.set).start()
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+    return stop
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m catalog.worker")
     args.add_argument("--index", type=int, required=True)
@@ -227,15 +241,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         supervisor = supervisor_pid()
     except ValueError as e:
         args.error(str(e))
-    stop, stopping = threading.Event(), []
-
-    def on_signal(*_):  # Event.set takes a lock the interrupted thread may hold: set it elsewhere
-        if not stopping:  # once: a second signal mid-Thread.start would re-enter its lock
-            stopping.append(True)
-            threading.Thread(target=stop.set).start()
-
-    signal.signal(signal.SIGTERM, on_signal)
-    signal.signal(signal.SIGINT, on_signal)
+    stop = stop_on_signals()
     watch_supervisor(supervisor, stop)  # so a kill -9ed supervisor leaves no worker behind
     # ponytail: FakeClassifier until the real one (step 6b) is chosen by a flag.
     run(a.data, a.state, a.index, a.workers, FakeClassifier(), stop=stop)

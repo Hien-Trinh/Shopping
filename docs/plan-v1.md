@@ -267,11 +267,11 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 3 | 3d ✅ | Supervisor (`python -m catalog.supervisor`, no `honcho`): heartbeat watchdog (start time counts as a beat), restart. From the 3c review: distinct worker exit codes for fatal startup errors (`PartitionTaken`, `OffsetsMismatch`, `CorruptState`) versus giving up after N failed ticks, worker start/stop events, and whether heartbeats use a monotonic clock |
 | 3 | 3e ✅ | Spec: [step-3e.md](specs/step-3e.md). Chaos tests: `kill -9` mid-batch, rescale from 4 to 3 workers, and a `kill -9`ed supervisor: its workers keep running and keep their locks (the next supervisor's workers exit 3), so workers should watch their parent |
 | 4 | 4a ✅ | Spec: [step-4a.md](specs/step-4a.md). Merchant registry (SQLite) and admin CLI: create a merchant, rotate (and revoke) a key, plus `verify` for 4b's auth |
-| 4 | 4b | Spec: [step-4b.md](specs/step-4b.md). `POST /listings:batch`: auth, envelope, 32 MB cap, disk guard, direct append. From the 4a review: `merchants.verify` raises on a missing registry rather than refusing every key, so the API checks the registry at startup; count auth failures by reason (unknown key or revoked Merchant) without ever logging the key |
-| 4 | 4c | Spec: [step-4c.md](specs/step-4c.md). Group-commit appender (≤100 ms window) |
-| 4 | 4d | Spec: [step-4d.md](specs/step-4d.md). `GET /submissions/{id}`: status from events, IDOR check |
-| 4 | 4e | Spec: [step-4e.md](specs/step-4e.md). End-to-end test: HTTP → Landing log → worker → Listing Store, under the supervisor and the shipped `Procfile`. The API watches its supervisor like the workers, so a `kill -9`ed supervisor no longer leaves it holding the port |
-| 5 | 5a | Spec: [step-5a.md](specs/step-5a.md). Change Export: change feed since the watermark, export files, export oracle |
+| 4 | 4b ✅ | Spec: [step-4b.md](specs/step-4b.md). `POST /listings:batch`: auth, envelope, 32 MB cap, disk guard, direct append. From the 4a review: `merchants.verify` raises on a missing registry rather than refusing every key, so the API checks the registry at startup; count auth failures by reason (unknown key or revoked Merchant) without ever logging the key |
+| 4 | 4c ✅ | Spec: [step-4c.md](specs/step-4c.md). Group-commit appender (≤100 ms window) |
+| 4 | 4d ✅ | Spec: [step-4d.md](specs/step-4d.md). `GET /submissions/{id}`: status from events, IDOR check |
+| 4 | 4e ✅ | Spec: [step-4e.md](specs/step-4e.md). End-to-end test: HTTP → Landing log → worker → Listing Store, under the supervisor and the shipped `Procfile`. The API watches its supervisor like the workers, so a `kill -9`ed supervisor no longer leaves it holding the port |
+| 5 | 5a ✅ | Spec: [step-5a.md](specs/step-5a.md). Change Export: change feed since the watermark, export files, export oracle |
 | 5 | 5b | Export gap recovery (A18) |
 | 5 | 5c | Catalog Snapshots and pruning |
 | 5 | 5d | Landing log retention and compaction (never past the slowest offset). From the 5a spec: export files kept 3 days (A13). From the 4d review: the 3-day events retention (A13), which no step had, and `GET /submissions/{id}` answering 404 before any read for an id dated before that horizon, so a forged old id can't scan every event hour |
@@ -362,7 +362,7 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
 
   Also: pruning partitions before the scan took `store.read` from 1.7 s to 33 ms at 1,280 files, and an Arrow hang at process exit is why every entry point leaves through `os._exit`. Deferred, now written into later steps: 7b's runner must reap a supervisor it kills, 7c adds a reason to the watch's stops and a trace of its hard exit, and 6b's native calls must release the GIL.
 
-**Phase 4 — Ingestion API** (`api`, `merchants`, `status`)
+**Phase 4 — Ingestion API** (`api`, `merchants`, `status`) ✅
 - Tests:
   - Auth: no key, a wrong key, a revoked key.
   - A merchant can't read another merchant's Submission (IDOR).

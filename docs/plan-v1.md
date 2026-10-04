@@ -275,7 +275,7 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 5 | 5b | Spec: [step-5b.md](specs/step-5b.md). Export gap recovery (A18) |
 | 5 | 5c ✅ | Spec: [step-5c.md](specs/step-5c.md). Catalog Snapshots and pruning |
 | 5 | 5d | Spec: [step-5d.md](specs/step-5d.md). Landing log retention and compaction (never past the slowest offset). From the 5b spec: VACUUM left the `_change_data` files in place, so delete them too if that holds. From the 5a spec: export files kept 3 days (A13). From the 4d review: the 3-day events retention (A13), which no step had, and `GET /submissions/{id}` answering 404 before any read for an id dated before that horizon, so a forged old id can't scan every event hour |
-| 5 | 5e | Retention-horizon bootstrap for workers below the horizon |
+| 5 | 5e | Spec: [step-5e.md](specs/step-5e.md). Retention-horizon bootstrap for workers below the horizon |
 | 6 | 6a ⏸ | Taxonomy loader (asks before downloading the Shopify taxonomy) |
 | 6 | 6b ⏸ | Embedding classifier with a batch timeout (asks before downloading the model). From 3e: its native calls must release the GIL, or the supervisor watch can't exit a worker stuck in one |
 | 6 | 6c | Backfill job (`op=reclassify` for flagged rows and taxonomy bumps) |
@@ -403,6 +403,7 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
 **Phase 7 — Load and chaos**
 - Multi-process load generator. Scenarios: steady 50/s, a 10k-item bulk batch, a 1M initial load, out-of-order changes, duplicate retries, a delete followed by a late update, a poison change, a classifier outage, killing a worker, rescaling, and a disk-guard trip.
 - Metrics as saved DuckDB SQL: freshness p50/p99, lag per partition, classify latency, stale/conflict/failed rates, Uncategorized rate, worker utilization.
+  - Count each Change once, by `(submission_id, change_index)`, keeping its best Outcome as `status.fold` does. Crash replays and 5e's bootstraps re-emit Outcome events (`already_applied` or `stale` for Changes already applied), so per-event counts double-count them (from the 5e review).
 - A runbook covers start, stop, rescale, reset and reading results.
 - Measure three costs from the PR #4 review at full batch size (1,000 random keys, 1M Listings) before the SLO run, and fix only the ones that break it:
   - `store.read` decodes every column of the touched partitions. Fix: scan the key columns first, then `take` the matching rows.

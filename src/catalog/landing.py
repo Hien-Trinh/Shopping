@@ -14,6 +14,7 @@ from datetime import datetime
 import pyarrow as pa
 import pyarrow.compute as pc
 from deltalake import DeltaTable, write_deltalake
+from deltalake.exceptions import CommitFailedError
 
 from catalog import delta
 from catalog.envelope import Change, Content
@@ -98,7 +99,15 @@ def append(dt: DeltaTable, entries: Sequence[Entry]) -> int:
         }
         for seq, (submission_id, index, c, received_at) in enumerate(entries)
     ]
-    write_deltalake(dt, pa.Table.from_pylist(rows, schema=SCHEMA), mode="append")
+    table = pa.Table.from_pylist(rows, schema=SCHEMA)
+    # Refreshed first: on a snapshot older than retention's DELETE, every append would fail. A
+    # DELETE landing between the refresh and the commit costs one retry.
+    dt.update_incremental()
+    try:
+        write_deltalake(dt, table, mode="append")
+    except CommitFailedError:
+        dt.update_incremental()
+        write_deltalake(dt, table, mode="append")
     return dt.version()
 
 

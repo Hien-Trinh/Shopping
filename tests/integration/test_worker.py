@@ -598,3 +598,129 @@ def test_a_broken_stderr_neither_skips_retries_nor_changes_the_exit_code(env):
         1,  # as with a working stderr: gave up, so the supervisor restarts it
         [("worker_start", None), ("tick_failed", 1), ("tick_failed", 2), ("worker_stop", None)],
     )
+
+
+def cleanup(env):
+    """What retention does to the Landing log: compact, then vacuum the replaced files. Opens a
+    gap only in partitions with more than one file, which compaction replaces."""
+    env.landing.optimize.compact()
+    env.landing.vacuum(retention_hours=0, enforce_retention_duration=False, dry_run=False)
+
+
+def test_a_fresh_worker_after_cleanup_bootstraps_then_follows_the_change_feed(env):
+    env.land(up(A, 1), up(B, 1))
+    env.land(up(A, 2, listing("two")))
+    cleanup(env)
+    pinned = env.landing.version()
+    run(env, Ticks(10))
+    assert (stored(env, A).source_version, stored(env, B)) == (2, None)  # B isn't worker 0's
+    assert env.load_offsets() == {p: (pinned + 1, 0) if p < 16 else START for p in range(64)}
+    logged = events.read(env.events_root)
+    (gap,) = [e for e in logged if e["type"] == "tick_failed"]
+    assert "not found" in gap["error"]
+    boots = {e["partition"]: e for e in logged if e["type"] == "bootstrap"}
+    assert sorted(boots) == list(range(16))
+    assert (boots[3]["changes"], boots[3]["from"], boots[3]["pinned"]) == (2, [0, 0], pinned)
+    assert env.outcomes() == {0: "written", 2: "written"}
+    env.land(up(A, 3))  # read from the change feed again
+    run(env, Ticks(1))
+    assert stored(env, A).source_version == 3
+
+
+def test_a_bootstrap_reapplies_harmlessly_and_skips_partitions_further_ahead(env, monkeypatch):
+    C = product_in(5)
+    env.land(up(A, 1, listing("one")), up(C, 1))
+    env.drain()
+    before = store.fingerprints(env.store)
+    env.land(up(A, 2, listing("two")))  # never read before the cleanup
+    cleanup(env)
+    table = landing.table_id(env.landing)
+    state.save_offsets(env.state, {5: (env.landing.version() + 1, 0)}, table)  # 5 is ahead
+    classified = []
+    real = env.classifier.classify
+    monkeypatch.setattr(env.classifier, "classify", lambda ls: classified.extend(ls) or real(ls))
+    run(env, Ticks(10))
+    assert [x.title for x in classified] == ["two"]  # already-applied rows cost no classifier call
+    after = store.fingerprints(env.store)
+    assert after[("m_1", C)] == before[("m_1", C)]
+    assert after[("m_1", A)] != before[("m_1", A)] and stored(env, A).source_version == 2
+    boots = [e["partition"] for e in events.read(env.events_root) if e["type"] == "bootstrap"]
+    assert 5 not in boots and 3 in boots
+    assert env.outcomes() == {0: "written", 1: "written", 2: "written"}  # best Outcome kept
+
+
+class Then(Ticks):
+    """Ticks that run `action` once, before tick number `at` (counting from 0)."""
+
+    def __init__(self, n, at, action):
+        super().__init__(n)
+        self.left, self.action = n - at, action
+
+    def is_set(self):
+        if self.n == self.left:
+            self.action()
+        return super().is_set()
+
+
+def test_cleanup_overtaking_a_running_worker_is_recovered_without_exiting(env):
+    env.land(up(A, 1))
+
+    def overtake():
+        env.land(up(A, 2))
+        env.land(up(A, 3))
+        cleanup(env)
+
+    run(env, Then(10, 1, overtake))  # returns: the worker never gave up
+    assert stored(env, A).source_version == 3
+    logged = events.read(env.events_root)
+    assert [e["type"] for e in logged if e["type"] in ("tick_failed", "worker_stop")] == [
+        "tick_failed",
+        "worker_stop",
+    ]
+    assert "error" not in logged[-1]
+
+
+def test_a_crash_between_partitions_redoes_only_the_unfinished_ones(env, monkeypatch):
+    C = product_in(5)
+    env.land(up(A, 1), up(C, 1))
+    env.land(up(A, 2), up(C, 2))  # two files per partition, so compaction replaces them
+    cleanup(env)
+    real, crashed = worker._apply, []
+
+    def crash_once_on_c(store_dt, classifier, log, landed, now):
+        if landed and landed[0].partition == 5 and not crashed:
+            crashed.append(True)
+            raise OSError("killed")
+        real(store_dt, classifier, log, landed, now)
+
+    monkeypatch.setattr(worker, "_apply", crash_once_on_c)
+    run(env, Ticks(10))
+    boots = [e["partition"] for e in events.read(env.events_root) if e["type"] == "bootstrap"]
+    assert boots == list(range(16))  # each once: 0-4 before the crash, 5-15 after it
+    assert (stored(env, A).source_version, stored(env, C).source_version) == (2, 2)
+
+
+def test_stop_during_a_bootstrap_leaves_the_unfinished_partition_for_next_time(env):
+    env.land(up(A, 1))
+    env.land(up(A, 2))  # two files in partition 3, so compaction replaces them
+    cleanup(env)
+    pinned = env.landing.version()
+    run(env, Ticks(2))  # the read, the bootstrap, then stopped at partition 3's first chunk
+    offsets = env.load_offsets()
+    assert [offsets[p] for p in range(4)] == [(pinned + 1, 0)] * 3 + [START]
+    assert stored(env, A) is None
+    run(env, Ticks(10))
+    assert stored(env, A).source_version == 2
+
+
+def test_a_gap_a_bootstrap_cannot_cure_still_gives_up_after_attempts(env, monkeypatch):
+    def gone(*_, **__):
+        raise Exception("Object at location /x not found: No such file or directory")
+
+    monkeypatch.setattr(worker, "process_batch", gone)
+    ticks = Ticks(100)
+    with pytest.raises(Exception, match="not found"):
+        run(env, ticks)
+    assert ticks.waits == [1, 2, 4, 8]  # bootstraps in between never reset the count
+    boots = [e for e in events.read(env.events_root) if e["type"] == "bootstrap"]
+    assert len(boots) == 4 * 16

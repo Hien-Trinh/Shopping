@@ -2,7 +2,8 @@
 
 A batch: read -> plan -> classify -> one conditional MERGE -> events -> offsets. Offsets are saved
 last, so a crash anywhere earlier replays the batch, which plan's rules make safe (at least once).
-`run` loops batches over the partitions one worker owns; `python -m catalog.worker` starts it.
+`run` loops batches over the partitions one worker owns, and bootstraps them when cleanup removed
+history they still needed (step-5e.md); `python -m catalog.worker` starts it.
 """
 
 import argparse
@@ -20,7 +21,7 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from catalog import entry, landing, state, store
+from catalog import delta, entry, landing, state, store
 from catalog.classify import UNCATEGORIZED, FakeClassifier
 from catalog.events import EventLog
 from catalog.keys import owned, partition
@@ -46,10 +47,18 @@ def process_batch(
     on one partition would redo each other's work and could pick the wrong conflict winner.
     """
     batch = landing.read(landing_dt, offsets, limit)
+    _apply(store_dt, classifier, events, batch.changes, now)
+    moved = {p: pos for p, pos in batch.offsets.items() if pos != offsets[p]}
+    state.save_offsets(state_dir, moved, landing.table_id(landing_dt))
+    return batch
+
+
+def _apply(store_dt, classifier, events: EventLog, landed: Sequence[Landed], now) -> None:
+    """Storability check, plan, classify, MERGE and Outcome events for Changes in replay order."""
     # A Change whose data can't be stored fails alone, before planning, so the rest plan without it
     # (design doc, lifecycle step 8). Any other error propagates: storage or a bug, never the data.
-    errors = store.unstorable([x.change.listing for x in batch.changes])
-    good = [x for x, error in zip(batch.changes, errors, strict=True) if error is None]
+    errors = store.unstorable([x.change.listing for x in landed])
+    good = [x for x, error in zip(landed, errors, strict=True) if error is None]
     outcomes, notes = _merge(store_dt, good, classifier, now)
     merged = iter(outcomes)
     results = [{"type": FAILED, "error": error} if error else next(merged) for error in errors]
@@ -59,20 +68,66 @@ def process_batch(
             *notes,
             *(
                 {
-                    "submission_id": landed.submission_id,
-                    "change_index": landed.change_index,
-                    "merchant_id": landed.change.merchant_id,
-                    "merchant_product_id": landed.change.merchant_product_id,
-                    "partition": landed.partition,
+                    "submission_id": x.submission_id,
+                    "change_index": x.change_index,
+                    "merchant_id": x.change.merchant_id,
+                    "merchant_product_id": x.change.merchant_product_id,
+                    "partition": x.partition,
                 }
                 | result
-                for landed, result in zip(batch.changes, results, strict=True)
+                for x, result in zip(landed, results, strict=True)
             ),
         ]
     )
-    moved = {p: pos for p, pos in batch.offsets.items() if pos != offsets[p]}
-    state.save_offsets(state_dir, moved, landing.table_id(landing_dt))
-    return batch
+
+
+def bootstrap(
+    landing_dt: DeltaTable,
+    store_dt: DeltaTable,
+    classifier,
+    events: EventLog,
+    state_dir: Path,
+    offsets: dict[int, Position],
+    *,
+    name: str,
+    stop: threading.Event,
+    beat: Callable[[], None],
+    clock: Callable[[], float],
+    limit: int = 1000,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> None:
+    """Re-apply what the Landing log kept for the partitions at the lowest offset version, after
+    cleanup removed history they still needed (step-5e.md).
+
+    Every retained row is applied again: plan's rules make the ones applied before harmless (A3).
+    Each partition's offset is saved, and updated in `offsets`, as it finishes, so a bootstrap
+    that fails or is killed resumes at the partition it was on.
+    """
+    landing_dt.update_incremental()
+    pinned, table = landing_dt.version(), landing.table_id(landing_dt)
+    low = min(v for v, _ in offsets.values())
+    for p in sorted(p for p, (v, _) in offsets.items() if v == low):
+        started, rows = clock(), landing.retained(landing_dt, pinned, p)
+        for i in range(0, len(rows), limit):
+            if stop.is_set():  # the unfinished partition is redone at the next start
+                return
+            _apply(store_dt, classifier, events, rows[i : i + limit], now)
+            beat()  # a long bootstrap must not look hung (B1)
+        state.save_offsets(state_dir, {p: (pinned + 1, 0)}, table)
+        events.emit(
+            [
+                {
+                    "type": "bootstrap",
+                    "worker": name,
+                    "partition": p,
+                    "from": offsets[p],
+                    "pinned": pinned,
+                    "changes": len(rows),
+                    "ms": round((clock() - started) * 1000),
+                }
+            ]
+        )
+        offsets[p] = (pinned + 1, 0)
 
 
 POLL = 0.2  # seconds between reads when caught up: the design doc's "1,000 changes or 200 ms"
@@ -112,9 +167,19 @@ def run(
             [{"type": "worker_start", "worker": name, "workers": workers, "pid": os.getpid()}]
         )
         failures = busy = 0
+        gap = False  # the last read found history cleanup removed: bootstrap instead of reading
         while not stop.is_set():
             started = clock()
             try:
+                if gap:
+                    bootstrap(
+                        landing_dt, store_dt, classifier, events, state_dir, offsets,
+                        name=name, stop=stop, clock=clock, limit=limit,
+                        beat=lambda: state.beat(state_dir, name, clock()),
+                    )  # fmt: skip
+                    gap = False
+                    continue  # never resets `failures`: only a good read does, so a gap that
+                    # a bootstrap can't cure still ends the worker after ATTEMPTS
                 batch = process_batch(
                     landing_dt, store_dt, classifier, events, state_dir, offsets, limit=limit
                 )
@@ -138,6 +203,7 @@ def run(
                     store.compact(store_dt, mine)
                     busy = 0
             except Exception as e:
+                gap = gap or delta.history_gone(e)  # a failed bootstrap is retried
                 failures += 1
                 error = repr(e)[:500]
                 logged = [

@@ -332,7 +332,9 @@ def _result(path: Path) -> dict:
     return r
 
 
-def candidate(kind: str, models: Path, *, description: int = classify.DESCRIPTION):
+def candidate(
+    kind: str, models: Path, *, description: int = classify.DESCRIPTION, shortlist: int = 10
+):
     """The classifier at threshold 0 with no budget: every Listing gets its best path and raw
     confidence, and `score` applies thresholds afterwards (decision 2)."""
     if kind == "fake":
@@ -348,11 +350,13 @@ def candidate(kind: str, models: Path, *, description: int = classify.DESCRIPTIO
     if kind == "jev-shortlist":
         from catalog import jev
 
-        return jev.JevClassifier(tax, embedding, jev.http(), description=description)
+        return jev.JevClassifier(tax, embedding, jev.http(), shortlist, description)
     from catalog import laya  # here: it loads laya_mlx, an optional Apple Silicon only group
 
     mode = kind.removeprefix("laya-")
-    return laya.LayaClassifier(tax, laya.mlx(models), mode, embedding, description=description)
+    return laya.LayaClassifier(
+        tax, laya.mlx(models), mode, embedding, shortlist, description=description
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -366,6 +370,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     r.add_argument("--results", type=Path, default=RESULTS)
     r.add_argument("--models", type=Path, default=classify.MODELS)
     r.add_argument("--description", type=int, default=classify.DESCRIPTION)
+    r.add_argument("--shortlist", type=int, default=10)  # paths a Laya or Jev choice sees
     s = sub.add_parser("sample")
     s.add_argument("--source", default=AMAZON)
     s.add_argument("--categories", nargs="+", default=CATEGORIES)
@@ -381,12 +386,17 @@ def main(argv: Sequence[str] | None = None) -> None:
             args.error("--batch must be at least 1")
         if a.description < 0:
             args.error("--description must be at least 0")
+        if not 1 <= a.shortlist <= 255:  # Jev takes at most 255 options per Choice
+            args.error("--shortlist must be 1 to 255")
         tax = taxonomy.load()
         labeled, sha = load_labels(a.labels, tax)
-        classifier = candidate(a.classifier, a.models, description=a.description)
+        classifier = candidate(
+            a.classifier, a.models, description=a.description, shortlist=a.shortlist
+        )
         result = run(classifier, labeled, tax, batch=a.batch)
         name = a.name or a.classifier
         result |= {"name": name, "labels_sha256": sha, "description": a.description}
+        result["shortlist"] = a.shortlist
         state.save(a.results / f"{name}.json", result)  # whole or not at all
     elif a.command == "sample":  # printed only once every category is read: no half sample
         if a.per_category < 1:

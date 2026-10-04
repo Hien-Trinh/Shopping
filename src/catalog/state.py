@@ -5,6 +5,7 @@ Layout under the state directory:
   export_watermark.json   last exported Listing Store version, and which Listing Store (A9)
   locks/pNN.lock     flock held by the partition's owner (A8)
   locks/export.lock  flock held by the one Change Export
+  locks/snapshots.lock  flock held by the one snapshotter
   heartbeat/<worker>.json   last sign of life, for the supervisor (B1)
   supervisor.lock    flock held by the one supervisor running against this directory
 """
@@ -124,6 +125,13 @@ def claim(state: Path, partitions: Iterable[int]) -> Iterator[None]:
 def claim_export(state: Path) -> Iterator[None]:
     """One Change Export per state directory: two would interleave overlapping files."""
     with _hold(state, {"export": "Change Export"}):
+        yield
+
+
+@contextmanager
+def claim_snapshots(state: Path) -> Iterator[None]:
+    """One snapshotter per state directory: its prune deletes hidden folders as crash leftovers."""
+    with _hold(state, {"snapshots": "Catalog Snapshots"}):
         yield
 
 

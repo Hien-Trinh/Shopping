@@ -252,9 +252,13 @@ def test_a_crash_after_the_gap_file_adopts_it(env, monkeypatch):
     assert env.oracle() == []
 
 
-def test_a_read_error_that_is_not_a_gap_propagates(env, monkeypatch):
+def test_a_read_error_that_is_not_a_gap_propagates(env):
     env.merge(write(A, 1, listing()))
-    monkeypatch.setattr(env.dt, "load_cdf", crash)
-    with pytest.raises(OSError, match="disk full"):
-        env.tick()
+    (feed,) = delta.local(env.dt.table_uri).glob("_change_data/**/*.parquet")
+    feed.chmod(0)  # a real object-store error on a file that exists, not a gap
+    try:
+        with pytest.raises(Exception, match="Permission denied"):
+            env.tick()
+    finally:
+        feed.chmod(0o644)
     assert (env.names(), env.watermark()) == ([], -1)

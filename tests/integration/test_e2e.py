@@ -59,6 +59,10 @@ def export_pids(tmp: Path) -> list[int]:
     return worker_pids(tmp, "export_start")
 
 
+def maintenance_pids(tmp: Path) -> list[int]:
+    return worker_pids(tmp, "maintenance_start")
+
+
 def serving(port: int) -> bool:
     with contextlib.suppress(httpx2.TransportError):
         return httpx2.get(f"http://127.0.0.1:{port}/submissions/x").status_code == 401
@@ -76,6 +80,10 @@ class System:
         text, n = re.subn(r"^export: python -m catalog\.export$", r"\g<0> --interval 0.2",
                           text, flags=re.M)  # fmt: skip
         assert n == 1, "the Procfile's export line changed"
+        # Passes beside the API's appends and the workers (step 5d).
+        text, n = re.subn(r"^maintenance: python -m catalog\.maintenance$",
+                          r"\g<0> --interval 0.2", text, flags=re.M)  # fmt: skip
+        assert n == 1, "the Procfile's maintenance line changed"
         (tmp / "Procfile").write_text(text)
         create = [sys.executable, "-m", "catalog.merchants", "create", "--currency", "USD"]
         out = subprocess.run(create, cwd=tmp, capture_output=True, text=True, check=True).stdout
@@ -109,7 +117,8 @@ class System:
         for proc in self.supervisors:
             proc.kill()
             proc.wait()
-        for pid in [*worker_pids(self.tmp), *export_pids(self.tmp), *api_pids(self.port)]:
+        others = [*export_pids(self.tmp), *maintenance_pids(self.tmp), *api_pids(self.port)]
+        for pid in [*worker_pids(self.tmp), *others]:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
 
@@ -167,7 +176,8 @@ def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system
     assert diff(live(store.fingerprints(listings, head)), replay_exports(files)) == []
 
     pids = [*worker_pids(system.tmp), *export_pids(system.tmp), *api_pids(system.port)]
-    assert len(pids) == 6  # 4 workers, Change Export and the API, each started once
+    pids += maintenance_pids(system.tmp)
+    assert len(pids) == 7  # 4 workers, Change Export, maintenance and the API, each started once
     assert not bindable(system.port)  # so the check below can fail
     supervisor.send_signal(signal.SIGTERM)
     assert supervisor.wait(timeout=30) == 0
@@ -184,6 +194,7 @@ def test_killing_the_supervisor_stops_its_api_so_a_new_one_serves_on_its_port(sy
     wait_for(lambda: not alive(api), timeout=5)
     wait_for(lambda: not any(map(alive, workers)), timeout=10)  # 3e: their locks are free
     wait_for(lambda: not any(map(alive, export_pids(system.tmp))), timeout=10)  # and its lock
+    wait_for(lambda: not any(map(alive, maintenance_pids(system.tmp))), timeout=10)
     second = system.start()  # its API binds the same port: no restart loop
     assert api_pids(system.port) not in ([], [api])
     second.send_signal(signal.SIGTERM)

@@ -94,6 +94,29 @@ def test_a_handle_sees_other_writers(log):
     assert len(landing.read(log, {3: START}, limit=10).changes) == 1
 
 
+def test_an_append_after_another_handles_delete_succeeds(log):
+    """Retention's DELETE runs in another process; the API's handle predates it (step 5d)."""
+    add(log, up(A, 1))
+    landing.ensure(log.table_uri).delete("true")
+    add(log, up(B, 1))
+    assert [c.change.key for c in landing.read(log, {40: START}, limit=10).changes] == [("m_1", B)]
+
+
+def test_a_delete_between_refresh_and_commit_is_retried(log, monkeypatch):
+    add(log, up(A, 1))
+    refresh, deletes = log.update_incremental, []
+
+    def refresh_then_lose_the_race():
+        refresh()
+        if not deletes:  # once: the retry's refresh sees it
+            deletes.append(landing.ensure(log.table_uri).delete("true"))
+
+    monkeypatch.setattr(log, "update_incremental", refresh_then_lose_the_race)
+    add(log, up(B, 1))
+    assert deletes
+    assert [c.change.key for c in landing.read(log, {40: START}, limit=10).changes] == [("m_1", B)]
+
+
 def test_empty_append_makes_no_commit(log):
     v = log.version()
     assert landing.append(log, []) == v

@@ -7,6 +7,7 @@ so it is complete or invisible. Its commit records the Listing Store version it 
 
 import argparse
 import os
+import re
 import shutil
 import threading
 import time
@@ -71,10 +72,9 @@ def tick(
 
 
 def existing(snapshot_dir: Path) -> list[Path]:
-    """The complete snapshots, oldest first: hidden folders are being written or deleted."""
-    if not snapshot_dir.exists():
-        return []
-    return sorted(p for p in snapshot_dir.iterdir() if not p.name.startswith("."))
+    """The complete snapshots, oldest first. Hidden folders are being written or deleted, and
+    anything else not named like a snapshot is ignored rather than crash-looping the process."""
+    return sorted(p for p in snapshot_dir.glob("*") if re.fullmatch(r"\d{8}T\d{6}Z", p.name))
 
 
 def take(dt: DeltaTable, snapshot_dir: Path, now: datetime) -> Path:
@@ -112,7 +112,7 @@ def prune(snapshot_dir: Path, now: datetime, *, keep: timedelta, events: EventLo
             # Hidden first: a crash mid-delete must not leave a half snapshot that looks whole.
             os.rename(path, path.with_name(f".{path.name}.{uuid.uuid4().hex}.deleting"))
             events.emit([{"type": "snapshot_pruned", "name": path.name}])
-    for path in snapshot_dir.glob(".*"):
+    for path in [*snapshot_dir.glob(".*.tmp"), *snapshot_dir.glob(".*.deleting")]:
         shutil.rmtree(path)
 
 
@@ -131,6 +131,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--state", type=Path, default=state.STATE)
     args.add_argument("--every", type=float, default=EVERY.total_seconds(), help="seconds")
     a = args.parse_args(argv)
+    if a.every < 1:  # names have a second's resolution: two in one second would collide
+        args.error("--every must be at least 1 second")
     try:
         supervisor = worker.supervisor_pid()
     except ValueError as e:

@@ -61,6 +61,9 @@ def test_a_snapshot_equals_the_store_at_its_pinned_version(env):
     assert path == env.out / "20261003T120000Z"
     assert snapshots.pinned(path) == head
     assert env.oracle(path)
+    copy = DeltaTable(str(path))
+    assert copy.metadata().partition_columns == ["partition"]
+    assert copy.history(1)[0]["table"] == env.dt.metadata().id
     env.merge(write(A, 3, listing(title="later")))  # the store moving on doesn't change it
     assert snapshots.pinned(path) == head
     assert env.oracle(path)
@@ -74,18 +77,20 @@ def test_an_empty_store_snapshots_to_an_empty_table(env):
     assert env.rows(DeltaTable(str(path))) == []
 
 
-def test_a_failed_copy_leaves_no_folder(env, monkeypatch):
-    env.merge(write(A, 1, listing()))
-
-    def full_disk(table_uri, *args, **kwargs):  # dies after its first file
-        os.makedirs(table_uri)
-        open(os.path.join(table_uri, "part-0.parquet"), "wb").close()
-        raise OSError(28, "No space left on device")
-
-    monkeypatch.setattr(snapshots, "write_deltalake", full_disk)
-    with pytest.raises(OSError):
+def test_a_failed_copy_leaves_no_folder(env):
+    env.merge(write(A, 1, listing()), write(B, 1, listing()))
+    lost = next(p for p in (env.tmp / "data" / "listing_store").rglob("*.parquet"))
+    lost.unlink()  # the copy's read fails inside delta-rs, after it has started writing
+    with pytest.raises(Exception, match="not found|No such file"):
         snapshots.take(env.dt, env.out, NOW)
     assert os.listdir(env.out) == []
+
+
+def test_a_second_snapshot_in_the_same_second_is_refused_and_leaves_nothing(env):
+    snapshots.take(env.dt, env.out, NOW)
+    with pytest.raises(OSError):
+        snapshots.take(env.dt, env.out, NOW)
+    assert os.listdir(env.out) == ["20261003T120000Z"]
 
 
 H = timedelta(hours=1)
@@ -168,3 +173,27 @@ def test_a_second_snapshotter_is_refused_before_touching_anything(env):
     ):
         snapshots.run(env.tmp / "data", env.tmp / "state", stop=threading.Event())
     assert sorted(os.listdir(env.out)) == before
+
+
+def test_a_snapshot_exactly_seven_days_old_is_kept(env):
+    snapshots.take(env.dt, env.out, NOW - 7 * 24 * H - timedelta(seconds=1))
+    snapshots.take(env.dt, env.out, NOW - 7 * 24 * H)
+    snapshots.take(env.dt, env.out, NOW)
+    snapshots.prune(env.out, NOW, keep=7 * 24 * H, events=env.events)
+    assert names(env) == ["20260926T120000Z", "20261003T120000Z"]
+
+
+def test_stray_entries_in_the_snapshot_folder_are_ignored(env):
+    env.out.mkdir(parents=True)
+    (env.out / ".DS_Store").write_bytes(b"x")
+    (env.out / "README").write_text("not a snapshot")
+    (env.out / "backup").mkdir()
+    assert tick(env, NOW) == 6 * H
+    assert tick(env, NOW + 8 * 24 * H) == 6 * H
+    assert names(env) == ["20261011T120000Z"]
+    assert sorted(os.listdir(env.out)) == [".DS_Store", "20261011T120000Z", "README", "backup"]
+
+
+def test_an_interval_under_a_second_is_refused():
+    with pytest.raises(SystemExit):
+        snapshots.main(["--every", "0.5"])

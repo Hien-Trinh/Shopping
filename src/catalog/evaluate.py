@@ -68,6 +68,7 @@ CATEGORIES = [  # Amazon Reviews '23's category files, less Unknown
     "Toys_and_Games",
     "Video_Games",
 ]
+CANDIDATES = (*classify.KINDS, "laya-hierarchical", "laya-shortlist")
 THRESHOLDS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 .. 0.90
 
 
@@ -333,22 +334,30 @@ def _result(path: Path) -> dict:
 def candidate(kind: str, models: Path, *, description: int = classify.DESCRIPTION):
     """The classifier at threshold 0 with no budget: every Listing gets its best path and raw
     confidence, and `score` applies thresholds afterwards (decision 2)."""
-    if kind == "embedding":
-        return classify.EmbeddingClassifier(
-            taxonomy.load(),
-            classify.fastembed(models),
-            threshold=0.0,
-            budget=math.inf,
-            description=description,
+    if kind == "fake":
+        return classify.FakeClassifier()
+    tax = taxonomy.load()
+    if kind == "laya-hierarchical":
+        from catalog import laya  # here: laya_mlx is an optional, Apple Silicon only group
+
+        return laya.LayaClassifier(tax, laya.mlx(models), description=description)
+    embedding = classify.EmbeddingClassifier(
+        tax, classify.fastembed(models), threshold=0.0, budget=math.inf, description=description
+    )
+    if kind == "laya-shortlist":
+        from catalog import laya
+
+        return laya.LayaClassifier(
+            tax, laya.mlx(models), "shortlist", embedding, description=description
         )
-    return classify.FakeClassifier()
+    return embedding
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m catalog.evaluate")
     sub = args.add_subparsers(dest="command", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--classifier", choices=classify.KINDS, required=True)
+    r.add_argument("--classifier", choices=CANDIDATES, required=True)
     r.add_argument("--labels", type=Path, default=LABELS)
     r.add_argument("--batch", type=int, default=1)
     r.add_argument("--name")

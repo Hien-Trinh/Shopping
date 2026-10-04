@@ -73,17 +73,29 @@ class EmbeddingClassifier:
         for i in range(0, len(listings), self.chunk):
             if i and self.clock() >= deadline:  # the first chunk always runs: progress
                 break
-            texts = [
-                f"{x.title} {x.description[: self.description]}".strip()
-                for x in listings[i : i + self.chunk]
-            ]
-            similarity = _unit(self.embed(texts)) @ self._paths.T
-            for row in similarity:
+            for row in self._similarity(listings[i : i + self.chunk]):
                 best = int(row.argmax())
                 confidence = min(max(float(row[best]), 0.0), 1.0)
                 path = self.taxonomy.paths[best] if confidence >= self.threshold else UNCATEGORIZED
                 answers.append((path, confidence))
         return answers + [None] * (len(listings) - len(answers))
+
+    def top(self, listings: Sequence[Content], k: int) -> list[list[str]]:
+        """Each Listing's `k` most similar paths, most similar first, with no budget: the
+        shortlist a Laya or Jev choice picks from (step-6e.md)."""
+        out = []
+        for i in range(0, len(listings), self.chunk):
+            for row in self._similarity(listings[i : i + self.chunk]):
+                out.append([self.taxonomy.paths[j] for j in np.argsort(-row, kind="stable")[:k]])
+        return out
+
+    def _similarity(self, listings: Sequence[Content]) -> np.ndarray:
+        return _unit(self.embed([text(x, self.description) for x in listings])) @ self._paths.T
+
+
+def text(listing: Content, description: int = DESCRIPTION) -> str:
+    """What a classifier reads: the title, then the description's first characters."""
+    return f"{listing.title} {listing.description[:description]}".strip()
 
 
 KINDS = ("fake", "embedding")  # a worker's and the Backfill's --classifier

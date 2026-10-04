@@ -51,6 +51,7 @@ class EmbeddingClassifier:
     embed: Callable[[Sequence[str]], np.ndarray]  # texts -> one vector per row
     model: str = MODEL
     threshold: float = THRESHOLD
+    description: int = DESCRIPTION  # characters of the description after the title
     budget: float = 0.2  # the design's batch timeout
     chunk: int = 16  # about 160 ms with 500-character descriptions, so it overruns `budget` by
     # at most that; the cost per Listing barely depends on it
@@ -73,7 +74,7 @@ class EmbeddingClassifier:
             if i and self.clock() >= deadline:  # the first chunk always runs: progress
                 break
             texts = [
-                f"{x.title} {x.description[:DESCRIPTION]}".strip()
+                f"{x.title} {x.description[: self.description]}".strip()
                 for x in listings[i : i + self.chunk]
             ]
             similarity = _unit(self.embed(texts)) @ self._paths.T

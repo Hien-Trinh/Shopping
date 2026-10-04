@@ -322,3 +322,96 @@ def test_a_bad_result_file_is_named(tmp_path):
     (tmp_path / "old.json").write_text('{"name": "ol')  # torn
     with pytest.raises(ValueError, match="old.json"):
         evaluate.main(["report", "--results", str(tmp_path), "--out", str(tmp_path / "r.md")])
+
+
+# --- sample (step-6e.md, 6e.1) -------------------------------------------------------------
+
+
+def amazon(asin, title="Ball", description=("Round.",), features=("Red",), **extra):
+    item = {"parent_asin": asin, "title": title, "description": description, "features": features}
+    return item | extra
+
+
+def source(tmp_path, **categories):
+    for name, items in categories.items():
+        lines = (json.dumps(x) if isinstance(x, dict) else x for x in items)
+        (tmp_path / f"meta_{name}.jsonl").write_text("".join(f"{x}\n" for x in lines))
+    return tmp_path.as_uri()
+
+
+def test_sample_draws_the_same_items_for_the_same_seed(tmp_path):
+    url = source(tmp_path, Toys=[amazon(f"t{i}") for i in range(20)])
+    draw = [x["id"] for x in evaluate.sample(url, ["Toys"], per_category=6, seed=0)]
+    assert len(set(draw)) == 6
+    assert draw == [x["id"] for x in evaluate.sample(url, ["Toys"], per_category=6, seed=0)]
+    assert draw != [x["id"] for x in evaluate.sample(url, ["Toys"], per_category=6, seed=1)]
+
+
+def test_sample_reads_only_the_first_lines(tmp_path):
+    url = source(tmp_path, Toys=[amazon("a"), amazon("b"), "{torn"])
+    got = evaluate.sample(url, ["Toys"], per_category=6, seed=0, lines=2)
+    assert sorted(x["id"] for x in got) == ["a", "b"]
+
+
+def test_sample_shapes_a_listing(tmp_path):
+    long = "word " * 40  # 200 characters
+    url = source(
+        tmp_path,
+        Toys=[amazon("a", title=long, description=["One.", "Two."], features=["Red", "Big"])],
+    )
+    [got] = evaluate.sample(url, ["Toys"], per_category=6, seed=0)
+    assert got == {
+        "id": "a",
+        "title": ("word " * 30).strip(),  # cut at the last space within 150
+        "description": "One.\nTwo.\nRed\nBig",
+        "amazon_category": "Toys",
+    }
+
+
+def test_sample_hard_cuts_a_title_without_spaces_and_a_long_description(tmp_path):
+    url = source(tmp_path, Toys=[amazon("a", title="x" * 200, description=["d" * 6000])])
+    [got] = evaluate.sample(url, ["Toys"], per_category=6, seed=0)
+    assert got["title"] == "x" * 150 and len(got["description"]) == 5000
+
+
+def test_sample_treats_a_missing_or_odd_description_as_empty(tmp_path):
+    url = source(
+        tmp_path,
+        Toys=[
+            amazon("a", description=None, features="not a list"),
+            {"parent_asin": "b", "title": "T"},
+        ],
+    )
+    got = evaluate.sample(url, ["Toys"], per_category=6, seed=0)
+    assert sorted((x["id"], x["description"]) for x in got) == [("a", ""), ("b", "")]
+
+
+def test_sample_skips_empty_titles_and_repeated_ids_across_categories(tmp_path):
+    url = source(
+        tmp_path,
+        Toys=[amazon("a"), amazon("b", title="  "), amazon("c", title=None)],
+        Games=[amazon("a"), amazon("d")],
+    )
+    got = evaluate.sample(url, ["Toys", "Games"], per_category=6, seed=0)
+    assert [(x["id"], x["amazon_category"]) for x in got] == [("a", "Toys"), ("d", "Games")]
+
+
+def test_sample_items_load_once_labeled(tmp_path):
+    url = source(tmp_path, Toys=[amazon("a", title="y " * 100)])
+    items = evaluate.sample(url, ["Toys"], per_category=6, seed=0)
+    assert labels(tmp_path, *[x | {"category": TOYS} for x in items])[0].id == "a"
+
+
+def test_sample_cli_prints_jsonl(tmp_path, capsys):
+    url = source(tmp_path, Toys=[amazon("a")], Games=[amazon("b")])
+    evaluate.main(["sample", "--source", url, "--categories", "Toys", "Games"])
+    out = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [x["id"] for x in out] == ["a", "b"]
+
+
+def test_the_embedding_candidate_takes_a_description_length(monkeypatch):
+    monkeypatch.setattr(
+        evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
+    )
+    assert evaluate.candidate("embedding", None, description=0).description == 0
+    assert evaluate.candidate("embedding", None).description == evaluate.classify.DESCRIPTION

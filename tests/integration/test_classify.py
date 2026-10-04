@@ -131,3 +131,20 @@ def test_description_0_embeds_the_title_alone():
     seen.clear()
     c.classify([listing("Hat", description="d" * 600)])
     assert seen == ["Hat"]
+
+
+# --- step-6e.md, 6e.2 ----------------------------------------------------------------------
+
+
+def test_top_lists_the_k_most_similar_paths_in_order():
+    c = classifier()
+    assert c.top([listing("Shirt"), listing("Ball")], 2) == [
+        ["Apparel > Shirts", "Apparel"],
+        ["Toys", "Apparel > Shirts"],
+    ]
+    assert c.top([], 2) == []
+
+
+def test_classify_answers_tops_first_path():
+    c, items = classifier(threshold=0.0), [listing(t) for t in ("Shirt", "Ball", "Jacket")]
+    assert [category for category, _ in c.classify(items)] == [p[0] for p in c.top(items, 1)]

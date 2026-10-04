@@ -9,7 +9,7 @@ import pytest
 from support import classified, listing, product_in
 from test_supervisor import wait_for
 
-from catalog import events, export, state, store
+from catalog import delta, events, export, state, store
 from catalog.events import EventLog
 from catalog.plan import Write
 from catalog.replay import diff, live, replay_exports
@@ -119,7 +119,7 @@ def test_a_crash_before_the_watermark_adopts_the_file_rather_than_overlap_it(env
     assert env.oracle() == []
 
 
-def crash(*_):
+def crash(*_, **__):
     raise OSError("disk full")
 
 
@@ -181,3 +181,80 @@ def test_a_second_exporter_is_refused_before_reading_anything(env):
     with state.claim_export(env.state), pytest.raises(state.PartitionTaken, match="Change Export"):
         export.run(env.tmp / "data", env.state, stop=threading.Event())
     assert env.names() == []
+
+
+# Gap recovery (docs/specs/step-5b.md): cleanup removed history the change feed still needs.
+
+
+def drop_change_data(dt):
+    """What 5d's retention will do: delta-rs VACUUM leaves the change feed's files in place."""
+    dt.vacuum(retention_hours=0, enforce_retention_duration=False, dry_run=False)
+    for f in delta.local(dt.table_uri).glob("_change_data/**/*.parquet"):
+        f.unlink()
+
+
+def clean_log(dt):
+    dt.alter.set_table_properties({"delta.logRetentionDuration": "interval 0 seconds"})
+    dt.create_checkpoint()
+    dt.cleanup_metadata()
+
+
+def behind_a_gap(env):
+    """Export once, then change every Listing so the files the change feed needs get replaced."""
+    env.merge(write(A, 1, listing()), write(B, 1, listing()))
+    env.tick()
+    env.merge(write(C, 1, listing()))  # an insert: the change feed reads it from its data file
+    env.merge(write(C, 2, listing(title="c2")), write(B, 2))  # replaces that file; B's Tombstone
+    env.merge(write(A, 2, listing(title="a2")))
+    return env.watermark() + 1
+
+
+def gap_events(env):
+    return [e for e in events.read(env.tmp / "data" / "events") if e["type"] == "gap_recovered"]
+
+
+@pytest.mark.parametrize("cleanup", [drop_change_data, clean_log])
+def test_a_gap_exports_the_whole_store_once(env, cleanup):
+    first = behind_a_gap(env)
+    cleanup(env.dt)
+    head = env.dt.version()
+    assert env.tick() is False
+    assert env.names() == [name(0, first - 1), name(first, head)]
+    assert env.watermark() == head
+    assert env.oracle() == []
+    rows = pq.read_table(export.files(env.out)[1]).to_pylist()
+    got = {r["merchant_product_id"]: (r["source_version"], r["op"]) for r in rows}
+    assert got == {A[1]: (2, "upsert"), B[1]: (2, "delete"), C[1]: (2, "upsert")}
+    (event,) = gap_events(env)
+    assert (event["from"], event["to"], event["rows"], event["deletes"]) == (first, head, 3, 1)
+    assert event["head"] == head
+
+
+def test_a_gap_longer_than_max_versions_is_still_one_file(env):
+    first = behind_a_gap(env)
+    drop_change_data(env.dt)
+    assert env.tick(max_versions=1) is False
+    assert env.names()[1:] == [name(first, env.dt.version())]
+    assert env.oracle() == []
+
+
+def test_a_crash_after_the_gap_file_adopts_it(env, monkeypatch):
+    first = behind_a_gap(env)
+    drop_change_data(env.dt)
+    monkeypatch.setattr(env.events, "emit", crash)
+    with pytest.raises(OSError):
+        env.tick()
+    monkeypatch.undo()
+    assert env.watermark() == first - 1
+    assert env.tick() is False
+    assert env.names()[1:] == [name(first, env.dt.version())]
+    assert env.watermark() == env.dt.version()
+    assert env.oracle() == []
+
+
+def test_a_read_error_that_is_not_a_gap_propagates(env, monkeypatch):
+    env.merge(write(A, 1, listing()))
+    monkeypatch.setattr(env.dt, "load_cdf", crash)
+    with pytest.raises(OSError, match="disk full"):
+        env.tick()
+    assert (env.names(), env.watermark()) == ([], -1)

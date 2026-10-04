@@ -1,0 +1,234 @@
+import json
+
+import pytest
+from support import listing
+
+from catalog import evaluate, taxonomy
+from catalog.classify import UNCATEGORIZED, FakeClassifier
+
+SHIRT = "Apparel & Accessories > Clothing > Activewear"
+KIDS = "Apparel & Accessories > Clothing > Baby & Children's Clothing"
+TOYS = "Toys & Games"
+
+
+def row(id="a", title="Running shirt", category=SHIRT, **extra):
+    return {"id": id, "title": title, "description": "", "category": category} | extra
+
+
+def write(tmp_path, *rows, raw=None):
+    path = tmp_path / "labels.jsonl"
+    path.write_text(raw if raw is not None else "".join(json.dumps(r) + "\n" for r in rows))
+    return path
+
+
+def labels(tmp_path, *rows):
+    return evaluate.load_labels(write(tmp_path, *rows), taxonomy.load())
+
+
+# --- load_labels ---------------------------------------------------------------------------
+
+
+def test_a_good_file_loads_in_order_ignoring_extra_fields(tmp_path):
+    got = labels(tmp_path, row("b", "Ball", TOYS, asin="B0"), row("a", "Tee", SHIRT))
+    assert [(x.id, x.listing.title, x.category) for x in got] == [
+        ("b", "Ball", TOYS),
+        ("a", "Tee", SHIRT),
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad, message",
+    [
+        (row("b", category="Apparel > Shirt"), "not in the taxonomy"),
+        (row("b", category=UNCATEGORIZED), "not in the taxonomy"),
+        (row("a"), "duplicate id"),
+        ({"id": "b", "title": "x", "description": ""}, "category"),
+        (row("b", title="x" * 151), "title"),
+        (row("b", title=""), "title"),
+    ],
+)
+def test_a_bad_line_is_refused_naming_it(tmp_path, bad, message):
+    with pytest.raises(ValueError, match=f"line 2.*{message}"):
+        labels(tmp_path, row("a"), bad)
+
+
+def test_bad_json_and_an_empty_file_are_refused(tmp_path):
+    with pytest.raises(ValueError, match="line 1"):
+        evaluate.load_labels(write(tmp_path, raw="{nope\n"), taxonomy.load())
+    with pytest.raises(ValueError, match="no labels"):
+        evaluate.load_labels(write(tmp_path, raw=""), taxonomy.load())
+
+
+# --- run -----------------------------------------------------------------------------------
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+class Recording:
+    """Answers `answers` in order; each call takes `len(listings)` seconds on `clock`."""
+
+    taxonomy_version = "rec-1"
+
+    def __init__(self, answers, clock, usd=None):
+        self.answers, self.clock, self.calls = list(answers), clock, []
+        if usd is not None:
+            self.usd = usd
+
+    def classify(self, listings):
+        self.calls.append([x.title for x in listings])
+        self.clock.t += len(listings)
+        if not self.calls[1:]:  # the warm-up call
+            return [(SHIRT, 1.0)] * len(listings)
+        return [self.answers.pop(0) for _ in listings]
+
+
+def labeled(*categories):
+    return [evaluate.Labeled(str(i), listing(f"t{i}"), c) for i, c in enumerate(categories)]
+
+
+def test_run_warms_up_untimed_then_times_each_batch(tmp_path):
+    clock = Clock()
+    rec = Recording([(SHIRT, 0.9), (TOYS, 0.4), None], clock)
+    result = evaluate.run(rec, labeled(SHIRT, SHIRT, TOYS), taxonomy.load(), batch=2, clock=clock)
+    assert rec.calls == [["t0"], ["t0", "t1"], ["t2"]]
+    assert result["seconds"] == [2.0, 1.0]
+    assert result["batch"] == 2 and result["taxonomy_version"] == "rec-1"
+    assert result["answers"] == [
+        {"id": "0", "label": SHIRT, "category": SHIRT, "confidence": 0.9, "valid": True},
+        {"id": "1", "label": SHIRT, "category": TOYS, "confidence": 0.4, "valid": True},
+        {"id": "2", "label": TOYS, "category": None, "confidence": None, "valid": True},
+    ]
+    assert result["usd"] == 0.0 and result["rss_mb"] > 0
+
+
+def test_run_marks_paths_outside_the_taxonomy_invalid():
+    result = evaluate.run(FakeClassifier(), labeled(TOYS), taxonomy.load(), batch=1)
+    assert result["answers"][0]["valid"] is False
+
+
+def test_run_fails_on_a_wrong_answer_count_or_an_error():
+    class Short(FakeClassifier):
+        def classify(self, listings):
+            return super().classify(listings)[1:]
+
+    with pytest.raises(ValueError, match="answers"):
+        evaluate.run(Short(), labeled(TOYS), taxonomy.load(), batch=1)
+    with pytest.raises(RuntimeError):
+        evaluate.run(FakeClassifier(fail=True), labeled(TOYS), taxonomy.load(), batch=1)
+
+
+# --- score ---------------------------------------------------------------------------------
+
+
+def answer(label, category, confidence, valid=True):
+    return {
+        "id": "x",
+        "label": label,
+        "category": category,
+        "confidence": confidence,
+        "valid": valid,
+    }
+
+
+def result(*answers, seconds=(0.001,), usd=0.0):
+    return {
+        "name": "c",
+        "taxonomy_version": "v",
+        "batch": 1,
+        "seconds": list(seconds),
+        "answers": list(answers),
+        "usd": usd,
+        "rss_mb": 1.0,
+    }
+
+
+def test_score_counts_at_and_above_the_threshold():
+    scored = evaluate.score(
+        result(
+            answer(SHIRT, SHIRT, 0.5),  # exactly at t: counts, correct
+            answer(SHIRT, KIDS, 0.6),  # wrong leaf, right levels 1 and 2
+            answer(TOYS, TOYS, 0.49),  # below t: Uncategorized
+            answer(TOYS, None, None),  # unanswered
+        ),
+        [0.5],
+    )[0.5]
+    assert scored == {
+        "accuracy": 0.25,
+        "precision": 0.5,
+        "uncategorized": 0.5,
+        "level1": 0.5,
+        "level2": 0.5,
+    }
+
+
+def test_score_treats_uncategorized_as_unanswered_and_invalid_as_wrong():
+    scored = evaluate.score(
+        result(answer(TOYS, UNCATEGORIZED, 0.9), answer(TOYS, "Fake > T", 0.9, valid=False)),
+        [0.0],
+    )[0.0]
+    assert scored["accuracy"] == 0.0 and scored["precision"] == 0.0
+    assert scored["uncategorized"] == 0.5
+
+
+def test_nothing_answered_has_no_precision():
+    assert evaluate.score(result(answer(TOYS, TOYS, 0.1)), [0.5])[0.5]["precision"] is None
+
+
+def test_summary_latency_counts_and_cost():
+    seconds = [i / 1000 for i in range(1, 101)]  # 1..100 ms
+    got = evaluate.summary(
+        result(answer(TOYS, None, None), answer(TOYS, "X", 0.9, False), seconds=seconds, usd=0.5)
+    )
+    assert got["p50_ms"] == 50.0 and got["p99_ms"] == 99.0
+    assert got["per_s"] == pytest.approx(2 / sum(seconds))
+    assert got["none"] == 1 and got["invalid"] == 1
+    assert got["usd_per_m"] == 250_000.0
+
+
+# --- main ----------------------------------------------------------------------------------
+
+
+def test_run_then_report(tmp_path):
+    path = write(tmp_path, row("a"), row("b", "Ball", TOYS))
+    results, out = tmp_path / "results", tmp_path / "report.md"
+    evaluate.main(["run", "--classifier", "fake", "--labels", str(path), "--results", str(results)])
+    saved = json.loads((results / "fake.json").read_text())
+    assert saved["name"] == "fake" and len(saved["labels_sha256"]) == 64
+    assert len(saved["answers"]) == 2
+
+    evaluate.main(["report", "--results", str(results), "--out", str(out)])
+    report = out.read_text()
+    assert "| fake | fake-1 |" in report and "different label sets" not in report
+
+    (tmp_path / "x").mkdir()
+    other = write(tmp_path / "x", row("c"))
+    evaluate.main(
+        [
+            "run",
+            "--classifier",
+            "fake",
+            "--labels",
+            str(other),
+            "--results",
+            str(results),
+            "--name",
+            "other",
+        ]
+    )
+    evaluate.main(["report", "--results", str(results), "--out", str(out)])
+    assert "different label sets" in out.read_text()
+
+
+def test_a_zero_batch_or_no_results_is_a_usage_error(tmp_path):
+    with pytest.raises(SystemExit) as e:
+        evaluate.main(["run", "--classifier", "fake", "--batch", "0"])
+    assert e.value.code == 2
+    with pytest.raises(SystemExit) as e:
+        evaluate.main(["report", "--results", str(tmp_path)])
+    assert e.value.code == 2

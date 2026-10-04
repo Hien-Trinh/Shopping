@@ -2,7 +2,7 @@ import hashlib
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import count
 
 import pytest
@@ -424,6 +424,19 @@ def test_an_id_that_isnt_a_uuid7_gets_404_without_reading_events(client, monkeyp
     assert (r.status_code, r.json()) == (404, NOT_FOUND)
     monkeypatch.undo()  # refused() reads events itself
     assert refused(client) == [(404, "unknown_submission", client.merchant_id)]
+
+
+def test_an_id_dated_before_the_events_horizon_gets_404_without_reading_events(client, monkeypatch):
+    """Its events are pruned, so a forged old id can't make one lookup scan every hour kept."""
+    horizon_ms = int((NOW - timedelta(days=3)).timestamp() * 1000)  # plan-v1 A13
+    monkeypatch.setattr(events, "read", fail)
+    r = client.get(uuid7_at(horizon_ms - 1))
+    assert (r.status_code, r.json()) == (404, NOT_FOUND)
+    monkeypatch.undo()  # refused() reads events itself
+    assert refused(client) == [(404, "expired_submission", client.merchant_id)]
+    inside = uuid7_at(horizon_ms)
+    report(client, inside, (0, "written"), at=horizon_ms / 1000)
+    assert client.get(inside).status_code == 200
 
 
 def test_the_id_is_normalized_before_the_lookup(client):

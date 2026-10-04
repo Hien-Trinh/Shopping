@@ -18,7 +18,8 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from catalog import delta, entry, landing, state, store, worker
+from catalog import delta, entry, export, landing, state, store, worker
+from catalog import events as event_files
 from catalog.events import EventLog
 from catalog.keys import PARTITIONS
 
@@ -40,13 +41,14 @@ def run(data: Path, state_dir: Path, *, stop: threading.Event, interval: float =
         events = EventLog(data / "events", "maintenance")
         events.emit([{"type": "maintenance_start", "pid": os.getpid()}])
         while not stop.is_set():
-            tick(landing_dt, store_dt, state_dir, events, datetime.now(UTC))
+            tick(landing_dt, store_dt, data, state_dir, events, datetime.now(UTC))
             stop.wait(interval)
 
 
 def tick(
     landing_dt: DeltaTable,
     store_dt: DeltaTable,
+    data: Path,
     state_dir: Path,
     events: EventLog,
     now: datetime,
@@ -62,7 +64,11 @@ def tick(
         "landing_log": (landing_dt, min(v for v, _ in offsets.values())),
         "listing_store": (store_dt, watermark + 1),
     }
-    report: dict = {"type": "maintenance"}
+    report: dict = {
+        "type": "maintenance",
+        "event_hours": event_files.prune(data / "events", now),
+        "export_files": export.prune(data / "export", now, watermark),
+    }
     unread = {}
     for name, (dt, next_version) in readers.items():  # only deletes, so a full disk still frees
         unread[name] = _unread_since(dt, next_version)
@@ -89,8 +95,8 @@ def _clean(dt: DeltaTable, unread: datetime | None, now: datetime, floor: timede
     hours = max(math.ceil(floor / HOUR), math.ceil(lag / HOUR))
     removed = dt.vacuum(retention_hours=hours, dry_run=False, enforce_retention_duration=False)
     # Vacuum skips paths starting with "_", so the change feed's own files are ours to remove.
-    # One is written before its commit: an hour more keeps the first unread version's.
-    cutoff = (now - hours * HOUR - (HOUR if unread else timedelta())).timestamp()
+    # One is written before its commit: an hour more keeps one whose commit is still landing.
+    cutoff = (now - (hours + 1) * HOUR).timestamp()
     change_data = delta.local(dt.table_uri) / "_change_data"
     old = [f for f in change_data.rglob("*.parquet") if f.stat().st_mtime < cutoff]
     for f in old:

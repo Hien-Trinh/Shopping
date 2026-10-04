@@ -21,8 +21,8 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from catalog import delta, entry, landing, state, store
-from catalog.classify import UNCATEGORIZED, FakeClassifier
+from catalog import classify, delta, entry, landing, state, store, taxonomy
+from catalog.classify import UNCATEGORIZED
 from catalog.events import EventLog
 from catalog.keys import owned, partition
 from catalog.landing import Batch, Landed, Position
@@ -135,7 +135,12 @@ ATTEMPTS = 5  # failed ticks in a row before crashing; backoff 1+2+4+8 s stays u
 COMPACT_EVERY = 100  # batches with changes between compactions (ponytail: untuned until Phase 7)
 # Exit codes: 0 stopped, 1 gave up on failed ticks (a restart may fix it), over 1 fatal, so the
 # supervisor stops instead: 2 is a bad flag, and these no restart fixes.
-FATAL = {state.PartitionTaken: 3, state.OffsetsMismatch: 4, state.CorruptState: 5}
+FATAL = {
+    state.PartitionTaken: 3,
+    state.OffsetsMismatch: 4,
+    state.CorruptState: 5,
+    classify.ModelMissing: 6,
+}
 SUPERVISOR = "CATALOG_SUPERVISOR"  # set to the supervisor's pid in its children's environment
 
 
@@ -298,6 +303,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--workers", type=int, required=True)
     args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--state", type=Path, default=state.STATE)
+    args.add_argument("--classifier", choices=["fake", "embedding"], default="fake")
+    args.add_argument("--models", type=Path, default=classify.MODELS)
     a = args.parse_args(argv)
     try:
         owned(a.index, a.workers)
@@ -309,8 +316,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.error(str(e))
     stop = stop_on_signals()
     watch_supervisor(supervisor, stop)  # so a kill -9ed supervisor leaves no worker behind
-    # ponytail: FakeClassifier until the real one (step 6b) is chosen by a flag.
-    run(a.data, a.state, a.index, a.workers, FakeClassifier(), stop=stop)
+    if a.classifier == "embedding":  # fake by default until 6e picks the threshold
+        classifier = classify.EmbeddingClassifier(taxonomy.load(), classify.fastembed(a.models))
+    else:
+        classifier = classify.FakeClassifier()
+    run(a.data, a.state, a.index, a.workers, classifier, stop=stop)
 
 
 _WRITES = {Outcome.WRITTEN, Outcome.RECLASSIFIED}
@@ -340,35 +350,43 @@ def _merge(store_dt, landed: Sequence[Landed], classifier, now) -> tuple[list[di
 
 
 def _classify(writes: Sequence[Write], classifier) -> tuple[list[Write], list[dict]]:
-    """Classify the Writes that need it in one call; on any failure they become Uncategorized.
+    """Classify the Writes that need it in one call; on any failure, or for those the classifier
+    didn't reach (answered None), they become Uncategorized.
 
-    Returns the Writes and a classify_failed event if the call failed.
+    Returns the Writes and a classify_failed event if any went unanswered.
     """
     todo = [w for w in writes if w.needs_classify]
     if not todo:
         return list(writes), []
     version = classifier.taxonomy_version
-    notes = []
     try:
         results = classifier.classify([w.listing for w in todo])
-        found = [_answer(a, version) for _, a in zip(todo, results, strict=True)]
-    except Exception as e:  # an outage, a timeout or a bad answer: never stall the partition
-        notes = [
-            {
-                "type": "classify_failed",
-                "listings": len(todo),
-                "partitions": sorted({partition(*w.key) for w in todo}),
-                "error": repr(e)[:500],  # a provider error may echo listing text
-            }
-        ]
-        # Keep an answer whose inputs haven't changed, else Uncategorized; either way flagged so
-        # the Backfill reclassifies it (design doc, lifecycle step 5).
         found = [
+            None if a is None else _answer(a, version) for _, a in zip(todo, results, strict=True)
+        ]
+        error = "budget spent"  # for the Listings it answered None
+    except Exception as e:  # an outage or a bad answer: never stall the partition
+        found, error = [None] * len(todo), repr(e)[:500]  # a provider error may echo listing text
+    missed = [w for w, f in zip(todo, found, strict=True) if f is None]
+    notes = [
+        {
+            "type": "classify_failed",
+            "listings": len(missed),
+            "partitions": sorted({partition(*w.key) for w in missed}),
+            "error": error,
+        }
+    ] if missed else []  # fmt: skip
+    # Keep an answer whose inputs haven't changed, else Uncategorized; either way flagged so
+    # the Backfill reclassifies it (design doc, lifecycle step 5).
+    found = [
+        f
+        or (
             replace(w.fallback, needs_reclassify=True)
             if w.fallback
             else Classification(UNCATEGORIZED, 0.0, version, needs_reclassify=True)
-            for w in todo
-        ]
+        )
+        for w, f in zip(todo, found, strict=True)
+    ]
     answers = iter(found)
     classified = [
         replace(w, classification=next(answers), needs_classify=False) if w.needs_classify else w

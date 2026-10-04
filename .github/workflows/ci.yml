@@ -6,10 +6,43 @@ on:
     branches: [main]
 
 jobs:
-  # Required on main. The model job arrives in Phase 6 and stress-smoke in Phase 7 (plan-v1.md, CI).
+  # Required on main. stress-smoke arrives in Phase 7 (plan-v1.md, CI).
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
       - run: make check
+
+  # Whether `model` has anything to test. A job skipped by its `if` counts as passed, so `model`
+  # can be required; a workflow-level `paths:` filter would leave it "Expected" forever.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      model: ${{ steps.diff.outputs.model }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if git diff --name-only "$BASE"...HEAD | grep -qE '(^|/)(classify|taxonomy)[^/]*$|^src/catalog/data/|^eval/|^tests/model/|^pyproject\.toml$|^uv\.lock$|^\.github/workflows/'; then
+            echo model=true >> "$GITHUB_OUTPUT"
+          fi
+
+  # The real embedding model, on Apple Silicon like the Mac it runs on (tests marked `model`).
+  model:
+    needs: changes
+    if: needs.changes.outputs.model == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: models
+          key: models-bge-small-en-v1.5
+      - run: uv run python -m catalog.classify --download
+      - run: uv run pytest tests/model -m model

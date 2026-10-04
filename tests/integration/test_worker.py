@@ -12,7 +12,7 @@ import pyarrow as pa
 import pytest
 from support import delete, listing, product_in, reclassify, up
 
-from catalog import events, landing, state, store, worker
+from catalog import events, landing, state, store, supervisor, worker
 from catalog.classify import UNCATEGORIZED, FakeClassifier
 from catalog.envelope import Change, Content
 from catalog.events import EventLog
@@ -160,6 +160,22 @@ def test_a_huge_classifier_error_is_truncated(env, monkeypatch):
     env.run()
     (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
     assert len(failed["error"]) == 500
+
+
+def test_listings_the_classifier_did_not_reach_take_the_failure_path(env, monkeypatch):
+    env.land(up(A, 1, listing("Shirt")))
+    env.run()
+    C = product_in(5)
+    reached = {"Hat": ("Fake > H", 0.8)}  # the budget ran out before Shirt and Cup
+    monkeypatch.setattr(env.classifier, "classify", lambda ls: [reached.get(x.title) for x in ls])
+    env.land(up(B, 1, listing("Hat")), reclassify(A), up(C, 1, listing("Cup")), submission="s2")
+    env.run()
+    assert (category(env, B).category, category(env, B).needs_reclassify) == ("Fake > H", False)
+    assert (category(env, A).category, category(env, A).needs_reclassify) == ("Fake > S", True)
+    assert (category(env, C).category, category(env, C).needs_reclassify) == (UNCATEGORIZED, True)
+    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
+    assert (failed["listings"], failed["partitions"]) == (2, [3, 5])
+    assert failed["error"] == "budget spent"
 
 
 def test_only_moved_offsets_are_saved(env, monkeypatch):
@@ -569,6 +585,13 @@ def test_the_cli_exits_2_on_a_bad_flag_and_a_code_per_kind_of_crash(env):
     broken = cli(*args[:4], "--data", "/dev/null", "--state", str(env.state))  # a storage error
     codes = [r.returncode for r in (taken, mismatch, corrupt, broken)]
     assert codes == [3, 4, 5, 1] and "PartitionTaken" in taken.stderr
+
+
+def test_the_cli_exits_6_without_the_embedding_model(env):
+    args = ["--index", "0", "--workers", "4", "--data", str(env.tmp), "--state", str(env.state)]
+    missing = cli(*args, "--classifier", "embedding", "--models", str(env.tmp / "models"))
+    assert missing.returncode == 6 and "--download" in missing.stderr
+    assert 6 in supervisor.FATAL_CODES  # the supervisor stops instead of restarting it
 
 
 def test_the_cli_exits_cleanly_with_stdout_closed(tmp_path):

@@ -60,6 +60,10 @@ def export_pids(tmp: Path) -> list[int]:
     return worker_pids(tmp, "export_start")
 
 
+def maintenance_pids(tmp: Path) -> list[int]:
+    return worker_pids(tmp, "maintenance_start")
+
+
 def snapshot_pids(tmp: Path) -> list[int]:
     return worker_pids(tmp, "snapshots_start")
 
@@ -81,6 +85,10 @@ class System:
         text, n = re.subn(r"^export: python -m catalog\.export$", r"\g<0> --interval 0.2",
                           text, flags=re.M)  # fmt: skip
         assert n == 1, "the Procfile's export line changed"
+        # Passes beside the API's appends and the workers (step 5d).
+        text, n = re.subn(r"^maintenance: python -m catalog\.maintenance$",
+                          r"\g<0> --interval 0.2", text, flags=re.M)  # fmt: skip
+        assert n == 1, "the Procfile's maintenance line changed"
         # Every second at least, so consecutive snapshots never share a second's name.
         text, n = re.subn(r"^snapshots: python -m catalog\.snapshots$", r"\g<0> --every 1",
                           text, flags=re.M)  # fmt: skip
@@ -118,8 +126,8 @@ class System:
         for proc in self.supervisors:
             proc.kill()
             proc.wait()
-        for pid in [*worker_pids(self.tmp), *export_pids(self.tmp), *snapshot_pids(self.tmp),
-                    *api_pids(self.port)]:  # fmt: skip
+        others = [*export_pids(self.tmp), *snapshot_pids(self.tmp), *maintenance_pids(self.tmp)]
+        for pid in [*worker_pids(self.tmp), *others, *api_pids(self.port)]:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
 
@@ -184,8 +192,8 @@ def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system
         assert diff(store.fingerprints(listings, snapshots.pinned(path)), copy) == []
 
     pids = [*worker_pids(system.tmp), *export_pids(system.tmp), *snapshot_pids(system.tmp)]
-    pids += api_pids(system.port)
-    assert len(pids) == 7  # 4 workers, Change Export, Catalog Snapshots and the API, once each
+    pids += [*maintenance_pids(system.tmp), *api_pids(system.port)]
+    assert len(pids) == 8  # 4 workers, Change Export, Catalog Snapshots, maintenance, the API
     assert not bindable(system.port)  # so the check below can fail
     supervisor.send_signal(signal.SIGTERM)
     assert supervisor.wait(timeout=30) == 0
@@ -202,6 +210,7 @@ def test_killing_the_supervisor_stops_its_api_so_a_new_one_serves_on_its_port(sy
     wait_for(lambda: not alive(api), timeout=5)
     wait_for(lambda: not any(map(alive, workers)), timeout=10)  # 3e: their locks are free
     wait_for(lambda: not any(map(alive, export_pids(system.tmp))), timeout=10)  # and its lock
+    wait_for(lambda: not any(map(alive, maintenance_pids(system.tmp))), timeout=10)
     wait_for(lambda: not any(map(alive, snapshot_pids(system.tmp))), timeout=10)
     second = system.start()  # its API binds the same port: no restart loop
     assert api_pids(system.port) not in ([], [api])

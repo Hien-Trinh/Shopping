@@ -9,6 +9,7 @@ If cleanup removed history the change feed needs, the next file is the whole sto
 
 import argparse
 import os
+import re
 import threading
 import time
 import uuid
@@ -64,11 +65,12 @@ def prune(export_dir: Path, now: datetime, watermark: int) -> int:
     """Delete the files older than RETENTION that end at or below the watermark; returns how
     many. One past it is a crash's file that the exporter adopts on its next tick."""
     cutoff = (now - RETENTION).timestamp()
-    old = [
-        p
-        for p in files(export_dir)
-        if int(p.stem.split("-")[1]) <= watermark and p.stat().st_mtime < cutoff
-    ]
+    old = []
+    for p in files(export_dir):
+        if not (name := re.fullmatch(r"\d+-(\d+)", p.stem)):
+            continue  # not the exporter's: one stray file must not stop every pass
+        if int(name[1]) <= watermark and p.stat().st_mtime < cutoff:
+            old.append(p)
     for p in old:
         p.unlink()
     return len(old)

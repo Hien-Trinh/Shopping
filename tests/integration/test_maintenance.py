@@ -264,13 +264,14 @@ def _emitted_at(env, when):
 
 
 def test_event_hours_past_the_retention_go(env):
-    now = datetime.now(UTC)
+    real = datetime.now(UTC)
+    now = real.replace(minute=10)  # early in the hour, so `kept` shares the horizon's hour
     edge = now - EVENTS_RETENTION - timedelta(hours=1)  # its hour ends at or before the horizon
     kept = now - EVENTS_RETENTION + HALF_HOUR
     for when in (now - EVENTS_RETENTION - timedelta(hours=2), edge, kept):
         _emitted_at(env, when)
     env.offsets()
-    env.tick()
+    env.tick(later=now - real)
     found = events.read(env.tmp / "data" / "events")
     assert [e["at"] for e in found if e["type"] == "probe"] == [kept.isoformat()]
     assert env.reports()[-1]["event_hours"] == 2
@@ -290,10 +291,12 @@ def test_export_files_past_the_retention_go_once_the_watermark_passed_them(env):
     exported = _export_file(env, 0, 4, old)
     _export_file(env, 5, 9, old)  # a crash before its watermark: the exporter adopts it next
     _export_file(env, 0, 2, EVENTS_RETENTION - HALF_HOUR)
+    stray = env.tmp / "data" / "export" / "backup.parquet"  # not the exporter's: left alone
+    stray.write_bytes(b"")
     env.watermark(4)
     env.offsets()
     env.tick()
     names = [p.name for p in export.files(env.tmp / "data" / "export")]
     assert exported not in names
-    assert names == [f"{0:012}-{2:012}.parquet", f"{5:012}-{9:012}.parquet"]
+    assert names == [f"{0:012}-{2:012}.parquet", f"{5:012}-{9:012}.parquet", stray.name]
     assert env.reports()[-1]["export_files"] == 1

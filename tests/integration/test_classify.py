@@ -118,3 +118,16 @@ def test_the_version_of_a_classifier_kind_needs_no_model():  # step-6c.md: Backf
     assert classify.taxonomy_version("fake") == classify.FakeClassifier().taxonomy_version
     loaded = EmbeddingClassifier(taxonomy.load(), lambda texts: np.ones((len(texts), 3)))
     assert classify.taxonomy_version("embedding") == loaded.taxonomy_version
+
+
+# --- step-6e.md, 6e.1 ----------------------------------------------------------------------
+
+
+def test_description_0_embeds_the_title_alone():
+    seen = []
+    c = EmbeddingClassifier(
+        TAXONOMY, lambda texts: seen.extend(texts) or embed(texts), description=0
+    )
+    seen.clear()
+    c.classify([listing("Hat", description="d" * 600)])
+    assert seen == ["Hat"]

@@ -322,3 +322,163 @@ def test_a_bad_result_file_is_named(tmp_path):
     (tmp_path / "old.json").write_text('{"name": "ol')  # torn
     with pytest.raises(ValueError, match="old.json"):
         evaluate.main(["report", "--results", str(tmp_path), "--out", str(tmp_path / "r.md")])
+
+
+# --- sample (step-6e.md, 6e.1) -------------------------------------------------------------
+
+
+def amazon(asin, title="Ball", description=("Round.",), features=("Red",), **extra):
+    item = {"parent_asin": asin, "title": title, "description": description, "features": features}
+    return item | extra
+
+
+def source(tmp_path, **categories):
+    for name, items in categories.items():
+        lines = (json.dumps(x) if isinstance(x, dict) else x for x in items)
+        (tmp_path / f"meta_{name}.jsonl").write_text("".join(f"{x}\n" for x in lines))
+    return tmp_path.as_uri()
+
+
+def test_sample_draws_the_same_items_for_the_same_seed(tmp_path):
+    url = source(tmp_path, Toys=[amazon(f"t{i}") for i in range(20)])
+    draw = [x["id"] for x in evaluate.sample(url, ["Toys"], per_category=6, seed=0)]
+    assert len(set(draw)) == 6
+    assert draw == [x["id"] for x in evaluate.sample(url, ["Toys"], per_category=6, seed=0)]
+    assert draw != [x["id"] for x in evaluate.sample(url, ["Toys"], per_category=6, seed=1)]
+
+
+def test_sample_reads_only_the_first_lines(tmp_path):
+    url = source(tmp_path, Toys=[amazon("a"), amazon("b"), "{torn"])
+    got = evaluate.sample(url, ["Toys"], per_category=6, seed=0, lines=2)
+    assert sorted(x["id"] for x in got) == ["a", "b"]
+
+
+def test_sample_shapes_a_listing(tmp_path):
+    long = "word " * 40  # 200 characters
+    url = source(
+        tmp_path,
+        Toys=[amazon("a", title=long, description=["One.", "Two."], features=["Red", "Big"])],
+    )
+    [got] = evaluate.sample(url, ["Toys"], per_category=6, seed=0)
+    assert got == {
+        "id": "a",
+        "title": ("word " * 30).strip(),  # cut at the last space within 150
+        "description": "One.\nTwo.\nRed\nBig",
+        "amazon_category": "Toys",
+    }
+
+
+def test_sample_hard_cuts_a_title_without_spaces_and_a_long_description(tmp_path):
+    url = source(tmp_path, Toys=[amazon("a", title="x" * 200, description=["d" * 6000])])
+    [got] = evaluate.sample(url, ["Toys"], per_category=6, seed=0)
+    assert got["title"] == "x" * 150 and len(got["description"]) == 5000
+
+
+def test_sample_treats_a_missing_or_odd_description_as_empty(tmp_path):
+    url = source(
+        tmp_path,
+        Toys=[
+            amazon("a", description=None, features="not a list"),
+            {"parent_asin": "b", "title": "T"},
+        ],
+    )
+    got = evaluate.sample(url, ["Toys"], per_category=6, seed=0)
+    assert sorted((x["id"], x["description"]) for x in got) == [("a", ""), ("b", "")]
+
+
+def test_sample_skips_empty_titles_and_repeated_ids_across_categories(tmp_path):
+    url = source(
+        tmp_path,
+        Toys=[amazon("a"), amazon("b", title="  "), amazon("c", title=None)],
+        Games=[amazon("a"), amazon("d")],
+    )
+    got = evaluate.sample(url, ["Toys", "Games"], per_category=6, seed=0)
+    assert [(x["id"], x["amazon_category"]) for x in got] == [("a", "Toys"), ("d", "Games")]
+
+
+def test_sample_items_load_once_labeled(tmp_path):
+    url = source(tmp_path, Toys=[amazon("a", title="y " * 100)])
+    items = evaluate.sample(url, ["Toys"], per_category=6, seed=0)
+    assert labels(tmp_path, *[x | {"category": TOYS} for x in items])[0].id == "a"
+
+
+def test_sample_cli_prints_jsonl(tmp_path, capsys):
+    url = source(tmp_path, Toys=[amazon("a")], Games=[amazon("b")])
+    evaluate.main(["sample", "--source", url, "--categories", "Toys", "Games"])
+    out = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [x["id"] for x in out] == ["a", "b"]
+
+
+def test_the_embedding_candidate_takes_a_description_length(monkeypatch):
+    monkeypatch.setattr(
+        evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
+    )
+    assert evaluate.candidate("embedding", None, description=0).description == 0
+    assert evaluate.candidate("embedding", None).description == evaluate.classify.DESCRIPTION
+
+
+# --- review fixes (PR #56) -----------------------------------------------------------------
+
+
+def test_sample_keeps_the_last_word_when_a_space_falls_right_at_the_cut(tmp_path):
+    title = "x" * 145 + " word" + " tail"  # the space at index 150 ends "word"
+    url = source(tmp_path, Toys=[amazon("a", title=title)])
+    assert evaluate.sample(url, ["Toys"], per_category=6, seed=0)[0]["title"] == title[:150]
+
+
+def test_sample_names_the_file_and_line_of_a_bad_row(tmp_path):
+    url = source(tmp_path, Toys=[amazon("a"), "{torn"], Games=[amazon("b"), "[1, 2]"])
+    with pytest.raises(ValueError, match=r"meta_Toys\.jsonl: line 2"):
+        evaluate.sample(url, ["Toys"], per_category=6, seed=0)
+    with pytest.raises(ValueError, match=r"meta_Games\.jsonl: line 2: not an object"):
+        evaluate.sample(url, ["Games"], per_category=6, seed=0)
+
+
+def test_sample_skips_an_id_that_is_not_text(tmp_path):
+    url = source(tmp_path, Toys=[amazon(5), amazon(" "), amazon("a")])
+    assert [x["id"] for x in evaluate.sample(url, ["Toys"], per_category=6, seed=0)] == ["a"]
+
+
+def test_a_failed_category_prints_nothing(tmp_path, capsys):
+    url = source(tmp_path, Toys=[amazon("a")])
+    with pytest.raises(OSError):
+        evaluate.main(["sample", "--source", url, "--categories", "Toys", "Missing"])
+    assert capsys.readouterr().out == ""
+
+
+def test_sample_reports_each_categorys_yield_on_stderr(tmp_path, capsys):
+    url = source(tmp_path, Toys=[amazon("a"), amazon("b")], Games=[amazon("c")])
+    evaluate.main(
+        ["sample", "--source", url, "--categories", "Toys", "Games", "--per-category", "2"]
+    )
+    assert "Toys 2, Games 1" in capsys.readouterr().err
+
+
+def test_run_passes_the_description_length_and_records_it(tmp_path, monkeypatch):
+    seen = {}
+
+    def candidate(kind, models, *, description):
+        seen["description"] = description
+        return FakeClassifier()
+
+    monkeypatch.setattr(evaluate, "candidate", candidate)
+    path, results = write(tmp_path, row("a")), tmp_path / "results"
+    evaluate.main(
+        ["run", "--classifier", "fake", "--labels", str(path), "--results", str(results)]
+        + ["--description", "0"]
+    )
+    assert seen == {"description": 0}
+    assert json.loads((results / "fake.json").read_text())["description"] == 0
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "--classifier", "fake", "--description", "-1"],
+        ["sample", "--per-category", "0"],
+    ],
+)
+def test_a_negative_description_or_no_items_per_category_is_a_usage_error(argv):
+    with pytest.raises(SystemExit) as e:
+        evaluate.main(argv)
+    assert e.value.code == 2

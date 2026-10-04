@@ -40,6 +40,8 @@ Each becomes a test or is named out of scope.
 | The slowest reader's version has no log left (state reset against old data) | Every guarded step is skipped and the event says so. Recovering that reader is 5e |
 | An API append on a handle opened before a DELETE | Succeeds (today it fails every time after: "a concurrent transaction deleted data", seen in the spike) |
 | A DELETE commits between the API's refresh and its commit | The append retries once and succeeds |
+| `_change_data` files of read versions, older than the retention | Deleted; the change feed from the slowest reader's version still reads |
+| `_change_data` files of an unread version | Kept, by the same retention as the vacuum |
 | Compaction while the API appends | Both succeed (spike B2) |
 | A Submission id dated before the events horizon | 404 `not found`, logged as `expired_submission`, before any event file is opened |
 | An id dated just inside the horizon | Its hour is still on disk: the hour pruned is only one whose last second is past the horizon |
@@ -56,6 +58,7 @@ Each becomes a test or is named out of scope.
 2. **What runs, per table:**
    - **Landing log:** compaction every tick (safe beside appends, spike B2). Rows with `received_at` before `now - 7 days - 1 hour` are deleted if the guard holds at `now - 7 days`. The hour covers the gap between a request's `received_at` and its commit (`ponytail:` comment: a commit stuck longer than an hour could lose rows; B1's hang was 5 minutes). Workers read only `insert` rows, so the DELETE's change-feed rows are ignored (checked in the spike).
    - **Both tables:** vacuum with `retention_hours = max(1, ceil(the slowest reader's lag in hours))`, so it never removes a file an unread version needs and never blocks. 1 hour is the minimum because delta-rs takes whole hours and also removes untracked files older than the retention, which could be a commit still being written.
+   - **Both tables:** files under `_change_data/` older than the vacuum's retention plus 1 hour are deleted by `maintenance` itself. delta-rs's vacuum skips paths starting with `_`, so the change-feed files of every MERGE and DELETE would otherwise stay forever (5b's side finding, confirmed: all 4 survived a zero-retention vacuum). A file is written before its commit, so its modification time is at or before that commit's; the extra hour keeps the file of the slowest reader's own version.
    - **Both tables:** `cleanup_metadata()` (log files older than the 1-hour log retention) if the guard holds at `now - 1 hour`.
 3. **`landing.append` refreshes before each commit and retries once on a commit conflict.** In the spike, an appender that never refreshed failed 119 of 136 appends after one DELETE, and every later one, because it kept committing on a snapshot older than the DELETE. With a refresh first, 117 appends beside 5 DELETEs had no errors. The retry covers a DELETE landing between the refresh and the commit. Without this, the API would 500 every submission after the first retention pass.
 4. **Log retention is set when a table is created:** `delta.enableExpiredLogCleanup = false` and `delta.logRetentionDuration = interval 1 hours`, checked in a spike. Delta's own cleanup is time-based and would pass a slow reader. The 1 hour bounds log files on disk (at 10 commits/s, about 36k files). Tables created before this step keep Delta's defaults: reset `data/` and `state/` (local data only).
@@ -68,7 +71,7 @@ Each becomes a test or is named out of scope.
 ## Testing decisions
 
 - **Test points (seams), confirmed:**
-  1. **`maintenance.tick`** (new, red first, `tests/integration/test_maintenance.py`, real Delta in `tmp_path`, Landing log writes through `landing.append`, offsets through `state.save_offsets`): rows older than the cutoff deleted when every partition is caught up (with `now` 8 days ahead), and kept while one partition is behind; after compaction and a vacuum (minimum 0 hours) with a partition behind, `landing.read` from its offset still returns its rows, and the same test without the guard reproduces the spike's failure; the Listing Store's change feed still reads from the watermark after a vacuum; log cleanup runs when caught up and is skipped when behind (table property lowered in the test); the guard failing closed when the slowest version's log is gone; export files pruned only at or below the watermark; event hours pruned by `now`.
+  1. **`maintenance.tick`** (new, red first, `tests/integration/test_maintenance.py`, real Delta in `tmp_path`, Landing log writes through `landing.append`, offsets through `state.save_offsets`): rows older than the cutoff deleted when every partition is caught up (with `now` 8 days ahead), and kept while one partition is behind; after compaction and a vacuum (minimum 0 hours) with a partition behind, `landing.read` from its offset still returns its rows, and the same test without the guard reproduces the spike's failure; `_change_data` files deleted when caught up and kept for a reader behind, with its change feed still reading; the Listing Store's change feed still reads from the watermark after a vacuum; log cleanup runs when caught up and is skipped when behind (table property lowered in the test); the guard failing closed when the slowest version's log is gone; export files pruned only at or below the watermark; event hours pruned by `now`.
   2. **`landing.append`** (changed, red first, `tests/integration/test_landing.py`): an append on a handle opened before another handle's DELETE succeeds.
   3. **The API lookup** (changed, red first, `tests/integration/test_api.py`): an id dated before `now - events.RETENTION` gets 404 `expired_submission` with no event file opened; one just inside still reads.
   4. **`maintenance.run`** (new, red first): a second process on a held lock is refused; `stop` ends the loop.
@@ -92,7 +95,7 @@ Each becomes a test or is named out of scope.
 
 ## Size
 
-About 125 lines of production code and 200 of tests, over the 300 limit, so two PRs:
+About 135 lines of production code and 210 of tests, over the 300 limit, so two PRs:
 
-1. **5d.1, the Delta tables:** `maintenance.py` with the guard, both tables' cleanup, `run`/`main`, the lock, the `Procfile` line, `landing.append`'s refresh and `delta.ensure`'s properties. About 95 lines plus 150 of tests (test points 1 to 2, 4 to 5, without the file pruning).
+1. **5d.1, the Delta tables:** `maintenance.py` with the guard, both tables' cleanup, `run`/`main`, the lock, the `Procfile` line, `landing.append`'s refresh and `delta.ensure`'s properties. About 105 lines plus 160 of tests (test points 1 to 2, 4 to 5, without the file pruning).
 2. **5d.2, the files:** `events.prune`, `export.prune` (both called from the tick) and the API's 404 at the horizon. About 30 lines plus 60 of tests (test point 3 and the pruning half of 1).

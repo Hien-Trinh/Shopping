@@ -415,3 +415,70 @@ def test_the_embedding_candidate_takes_a_description_length(monkeypatch):
     )
     assert evaluate.candidate("embedding", None, description=0).description == 0
     assert evaluate.candidate("embedding", None).description == evaluate.classify.DESCRIPTION
+
+
+# --- review fixes (PR #56) -----------------------------------------------------------------
+
+
+def test_sample_keeps_the_last_word_when_a_space_falls_right_at_the_cut(tmp_path):
+    title = "x" * 145 + " word" + " tail"  # the space at index 150 ends "word"
+    url = source(tmp_path, Toys=[amazon("a", title=title)])
+    assert evaluate.sample(url, ["Toys"], per_category=6, seed=0)[0]["title"] == title[:150]
+
+
+def test_sample_names_the_file_and_line_of_a_bad_row(tmp_path):
+    url = source(tmp_path, Toys=[amazon("a"), "{torn"], Games=[amazon("b"), "[1, 2]"])
+    with pytest.raises(ValueError, match=r"meta_Toys\.jsonl: line 2"):
+        evaluate.sample(url, ["Toys"], per_category=6, seed=0)
+    with pytest.raises(ValueError, match=r"meta_Games\.jsonl: line 2: not an object"):
+        evaluate.sample(url, ["Games"], per_category=6, seed=0)
+
+
+def test_sample_skips_an_id_that_is_not_text(tmp_path):
+    url = source(tmp_path, Toys=[amazon(5), amazon(" "), amazon("a")])
+    assert [x["id"] for x in evaluate.sample(url, ["Toys"], per_category=6, seed=0)] == ["a"]
+
+
+def test_a_failed_category_prints_nothing(tmp_path, capsys):
+    url = source(tmp_path, Toys=[amazon("a")])
+    with pytest.raises(OSError):
+        evaluate.main(["sample", "--source", url, "--categories", "Toys", "Missing"])
+    assert capsys.readouterr().out == ""
+
+
+def test_sample_reports_each_categorys_yield_on_stderr(tmp_path, capsys):
+    url = source(tmp_path, Toys=[amazon("a"), amazon("b")], Games=[amazon("c")])
+    evaluate.main(
+        ["sample", "--source", url, "--categories", "Toys", "Games", "--per-category", "2"]
+    )
+    assert "Toys 2, Games 1" in capsys.readouterr().err
+
+
+def test_run_passes_the_description_length_and_records_it(tmp_path, monkeypatch):
+    seen = {}
+
+    def candidate(kind, models, *, description):
+        seen["description"] = description
+        return FakeClassifier()
+
+    monkeypatch.setattr(evaluate, "candidate", candidate)
+    path, results = write(tmp_path, row("a")), tmp_path / "results"
+    evaluate.main(
+        ["run", "--classifier", "fake", "--labels", str(path), "--results", str(results)]
+        + ["--description", "0"]
+    )
+    assert seen == {"description": 0}
+    assert json.loads((results / "fake.json").read_text())["description"] == 0
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "--classifier", "fake", "--description", "-1"],
+        ["sample", "--per-category", "0"],
+    ],
+)
+def test_a_negative_description_or_no_items_per_category_is_a_usage_error(argv):
+    with pytest.raises(SystemExit) as e:
+        evaluate.main(argv)
+    assert e.value.code == 2

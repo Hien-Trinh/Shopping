@@ -122,13 +122,21 @@ def sample(
     rng, seen, out = random.Random(seed), set(), []
     for category in categories:
         # ponytail: a file's first lines may not be a random slice of it; stream more if it shows
-        with urlopen(f"{source}/meta_{category}.jsonl") as f:
+        url = f"{source}/meta_{category}.jsonl"
+        with urlopen(url, timeout=60) as f:  # a stalled read fails instead of hanging
             raw = [line for _, line in zip(range(lines), f, strict=False)]
         usable = {}
-        for line in raw:
-            x = json.loads(line)
+        for n, line in enumerate(raw, 1):
+            try:
+                x = json.loads(line)
+            except ValueError as e:
+                raise ValueError(f"{url}: line {n}: {e}") from None
+            if not isinstance(x, dict):
+                raise ValueError(f"{url}: line {n}: not an object")
             id, title = x.get("parent_asin"), x.get("title")
-            if not id or not isinstance(title, str) or not title.strip() or id in seen:
+            if not isinstance(id, str) or not id.strip() or id in seen:
+                continue
+            if not isinstance(title, str) or not title.strip():
                 continue
             parts = [
                 p
@@ -360,16 +368,22 @@ def main(argv: Sequence[str] | None = None) -> None:
     if a.command == "run":
         if a.batch < 1:
             args.error("--batch must be at least 1")
+        if a.description < 0:
+            args.error("--description must be at least 0")
         tax = taxonomy.load()
         labeled, sha = load_labels(a.labels, tax)
         classifier = candidate(a.classifier, a.models, description=a.description)
         result = run(classifier, labeled, tax, batch=a.batch)
         name = a.name or a.classifier
-        result |= {"name": name, "labels_sha256": sha}
+        result |= {"name": name, "labels_sha256": sha, "description": a.description}
         state.save(a.results / f"{name}.json", result)  # whole or not at all
     elif a.command == "sample":  # printed only once every category is read: no half sample
+        if a.per_category < 1:
+            args.error("--per-category must be at least 1")
         items = sample(a.source, a.categories, per_category=a.per_category, seed=a.seed)
         sys.stdout.write("".join(json.dumps(x) + "\n" for x in items))
+        drawn = [x["amazon_category"] for x in items]  # a short category shows here
+        print(", ".join(f"{c} {drawn.count(c)}" for c in a.categories), file=sys.stderr)
     else:
         results = [_result(f) for f in sorted(a.results.glob("*.json"))]
         if not results:

@@ -1,6 +1,6 @@
 # Step 6e: Labeled set and classifier experiment (mini PRD)
 
-Status: draft, for your approval. Plan row: [plan-v1.md, PR steps, 6e](../plan-v1.md) ("Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK", plus two notes from the 6b review), Phase 6 (label set: "about 200 items from Amazon Reviews '23", an LLM pre-labels, "you verify every label by hand"; exit: "the eval report is committed and the threshold is chosen from it"), B4 (6e measures throughput on this Mac), B5 (memory, one shared process if Laya wins) and Open questions (laya-mlx is reviewed before install). Design: [Categorization](../design-commerce-ingestion-pipeline.md) ("The threshold is chosen from the eval") and Future work (options (a) to (d)). Builds on [step-6d.md](step-6d.md) (the harness, `eval/labels.jsonl`, `eval/results/`, `eval/report.md`) and [step-6b.md](step-6b.md) (`EmbeddingClassifier`, `THRESHOLD`, `DESCRIPTION`). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 4, with the split, decisions 1 to 6 and the test points as written; open questions answered below. Plan row: [plan-v1.md, PR steps, 6e](../plan-v1.md) ("Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK", plus two notes from the 6b review), Phase 6 (label set: "about 200 items from Amazon Reviews '23", an LLM pre-labels, "you verify every label by hand"; exit: "the eval report is committed and the threshold is chosen from it"), B4 (6e measures throughput on this Mac), B5 (memory, one shared process if Laya wins) and Open questions (laya-mlx is reviewed before install). Design: [Categorization](../design-commerce-ingestion-pipeline.md) ("The threshold is chosen from the eval") and Future work (options (a) to (d)). Builds on [step-6d.md](step-6d.md) (the harness, `eval/labels.jsonl`, `eval/results/`, `eval/report.md`) and [step-6b.md](step-6b.md) (`EmbeddingClassifier`, `THRESHOLD`, `DESCRIPTION`). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -43,7 +43,7 @@ The harness exists, but nothing feeds it: there is no labeled set, only one of t
 - You choose from the report's summary and threshold tables. The report still highlights no "best" (6d decision 2).
 - If the embedding classifier wins: `THRESHOLD` and `DESCRIPTION` take the chosen values, and `_version` becomes `{taxonomy}+{model}+d{description}+t{threshold}` (for example `2026-08+bge-small-en-v1.5+d200+t0.45`), so any change to either one reclassifies the old rows through the Backfill (6c).
 - If Laya or Jev wins: the report and the choice are committed, and running it in the pipeline becomes a new plan step (B5's shared classifier process, or Jev's rate limit and timeout path), because neither fits in this PR.
-- Switching the `Procfile` from `fake` to `embedding` is its own decision (question 3 below).
+- Switching the `Procfile` from `fake` to `embedding` is a later step (question 3).
 
 ## User stories
 
@@ -82,15 +82,15 @@ The harness exists, but nothing feeds it: there is no labeled set, only one of t
 5. **Laya and Jev answer only with probabilities over given options**, so a candidate can't invent a path. Hierarchical confidence multiplies the levels.
 6. **`taxonomy_version` encodes the recipe and threshold**, not only the taxonomy and model: the fix the 6b review asked for, applied in 6e.4 to whatever wins.
 
-## Open questions for you
+## Answered questions
 
-1. **Committing Amazon text to this public repo.** The plan accepts Amazon Reviews '23 as research data, fine for learning. 200 titles and descriptions in a public repo is a small redistribution. I recommend committing them as planned. Alternative: commit only ids and labels, and have `sample --ids` refetch the text before each run.
-2. **Recipes for 6e.1:** title only, title + 200 and title + 500 characters. Add Amazon's `features` as a separate recipe, or keep them folded into the description as above?
-3. **The `Procfile`:** switch the workers and the Backfill to `--classifier embedding` in 6e.4? That makes the 4e end-to-end test need the model in the `check` job (about 130 MB, cached), or a separate `Procfile` for tests. I lean to switching in a later step, so 6e.4 stays a decision PR.
+1. **Amazon text in this public repo:** yes, `eval/labels.jsonl` commits the titles and descriptions (research data, fine for learning).
+2. **`features`:** folded into the description, as above; no separate recipe.
+3. **The `Procfile`:** switched in a later step, so 6e.4 stays a decision PR.
 
 ## Testing decisions
 
-- **Test points (seams), to confirm:**
+- **Test points (seams), confirmed:**
   1. **`sample`** (new, red first, `tests/integration/test_evaluate.py`): a local `file://` source with crafted lines gives the same draw for the same seed, cuts a 160-character title at a word boundary, joins `description` and `features`, skips an empty title and a repeated id, and keeps a short category.
   2. **`EmbeddingClassifier.description` and `top`** (new, red first, `tests/integration/test_classify.py`, injected `embed`): `description=0` embeds the title alone; `top(k)` returns `k` paths in order of similarity, and `classify` matches `top(1)` above the threshold.
   3. **`LayaClassifier`** (new, red first, `tests/integration/test_laya.py`, injected `choose`): hierarchical walks three levels and stops at a childless Category; confidence is the product; shortlist offers the embedding's 10; a probability list of the wrong length fails the call.
@@ -104,7 +104,7 @@ The harness exists, but nothing feeds it: there is no labeled set, only one of t
 - Running Laya or Jev in the pipeline (a shared classifier process, Jev's timeout path): a new plan step if one wins.
 - Prompt tuning for Laya or Jev, other embedding models, bootstrap intervals.
 - Labels beyond about 200, or labels from merchants other than Amazon.
-- The `Procfile` switch (unless you answer question 3 the other way).
+- The `Procfile` switch (a later step).
 
 ## Size
 

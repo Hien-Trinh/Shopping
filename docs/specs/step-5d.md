@@ -42,6 +42,7 @@ Each becomes a test or is named out of scope.
 | A DELETE commits between the API's refresh and its commit | The append retries once and succeeds |
 | `_change_data` files of read versions, older than the retention | Deleted; the change feed from the slowest reader's version still reads |
 | `_change_data` files of an unread version | Kept, by the same retention as the vacuum |
+| A Catalog Snapshot copy running during a vacuum (5c) | Its pinned version's files are replaced only after it pinned, and the vacuum keeps replaced files at least 1 hour, so the copy reads them |
 | Compaction while the API appends | Both succeed (spike B2) |
 | A Submission id dated before the events horizon | 404 `not found`, logged as `expired_submission`, before any event file is opened |
 | An id dated just inside the horizon | Its hour is still on disk: the hour pruned is only one whose last second is past the horizon |

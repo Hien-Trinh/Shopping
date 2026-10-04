@@ -273,7 +273,7 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 4 | 4e ✅ | Spec: [step-4e.md](specs/step-4e.md). End-to-end test: HTTP → Landing log → worker → Listing Store, under the supervisor and the shipped `Procfile`. The API watches its supervisor like the workers, so a `kill -9`ed supervisor no longer leaves it holding the port |
 | 5 | 5a ✅ | Spec: [step-5a.md](specs/step-5a.md). Change Export: change feed since the watermark, export files, export oracle |
 | 5 | 5b | Export gap recovery (A18) |
-| 5 | 5c | Catalog Snapshots and pruning |
+| 5 | 5c | Spec: [step-5c.md](specs/step-5c.md). Catalog Snapshots and pruning |
 | 5 | 5d | Landing log retention and compaction (never past the slowest offset). From the 5a spec: export files kept 3 days (A13). From the 4d review: the 3-day events retention (A13), which no step had, and `GET /submissions/{id}` answering 404 before any read for an id dated before that horizon, so a forged old id can't scan every event hour |
 | 5 | 5e | Retention-horizon bootstrap for workers below the horizon |
 | 6 | 6a ⏸ | Taxonomy loader (asks before downloading the Shopify taxonomy) |

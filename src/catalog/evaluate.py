@@ -337,20 +337,17 @@ def candidate(kind: str, models: Path, *, description: int = classify.DESCRIPTIO
     if kind == "fake":
         return classify.FakeClassifier()
     tax = taxonomy.load()
-    if kind == "laya-hierarchical":
-        from catalog import laya  # here: laya_mlx is an optional, Apple Silicon only group
-
-        return laya.LayaClassifier(tax, laya.mlx(models), description=description)
-    embedding = classify.EmbeddingClassifier(
-        tax, classify.fastembed(models), threshold=0.0, budget=math.inf, description=description
-    )
-    if kind == "laya-shortlist":
-        from catalog import laya
-
-        return laya.LayaClassifier(
-            tax, laya.mlx(models), "shortlist", embedding, description=description
+    embedding = None
+    if kind in ("embedding", "laya-shortlist"):
+        embedding = classify.EmbeddingClassifier(
+            tax, classify.fastembed(models), threshold=0.0, budget=math.inf, description=description
         )
-    return embedding
+    if kind == "embedding":
+        return embedding
+    from catalog import laya  # here: it loads laya_mlx, an optional Apple Silicon only group
+
+    mode = kind.removeprefix("laya-")
+    return laya.LayaClassifier(tax, laya.mlx(models), mode, embedding, description=description)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

@@ -6,6 +6,7 @@ among the embedding's `k` nearest paths. Run them with
 `uv run --group laya python -m catalog.evaluate run --classifier laya-hierarchical`.
 """
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,7 @@ from catalog import classify, taxonomy
 from catalog.envelope import Content
 
 QUESTION = "Which product category fits this listing?"
+MODES = ("hierarchical", "shortlist")
 CHECKPOINT = "aac6fef/laya-mlx"
 
 
@@ -28,6 +30,8 @@ class LayaClassifier:
     taxonomy_version: str = field(init=False)
 
     def __post_init__(self):
+        if self.mode not in MODES:
+            raise ValueError(f"mode {self.mode!r} is not one of {MODES}")
         if self.mode == "shortlist" and self.shortlist is None:
             raise ValueError("shortlist mode needs an embedding classifier")
         self.taxonomy_version = f"{self.taxonomy.version}+laya-mlx-{self.mode}"
@@ -56,17 +60,19 @@ class LayaClassifier:
         p = list(self.choose(text, options))
         if len(p) != len(options):
             raise ValueError(f"{len(p)} probabilities for {len(options)} options")
-        best = max(range(len(p)), key=p.__getitem__)
+        if not all(math.isfinite(x) and x >= 0 for x in p):  # a NaN would win max() silently
+            raise ValueError(f"not probabilities: {p} for {list(options)}")
+        best = max(range(len(p)), key=p.__getitem__)  # a tie goes to the first option
         return options[best], float(p[best])
 
 
-def mlx(models: Path) -> Callable[[str, Sequence[str]], list[float]]:  # pragma: no cover
-    """Laya on MLX from `models/laya-mlx` (needs Apple Silicon, so only by hand)."""
+def mlx(models: Path) -> Callable[[str, Sequence[str]], list[float]]:
+    """Laya on MLX from `models/laya-mlx` (needs Apple Silicon, so the real one runs by hand)."""
     try:
         import laya_mlx
 
         agent = laya_mlx.load(str(models / "laya-mlx"))
-    except (ImportError, FileNotFoundError) as e:
+    except Exception as e:  # not installed, missing or corrupt: laya_mlx raises various types
         raise classify.ModelMissing(
             "Laya won't load: uv sync --group laya, then uv run --group laya hf download "
             f"{CHECKPOINT} --local-dir {models / 'laya-mlx'}"
@@ -75,6 +81,8 @@ def mlx(models: Path) -> Callable[[str, Sequence[str]], list[float]]:  # pragma:
     def choose(text: str, options: Sequence[str]) -> list[float]:
         question = {"type": "choice", "instructions": QUESTION, "criteria": list(options)}
         got = agent.predict(text, {"c": question})["answers"]["c"]["probabilities"]
+        if missing := [o for o in options if o not in got]:
+            raise ValueError(f"Laya gave no probability for {missing[0]!r} among {list(options)}")
         return [got[o] for o in options]
 
     return choose

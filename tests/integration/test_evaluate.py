@@ -493,5 +493,7 @@ def test_the_laya_candidates_run_without_a_threshold(monkeypatch):
     monkeypatch.setattr(laya, "mlx", lambda models: lambda text, options: [1.0] * len(options))
     hierarchical = evaluate.candidate("laya-hierarchical", None, description=200)
     assert hierarchical.mode == "hierarchical" and hierarchical.description == 200
-    shortlist = evaluate.candidate("laya-shortlist", None)
+    shortlist = evaluate.candidate("laya-shortlist", None, description=200)
+    assert shortlist.mode == "shortlist" and shortlist.description == 200
     assert shortlist.shortlist.threshold == 0.0 and shortlist.shortlist.budget == math.inf
+    assert shortlist.shortlist.description == 200

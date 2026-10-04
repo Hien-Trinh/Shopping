@@ -12,12 +12,12 @@ Two kinds of cleanup break `load_cdf`, with two different errors:
 
 | Cleanup | When it fails | Error |
 |---|---|---|
-| VACUUM removed a data file that an old version added (any MERGE rewrites files, so this is the usual case) | Lazily, on `read_all()` | Bare `Exception`: `... Object at location <path> not found: No such file or directory` |
+| A file the change feed needs is deleted (VACUUM did this for a plain append; for the Listing Store only 5d's retention can, see below) | Lazily, on `read_all()` | Bare `Exception`: `... Object at location <path> not found: No such file or directory` |
 | Log cleanup removed the old commit JSONs (after a checkpoint, once `delta.logRetentionDuration` has passed; 30 days by default) | At once, on `load_cdf()` | `DeltaError`: `Invalid table version: <n>` |
 
 Versions after the vacuumed ones still read fine. So the gap shows up only as a failed read; delta-rs has no call that says how far back history is complete.
 
-Side finding for 5d: VACUUM with zero retention left the MERGEs' `_change_data` files in place. If that holds, those files grow without bound, and 5d's retention has to delete them itself.
+Corrected while implementing: every Listing Store MERGE writes `_change_data` files, inserts included, and delta-rs VACUUM never deletes them. So VACUUM alone can't open a gap in the Listing Store: today only log cleanup can. Those files grow without bound, so 5d's retention has to delete them itself, and that deletion is what makes the first error appear. The tests simulate it by deleting them.
 
 ## Solution
 
@@ -37,15 +37,15 @@ Each becomes a test or is named out of scope.
 
 | Scenario | Expected |
 |---|---|
-| VACUUM removed files the change feed from watermark + 1 needs | One gap file `<w+1>-<head>`; `gap_recovered` event; watermark = head; the export oracle holds over all files, the earlier ones included |
+| `_change_data` files the change feed from watermark + 1 needs were deleted | One gap file `<w+1>-<head>`; `gap_recovered` event; watermark = head; the export oracle holds over all files, the earlier ones included |
 | Log cleanup removed commits from watermark + 1 | Same |
 | A Listing deleted during the gap | Its Tombstone is in the gap file as `op=delete`, so the consumer drops it (Tombstones are kept forever, A17, so every key ever exported is still in the store) |
 | The gap range is more than `max_versions` versions | One gap file to `head` anyway: its size is bounded by the store, not the range |
 | Crash after the gap file is written, before the watermark | Next tick adopts it (5a's decision 1, unchanged); logged as an adopted `export` |
 | Crash while writing the gap file | Hidden temp file only (5a's `_write`); the next tick hits the same gap and writes it again |
 | Any other read error (permission, I/O, disk full) | Propagates: exit 1, watermark unchanged, the supervisor restarts it (5a's decision 5) |
-| A delta-rs upgrade changes either message | `history_gone` turns false, so the exporter crash-loops visibly rather than skipping data; the tests that VACUUM and clean the log for real fail in CI first |
-| VACUUM runs while a normal tick is reading | The read fails with the same error, so it is handled as a gap at that tick |
+| A delta-rs upgrade changes either message | `history_gone` turns false, so the exporter crash-loops visibly rather than skipping data; the tests that delete change-feed files and clean the log for real fail in CI first |
+| Cleanup runs while a normal tick is reading | The read fails with the same error, so it is handled as a gap at that tick |
 | An empty store (head 0, only the CREATE) in a gap | No file, watermark = head, as for an empty range in 5a |
 
 ## Implementation decisions
@@ -58,10 +58,10 @@ Each becomes a test or is named out of scope.
 ## Testing decisions
 
 - **Test points (seams), confirmed:**
-  1. **`export.tick`** (red first, `tests/integration/test_export.py`, real Delta in `tmp_path`, writes through `store.merge`): export, merge more (including a delete and an update of an exported Listing), VACUUM with zero retention, tick: one gap file `<w+1>-<head>`, a `gap_recovered` event, and the export oracle over every file holds at `head`. The same after log cleanup (set `delta.logRetentionDuration` to 0, checkpoint, `cleanup_metadata`). A gap longer than `max_versions` is still one file. A crash between the gap file and the watermark is adopted with no second file. A non-gap read error (fault injected by `monkeypatch`, as 5a's tests do) propagates with the watermark unchanged.
+  1. **`export.tick`** (red first, `tests/integration/test_export.py`, real Delta in `tmp_path`, writes through `store.merge`): export, merge more (including a delete and an update of an exported Listing), VACUUM with zero retention and delete the `_change_data` files, tick: one gap file `<w+1>-<head>`, a `gap_recovered` event, and the export oracle over every file holds at `head`. The same after log cleanup (set `delta.logRetentionDuration` to 0, checkpoint, `cleanup_metadata`). A gap longer than `max_versions` is still one file. A crash between the gap file and the watermark is adopted with no second file. A non-gap read error (fault injected by `monkeypatch`, as 5a's tests do) propagates with the watermark unchanged.
   2. **`delta.history_gone`**: covered through test point 1 with real errors; no unit test on hand-made messages, which would only pin the strings.
 - **The end-to-end test** is unchanged: it never vacuums.
-- **No sleeps.** VACUUM and log cleanup are called directly.
+- **No sleeps.** VACUUM, the file deletion and log cleanup are called directly.
 - **Coverage:** `export.py` and `delta.py` stay under the 90% package gate.
 
 ## Out of scope

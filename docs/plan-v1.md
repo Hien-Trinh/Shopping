@@ -276,8 +276,8 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 5 | 5c ✅ | Spec: [step-5c.md](specs/step-5c.md). Catalog Snapshots and pruning |
 | 5 | 5d ✅ | Spec: [step-5d.md](specs/step-5d.md). Landing log retention and compaction (never past the slowest offset). From the 5b spec: VACUUM left the `_change_data` files in place, so delete them too if that holds. From the 5a spec: export files kept 3 days (A13). From the 4d review: the 3-day events retention (A13), which no step had, and `GET /submissions/{id}` answering 404 before any read for an id dated before that horizon, so a forged old id can't scan every event hour |
 | 5 | 5e | Spec: [step-5e.md](specs/step-5e.md). Retention-horizon bootstrap for workers below the horizon |
-| 6 | 6a ⏸ | Taxonomy loader (asks before downloading the Shopify taxonomy) |
-| 6 | 6b ⏸ | Embedding classifier with a batch timeout (asks before downloading the model). From 3e: its native calls must release the GIL, or the supervisor watch can't exit a worker stuck in one |
+| 6 | 6a ✅ | Spec: [step-6a.md](specs/step-6a.md). Taxonomy loader (asks before downloading the Shopify taxonomy) |
+| 6 | 6b ✅ | Spec: [step-6b.md](specs/step-6b.md). Embedding classifier with a batch timeout (asks before downloading the model). From 3e: its native calls must release the GIL, or the supervisor watch can't exit a worker stuck in one |
 | 6 | 6c | Backfill job (`op=reclassify` for flagged rows and taxonomy bumps) |
 | 6 | 6d | Eval harness and report format |
 | 6 | 6e ⏸ | Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK. From the 6b review: a new threshold or text recipe must change `taxonomy_version` (it names only the taxonomy and model), or rows stored under the old one never reclassify; and the 500-character description costs about 7× a title alone (10 against 1.4 ms per Listing on this Mac), so measure what it buys |

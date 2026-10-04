@@ -110,3 +110,11 @@ def test_a_model_that_loads_but_wont_embed_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(package, "TextEmbedding", Broken)
     with pytest.raises(ModelMissing):
         fastembed(tmp_path)
+
+
+def test_the_version_of_a_classifier_kind_needs_no_model():  # step-6c.md: Backfill's target
+    from catalog import classify, taxonomy
+
+    assert classify.taxonomy_version("fake") == classify.FakeClassifier().taxonomy_version
+    loaded = EmbeddingClassifier(taxonomy.load(), lambda texts: np.ones((len(texts), 3)))
+    assert classify.taxonomy_version("embedding") == loaded.taxonomy_version

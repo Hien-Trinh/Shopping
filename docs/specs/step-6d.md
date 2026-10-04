@@ -1,6 +1,6 @@
 # Step 6d: Eval harness and report format (mini PRD)
 
-Status: draft, for your approval (decisions 1 to 6 and the test points). Plan row: [plan-v1.md, PR steps, 6d](../plan-v1.md) ("Eval harness and report format"), Phase 6 ("The eval harness scores all 4 options, then accuracy, p50/p99 latency and cost go into a report"; exit: "the eval report is committed and the threshold is chosen from it"), B4 (6e measures throughput on this Mac) and B5 (memory decides one shared classifier process). Design: [Categorization](../design-commerce-ingestion-pipeline.md) ("The threshold is chosen from the eval") and Future work ("On a 200-Listing eval set, compare (a) … (d) on accuracy, latency and cost"). Builds on [step-6b.md](step-6b.md) (the `classify` contract, `THRESHOLD`, `budget`). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 4, with decisions 1 to 6 and the test points as written. Plan row: [plan-v1.md, PR steps, 6d](../plan-v1.md) ("Eval harness and report format"), Phase 6 ("The eval harness scores all 4 options, then accuracy, p50/p99 latency and cost go into a report"; exit: "the eval report is committed and the threshold is chosen from it"), B4 (6e measures throughput on this Mac) and B5 (memory decides one shared classifier process). Design: [Categorization](../design-commerce-ingestion-pipeline.md) ("The threshold is chosen from the eval") and Future work ("On a 200-Listing eval set, compare (a) … (d) on accuracy, latency and cost"). Builds on [step-6b.md](step-6b.md) (the `classify` contract, `THRESHOLD`, `budget`). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -55,7 +55,7 @@ Status: draft, for your approval (decisions 1 to 6 and the test points). Plan ro
 
 ## Testing decisions
 
-- **Test points (seams), to confirm:**
+- **Test points (seams), confirmed:**
   1. **`load_labels`** (new, red first, `tests/integration/test_evaluate.py`, files in `tmp_path`, the committed taxonomy): a good file loads in order; each refusal in the table names its line.
   2. **`run`** (new, red first, same file): with `FakeClassifier` and a fake clock, one warm-up call untimed, calls of `batch` Listings, call times kept; a classifier answering the wrong count, or raising, fails the run.
   3. **`score`** (new, red first, same file; pure, so it could go in `tests/unit`, but `make mutate` covers only the six pure modules): hand-made answers and labels give exact, precision, Uncategorized rate, L1 and L2 at threshold boundaries (equal to `t` counts, as in 6b); `None` and invalid paths counted apart; p50/p99 over known times; `usd` turns into $ per 1M.

@@ -58,7 +58,7 @@ class EmbeddingClassifier:
     taxonomy_version: str = field(init=False)
 
     def __post_init__(self):
-        self.taxonomy_version = f"{self.taxonomy.version}+{self.model.rpartition('/')[2]}"
+        self.taxonomy_version = _version(self.taxonomy.version, self.model)
         paths = self.taxonomy.paths  # in chunks: one ONNX run over all of them peaks at 1.2 GB
         self._paths = _unit(
             np.vstack(
@@ -83,6 +83,22 @@ class EmbeddingClassifier:
                 path = self.taxonomy.paths[best] if confidence >= self.threshold else UNCATEGORIZED
                 answers.append((path, confidence))
         return answers + [None] * (len(listings) - len(answers))
+
+
+KINDS = ("fake", "embedding")  # a worker's and the Backfill's --classifier
+
+
+def taxonomy_version(kind: str) -> str:
+    """The version a `--classifier` kind stamps, without loading the model (step-6c.md)."""
+    if kind == "fake":
+        return FakeClassifier.taxonomy_version
+    from catalog import taxonomy  # here: taxonomy imports this module
+
+    return _version(taxonomy.load().version, MODEL)
+
+
+def _version(taxonomy_version: str, model: str) -> str:
+    return f"{taxonomy_version}+{model.rpartition('/')[2]}"
 
 
 def _unit(vectors: np.ndarray) -> np.ndarray:

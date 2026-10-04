@@ -68,6 +68,10 @@ def snapshot_pids(tmp: Path) -> list[int]:
     return worker_pids(tmp, "snapshots_start")
 
 
+def backfill_pids(tmp: Path) -> list[int]:
+    return worker_pids(tmp, "backfill_start")
+
+
 def serving(port: int) -> bool:
     with contextlib.suppress(httpx2.TransportError):
         return httpx2.get(f"http://127.0.0.1:{port}/submissions/x").status_code == 401
@@ -127,6 +131,7 @@ class System:
             proc.kill()
             proc.wait()
         others = [*export_pids(self.tmp), *snapshot_pids(self.tmp), *maintenance_pids(self.tmp)]
+        others += backfill_pids(self.tmp)
         for pid in [*worker_pids(self.tmp), *others, *api_pids(self.port)]:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
@@ -192,8 +197,8 @@ def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system
         assert diff(store.fingerprints(listings, snapshots.pinned(path)), copy) == []
 
     pids = [*worker_pids(system.tmp), *export_pids(system.tmp), *snapshot_pids(system.tmp)]
-    pids += [*maintenance_pids(system.tmp), *api_pids(system.port)]
-    assert len(pids) == 8  # 4 workers, Change Export, Catalog Snapshots, maintenance, the API
+    pids += [*maintenance_pids(system.tmp), *backfill_pids(system.tmp), *api_pids(system.port)]
+    assert len(pids) == 9  # 4 workers, Change Export, Snapshots, maintenance, Backfill, the API
     assert not bindable(system.port)  # so the check below can fail
     supervisor.send_signal(signal.SIGTERM)
     assert supervisor.wait(timeout=30) == 0
@@ -212,6 +217,7 @@ def test_killing_the_supervisor_stops_its_api_so_a_new_one_serves_on_its_port(sy
     wait_for(lambda: not any(map(alive, export_pids(system.tmp))), timeout=10)  # and its lock
     wait_for(lambda: not any(map(alive, maintenance_pids(system.tmp))), timeout=10)
     wait_for(lambda: not any(map(alive, snapshot_pids(system.tmp))), timeout=10)
+    wait_for(lambda: not any(map(alive, backfill_pids(system.tmp))), timeout=10)
     second = system.start()  # its API binds the same port: no restart loop
     assert api_pids(system.port) not in ([], [api])
     second.send_signal(signal.SIGTERM)

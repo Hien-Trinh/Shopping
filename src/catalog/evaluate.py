@@ -37,10 +37,14 @@ class Labeled:
     category: str
 
 
-def load_labels(path: Path, tax: taxonomy.Taxonomy) -> list[Labeled]:
-    """Every line, or ValueError naming the first bad one: a bad label must not score as a miss."""
+def load_labels(path: Path, tax: taxonomy.Taxonomy) -> tuple[list[Labeled], str]:
+    """Every label and the SHA-256 of the bytes parsed, or ValueError naming the first bad line:
+    a bad label must not score as a miss. Blank lines and a leading BOM are skipped."""
+    data = path.read_bytes()
     paths, seen, out = set(tax.paths), set(), []
-    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for n, line in enumerate(data.decode("utf-8-sig").split("\n"), 1):  # not splitlines: U+2028
+        if not line.strip():
+            continue
         try:
             x = json.loads(line)
             id, category = str(x["id"]), x["category"]
@@ -56,13 +60,13 @@ def load_labels(path: Path, tax: taxonomy.Taxonomy) -> list[Labeled]:
             raise ValueError(f"{path}: line {n}: {reason}") from None
         if id in seen:
             raise ValueError(f"{path}: line {n}: duplicate id {id!r}")
-        if category not in paths:
+        if not isinstance(category, str) or category not in paths:
             raise ValueError(f"{path}: line {n}: {category!r} is not in the taxonomy")
         seen.add(id)
         out.append(Labeled(id, content, category))
     if not out:
         raise ValueError(f"{path}: no labels")
-    return out
+    return out, hashlib.sha256(data).hexdigest()
 
 
 def _short(e: ValidationError) -> str:
@@ -83,11 +87,16 @@ def run(
     answers, seconds = [], []
     for i in range(0, len(labeled), batch):
         chunk = labeled[i : i + batch]
+        where = f"{len(chunk)} Listings from id {chunk[0].id!r}"
         start = clock()
-        got = classifier.classify([x.listing for x in chunk])
+        try:
+            got = classifier.classify([x.listing for x in chunk])
+        except Exception as e:
+            e.add_note(f"classifying {where}")
+            raise
         seconds.append(clock() - start)
         if len(got) != len(chunk):
-            raise ValueError(f"{len(got)} answers for {len(chunk)} Listings")
+            raise ValueError(f"{len(got)} answers for {where}")
         for x, a in zip(chunk, got, strict=True):
             category, confidence = a if a is not None else (None, None)
             answers.append(
@@ -146,7 +155,7 @@ def summary(result: dict) -> dict:
     return {
         "p50_ms": rank(0.5),
         "p99_ms": rank(0.99),
-        "per_s": n / sum(result["seconds"]),
+        "per_s": n / total if (total := sum(result["seconds"])) else None,
         "none": sum(a["category"] is None for a in result["answers"]),
         "invalid": sum(not a["valid"] for a in result["answers"]),
         "usd_per_m": result["usd"] / n * 1_000_000,
@@ -157,8 +166,13 @@ def _pct(x: float | None) -> str:
     return "–" if x is None else f"{x:.1%}"
 
 
+def _num(x: float | None) -> str:
+    return "–" if x is None else f"{x:.1f}"
+
+
 def render(results: Sequence[dict], threshold: float) -> str:
     """eval/report.md: one summary row per candidate at `threshold`, then each one's sweep."""
+    results = sorted(results, key=lambda r: r["labels_sha256"])  # stable: grouped by label set
     hashes = sorted({r["labels_sha256"] for r in results})
     lines = [
         "# Classifier eval",
@@ -185,7 +199,7 @@ def render(results: Sequence[dict], threshold: float) -> str:
             f"| {r['name']} | {r['taxonomy_version']} | `{r['labels_sha256'][:12]}` "
             f"| {_pct(s['accuracy'])} | {_pct(s['precision'])} | {_pct(s['uncategorized'])} "
             f"| {_pct(s['level1'])} | {_pct(s['level2'])} | {m['p50_ms']:.1f} "
-            f"| {m['p99_ms']:.1f} | {m['per_s']:.1f} | {m['usd_per_m']:.2f} "
+            f"| {m['p99_ms']:.1f} | {_num(m['per_s'])} | {m['usd_per_m']:.2f} "
             f"| {r['rss_mb']:.0f} | {m['none']} | {m['invalid']} | {r['batch']} | {r['date']} "
             f"| {r['machine']} |"
         )
@@ -203,6 +217,22 @@ def render(results: Sequence[dict], threshold: float) -> str:
                 f"| {_pct(s['uncategorized'])} | {_pct(s['level1'])} | {_pct(s['level2'])} |"
             )
     return "\n".join(lines) + "\n"
+
+
+_KEYS = {"name", "labels_sha256", "taxonomy_version", "batch", "answers", "seconds", "usd"}
+_KEYS |= {"rss_mb", "date", "machine"}
+
+
+def _result(path: Path) -> dict:
+    """A results file `run` wrote, or ValueError naming it (torn, hand-edited or older)."""
+    try:
+        r = json.loads(path.read_text())
+        missing = _KEYS - r.keys()
+    except (ValueError, AttributeError) as e:
+        raise ValueError(f"{path}: not a result ({e})") from None
+    if missing:
+        raise ValueError(f"{path}: not a result, missing {sorted(missing)}")
+    return r
 
 
 def candidate(kind: str, models: Path):
@@ -234,20 +264,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         if a.batch < 1:
             args.error("--batch must be at least 1")
         tax = taxonomy.load()
-        labeled = load_labels(a.labels, tax)
+        labeled, sha = load_labels(a.labels, tax)
         result = run(candidate(a.classifier, a.models), labeled, tax, batch=a.batch)
         name = a.name or a.classifier
-        result |= {
-            "name": name,
-            "labels_sha256": hashlib.sha256(a.labels.read_bytes()).hexdigest(),
-        }
+        result |= {"name": name, "labels_sha256": sha}
         state.save(a.results / f"{name}.json", result)  # whole or not at all
     else:
-        results = [json.loads(f.read_text()) for f in sorted(a.results.glob("*.json"))]
+        results = [_result(f) for f in sorted(a.results.glob("*.json"))]
         if not results:
             args.error(f"no results in {a.results}")
         a.out.parent.mkdir(parents=True, exist_ok=True)
-        a.out.write_text(render(results, a.threshold))
+        tmp = a.out.with_name(f".{a.out.name}.tmp")
+        tmp.write_text(render(results, a.threshold))
+        os.replace(tmp, a.out)  # a killed report leaves the old one
 
 
 if __name__ == "__main__":

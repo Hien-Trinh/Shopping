@@ -1,4 +1,6 @@
+import hashlib
 import json
+import math
 
 import pytest
 from support import listing
@@ -22,7 +24,7 @@ def write(tmp_path, *rows, raw=None):
 
 
 def labels(tmp_path, *rows):
-    return evaluate.load_labels(write(tmp_path, *rows), taxonomy.load())
+    return evaluate.load_labels(write(tmp_path, *rows), taxonomy.load())[0]
 
 
 # --- load_labels ---------------------------------------------------------------------------
@@ -104,7 +106,7 @@ def test_run_warms_up_untimed_then_times_each_batch(tmp_path):
         {"id": "1", "label": SHIRT, "category": TOYS, "confidence": 0.4, "valid": True},
         {"id": "2", "label": TOYS, "category": None, "confidence": None, "valid": True},
     ]
-    assert result["usd"] == 0.0 and result["rss_mb"] > 0
+    assert result["usd"] == 0.0 and 1 < result["rss_mb"] < 100_000  # MB, not bytes or KiB
 
 
 def test_run_marks_paths_outside_the_taxonomy_invalid():
@@ -117,7 +119,7 @@ def test_run_fails_on_a_wrong_answer_count_or_an_error():
         def classify(self, listings):
             return super().classify(listings)[1:]
 
-    with pytest.raises(ValueError, match="answers"):
+    with pytest.raises(ValueError, match="0 answers for 1 Listings from id '0'"):
         evaluate.run(Short(), labeled(TOYS), taxonomy.load(), batch=1)
     with pytest.raises(RuntimeError):
         evaluate.run(FakeClassifier(fail=True), labeled(TOYS), taxonomy.load(), batch=1)
@@ -232,3 +234,91 @@ def test_a_zero_batch_or_no_results_is_a_usage_error(tmp_path):
     with pytest.raises(SystemExit) as e:
         evaluate.main(["report", "--results", str(tmp_path)])
     assert e.value.code == 2
+
+
+# --- review fixes (PR #53) -----------------------------------------------------------------
+
+
+def test_the_hash_is_of_the_bytes_parsed(tmp_path):
+    path = write(tmp_path, row("a"))
+    assert (
+        evaluate.load_labels(path, taxonomy.load())[1]
+        == hashlib.sha256(path.read_bytes()).hexdigest()
+    )
+
+
+def test_blank_lines_a_bom_and_a_raw_line_separator_load(tmp_path):
+    path = tmp_path / "labels.jsonl"
+    text = json.dumps(row("a", "Tee\u2028shirt"), ensure_ascii=False)
+    path.write_bytes(("\ufeff" + text + "\n\n" + json.dumps(row("b")) + "\n\n").encode())
+    got, _ = evaluate.load_labels(path, taxonomy.load())
+    assert [x.listing.title for x in got] == ["Tee\u2028shirt", "Running shirt"]
+
+
+def test_a_category_that_is_not_a_string_is_refused_naming_its_line(tmp_path):
+    with pytest.raises(ValueError, match="line 1.*not in the taxonomy"):
+        labels(tmp_path, row("a", category=["x"]))
+
+
+def test_a_classifier_error_names_the_batch():
+    class Late(FakeClassifier):  # fails after the warm-up, on the first timed batch
+        def classify(self, listings):
+            self.calls = getattr(self, "calls", 0) + 1
+            return super().classify(listings) if self.calls == 1 else 1 / 0
+
+    with pytest.raises(ZeroDivisionError) as e:
+        evaluate.run(Late(), labeled(TOYS), taxonomy.load(), batch=1)
+    assert any("id '0'" in note for note in e.value.__notes__)
+
+
+def test_a_paid_candidate_reports_its_spend():
+    clock = Clock()
+    rec = Recording([(TOYS, 0.9)], clock, usd=0.25)
+    assert evaluate.run(rec, labeled(TOYS), taxonomy.load(), batch=1, clock=clock)["usd"] == 0.25
+
+
+def test_the_embedding_candidate_runs_at_threshold_0_without_a_budget(monkeypatch):
+    monkeypatch.setattr(
+        evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
+    )
+    got = evaluate.candidate("embedding", None)
+    assert got.threshold == 0.0 and got.budget == math.inf
+
+
+def test_zero_total_time_has_no_rate():
+    assert evaluate.summary(result(answer(TOYS, TOYS, 0.9), seconds=[0.0]))["per_s"] is None
+
+
+def full(name, sha, *answers):
+    return result(*answers) | {"name": name, "labels_sha256": sha, "date": "d", "machine": "m"}
+
+
+def test_render_rows_and_sweep():
+    report = evaluate.render(
+        [full("c", "a" * 64, answer(TOYS, TOYS, 0.5), answer(TOYS, SHIRT, 0.9))], 0.5
+    )
+    assert "## Summary at threshold 0.5" in report
+    assert "| c | v | `aaaaaaaaaaaa` | 50.0% | 50.0% | 0.0% | 50.0% | 50.0% | 1.0 | 1.0 |" in report
+    assert "| 0.50 | 50.0% | 50.0% | 0.0% | 50.0% | 50.0% |" in report
+    assert "| 0.55 | 0.0% | 0.0% | 50.0% | 0.0% | 0.0% |" in report
+
+
+def test_render_groups_rows_by_label_set():
+    report = evaluate.render(
+        [
+            full("x", "b" * 64, answer(TOYS, TOYS, 1)),
+            full("y", "a" * 64, answer(TOYS, TOYS, 1)),
+            full("z", "b" * 64, answer(TOYS, TOYS, 1)),
+        ],
+        0.5,
+    )
+    assert report.index("| y |") < report.index("| x |") < report.index("| z |")
+
+
+def test_a_bad_result_file_is_named(tmp_path):
+    (tmp_path / "old.json").write_text('{"name": "old"}')
+    with pytest.raises(ValueError, match="old.json"):
+        evaluate.main(["report", "--results", str(tmp_path), "--out", str(tmp_path / "r.md")])
+    (tmp_path / "old.json").write_text('{"name": "ol')  # torn
+    with pytest.raises(ValueError, match="old.json"):
+        evaluate.main(["report", "--results", str(tmp_path), "--out", str(tmp_path / "r.md")])

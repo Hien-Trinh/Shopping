@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pyarrow as pa
 import pytest
@@ -206,3 +206,19 @@ def test_ensure_by_uri_locks_next_to_the_table(tmp_path, monkeypatch):
     assert landing.table_id(again) == landing.table_id(log)
     assert list(cwd.iterdir()) == []  # no stray "file:" directory
     assert (tmp_path / "landing.lock").exists()
+
+
+def test_retained_returns_one_partition_as_of_a_version_in_replay_order(log):
+    later = NOW + timedelta(seconds=1)
+    landing.append(log, [("s9", 0, up(A, 3), later), ("s9", 1, up(B, 3), later)])
+    landing.append(log, [("s2", 0, up(A, 2), NOW), ("s1", 1, delete(A, 1), NOW)])
+    pinned = landing.append(log, [("s1", 0, reclassify(A), NOW)])
+    landing.append(log, [("s0", 0, up(A, 4), NOW)])  # after the pin
+    log.optimize.compact()  # rewrites the files: commit versions are gone
+    got = landing.retained(DeltaTable(log.table_uri, version=pinned), 3)
+    assert [(x.submission_id, x.change_index, x.change, x.partition) for x in got] == [
+        ("s1", 0, reclassify(A), 3),  # same received_at: submission, then change index
+        ("s1", 1, delete(A, 1), 3),
+        ("s2", 0, up(A, 2), 3),
+        ("s9", 0, up(A, 3), 3),  # landed first, but received later
+    ]

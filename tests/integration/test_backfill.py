@@ -76,6 +76,17 @@ def test_pending_caps_rows_but_counts_everything(tables):
     assert (p.flagged, p.outdated) == (1, 3)
 
 
+def test_pending_breaks_updated_at_ties_by_key(tables):
+    _, dt, *_ = tables
+    mpids = sorted((A, B, C, D))
+    store.merge(  # one MERGE: one updated_at
+        dt,
+        [Write(("m_1", m), 5, listing(), Classification("X", 0.9, "v1"), False) for m in mpids],
+        T0,
+    )
+    assert [k[1] for k, _ in backfill.pending(dt, "v2", limit=2).rows] == mpids[:2]
+
+
 def test_pending_on_an_empty_store(tables):
     _, dt, *_ = tables
     assert backfill.pending(dt, "v2", limit=10) == backfill.Pending([], 0, 0)
@@ -88,6 +99,7 @@ def test_tick_appends_one_commit_of_reclassify_changes(tables):
     landing_dt, dt, state_dir, log = tables
     put(dt, A, flagged=True, sv=9)
     put(dt, B, version="v1", at=T0 + timedelta(hours=1))
+    store_version = dt.version()
     version = tick(tables)
     assert version == landing_dt.version()
     rows = landed(landing_dt)
@@ -103,6 +115,8 @@ def test_tick_appends_one_commit_of_reclassify_changes(tables):
     [e] = [e for e in events.read(log.root) if e["type"] == "backfill"]
     assert (e["appended"], e["flagged"], e["outdated"], e["version"]) == (2, 1, 1, "v2")
     assert e["landing_version"] == version
+    assert e["submission_id"] == rows[0]["submission_id"]  # joins the workers' reclassified events
+    assert dt.version() == store_version  # only the workers write the Listing Store (ADR-0001)
 
 
 def test_tick_waits_until_every_worker_passed_its_last_commit(tables):
@@ -128,11 +142,13 @@ def test_tick_with_nothing_pending_appends_and_saves_nothing(tables):
     assert [e for e in events.read(log.root) if e["type"] == "backfill"] == []
 
 
-def test_tick_on_low_disk_appends_nothing(tables):
-    landing_dt, dt, *_ = tables
+def test_tick_on_low_disk_appends_nothing_and_says_why(tables):
+    landing_dt, dt, _, log = tables
     put(dt, A, flagged=True)
     assert tick(tables, min_free=2**62) is None
     assert landed(landing_dt) == []
+    skipped = [e for e in events.read(log.root) if e["type"] == "backfill_skipped"]
+    assert [e["reason"] for e in skipped] == ["low_disk"]
 
 
 def test_tick_refuses_state_from_another_landing_log(tables):
@@ -224,7 +240,9 @@ def types(data):
     return {e["type"] for e in events.read(data / "events")}
 
 
-def test_main_refuses_a_limit_below_one():
+@pytest.mark.parametrize("flag", [["--limit", "0"], ["--interval", "0"], ["--interval", "nan"]])
+def test_main_refuses_a_flag_that_would_spin(flag, monkeypatch):
+    monkeypatch.setattr(backfill, "run", lambda *a, **kw: pytest.fail("ran with a bad flag"))
     with pytest.raises(SystemExit) as e:
-        backfill.main(["--classifier", "fake", "--limit", "0"])
+        backfill.main(["--classifier", "fake", *flag])
     assert e.value.code == 2

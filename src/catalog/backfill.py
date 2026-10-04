@@ -8,6 +8,7 @@ no more than `limit` reclassifies ever sit ahead of Merchant Changes.
 """
 
 import argparse
+import contextlib
 import os
 import shutil
 import threading
@@ -91,6 +92,8 @@ def tick(
     if min(v for v, _ in offsets.values()) <= last:  # a worker hasn't read the last round yet
         return None
     if shutil.disk_usage(delta.local(landing_dt.table_uri)).free < min_free:  # as the API refuses
+        with contextlib.suppress(OSError):  # best effort: the disk is nearly full
+            events.emit([{"type": "backfill_skipped", "reason": "low_disk"}])
         return None
     found = pending(store_dt, version, limit)
     if not found.rows:
@@ -106,6 +109,7 @@ def tick(
     state.save_backfill(state_dir, appended, table)
     event = {
         "type": "backfill",
+        "submission_id": submission,
         "appended": len(entries),
         "flagged": found.flagged,
         "outdated": found.outdated,
@@ -149,6 +153,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     a = args.parse_args(argv)
     if a.limit < 1:
         args.error("--limit must be at least 1")
+    if not a.interval > 0:  # 0 or nan would rescan the Listing Store in a tight loop
+        args.error("--interval must be more than 0")
     try:
         supervisor = worker.supervisor_pid()
     except ValueError as e:

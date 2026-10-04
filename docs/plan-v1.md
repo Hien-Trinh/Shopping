@@ -273,7 +273,7 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 4 | 4e ✅ | Spec: [step-4e.md](specs/step-4e.md). End-to-end test: HTTP → Landing log → worker → Listing Store, under the supervisor and the shipped `Procfile`. The API watches its supervisor like the workers, so a `kill -9`ed supervisor no longer leaves it holding the port |
 | 5 | 5a ✅ | Spec: [step-5a.md](specs/step-5a.md). Change Export: change feed since the watermark, export files, export oracle |
 | 5 | 5b | Spec: [step-5b.md](specs/step-5b.md). Export gap recovery (A18) |
-| 5 | 5c | Spec: [step-5c.md](specs/step-5c.md). Catalog Snapshots and pruning |
+| 5 | 5c ✅ | Spec: [step-5c.md](specs/step-5c.md). Catalog Snapshots and pruning |
 | 5 | 5d | Spec: [step-5d.md](specs/step-5d.md). Landing log retention and compaction (never past the slowest offset). From the 5b spec: VACUUM left the `_change_data` files in place, so delete them too if that holds. From the 5a spec: export files kept 3 days (A13). From the 4d review: the 3-day events retention (A13), which no step had, and `GET /submissions/{id}` answering 404 before any read for an id dated before that horizon, so a forged old id can't scan every event hour |
 | 5 | 5e | Retention-horizon bootstrap for workers below the horizon |
 | 6 | 6a ⏸ | Taxonomy loader (asks before downloading the Shopify taxonomy) |
@@ -283,7 +283,7 @@ Each step is one PR of **under about 300 changed lines, tests included**, merged
 | 6 | 6e ⏸ | Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK |
 | 7 | 7a | Load generator (multiprocess) |
 | 7 | 7b | Chaos scenario runner and the three oracles. From 3e: a runner that kills the supervisor must reap it (`wait`), or its workers keep running until it does |
-| 7 | 7c | Metrics SQL and runbook. From the 4a review: an audit event (Merchant, action, time) for each create, rotate and revoke. From the 3d review: `process_exit` events for processes stopped at shutdown, and for every exit seen in the pass that hit a fatal one. From 3e: after a supervisor is killed, wait a few seconds for its workers to stop before starting a new one; a reason on `worker_stop` when the supervisor watch stopped it, and a trace of the watch's hard exit, written so they can't block that exit. From the 4e review: the API's watch too: an event when it stops the API, and the same trace of its hard exit |
+| 7 | 7c | Metrics SQL and runbook. From the 4a review: an audit event (Merchant, action, time) for each create, rotate and revoke. From the 3d review: `process_exit` events for processes stopped at shutdown, and for every exit seen in the pass that hit a fatal one. From 3e: after a supervisor is killed, wait a few seconds for its workers to stop before starting a new one; a reason on `worker_stop` when the supervisor watch stopped it, and a trace of the watch's hard exit, written so they can't block that exit. From the 4e review: the API's watch too: an event when it stops the API, and the same trace of its hard exit. From the 5c review: the error behind an exit of Change Export or Catalog Snapshots in the events (today it is only in stderr, and the supervisor's `process_exit` has just the code) |
 | 7 | 7d ⏸ | `stress-smoke` CI job; then full stress runs on your Mac |
 
 ## Phases

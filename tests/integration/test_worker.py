@@ -697,6 +697,8 @@ def test_a_crash_between_partitions_redoes_only_the_unfinished_ones(env, monkeyp
     run(env, Ticks(10))
     boots = [e["partition"] for e in events.read(env.events_root) if e["type"] == "bootstrap"]
     assert boots == list(range(16))  # each once: 0-4 before the crash, 5-15 after it
+    failed = [e for e in events.read(env.events_root) if e["type"] == "tick_failed"]
+    assert len(failed) == 2  # the gap, then the crash; the bootstrap is retried, not the read
     assert (stored(env, A).source_version, stored(env, C).source_version) == (2, 2)
 
 
@@ -724,3 +726,41 @@ def test_a_gap_a_bootstrap_cannot_cure_still_gives_up_after_attempts(env, monkey
     assert ticks.waits == [1, 2, 4, 8]  # bootstraps in between never reset the count
     boots = [e for e in events.read(env.events_root) if e["type"] == "bootstrap"]
     assert len(boots) == 4 * 16
+
+
+def test_a_failed_bootstrap_event_never_reapplies_the_partition(env, monkeypatch):
+    env.land(up(A, 1))
+    env.land(up(A, 2))
+    cleanup(env)
+    real, failed = worker.EventLog.emit, []
+
+    def emit(self, logged):
+        boot = [e for e in logged if e["type"] == "bootstrap" and e["partition"] == 3]
+        if boot and not failed:
+            failed.append(True)
+            raise OSError(28, "No space left on device")
+        real(self, logged)
+
+    monkeypatch.setattr(worker.EventLog, "emit", emit)
+    run(env, Ticks(10))
+    outcomes = [e for e in events.read(env.events_root) if e.get("submission_id") == "s1"]
+    assert len(outcomes) == 2  # one per Change: partition 3 wasn't bootstrapped again
+
+
+def test_a_bootstrap_applies_in_chunks_and_beats_after_each(env, monkeypatch):
+    env.land(up(A, 1), up(A, 2, listing("two")))
+    env.land(up(A, 3, listing("three")))
+    cleanup(env)
+    ops, real = [], worker._apply
+
+    def spy(store_dt, classifier, log, landed, now):
+        if landed:
+            ops.append(len(landed))
+        real(store_dt, classifier, log, landed, now)
+
+    monkeypatch.setattr(worker, "_apply", spy)
+    spy_beats(monkeypatch, ops)
+    run(env, Ticks(10), limit=1)
+    assert stored(env, A).source_version == 3
+    assert env.outcomes() == {0: "written", 1: "written", 2: "written"}
+    assert ops[:7] == ["beat", 1, "beat", 1, "beat", 1, "beat"]  # startup, then each chunk's

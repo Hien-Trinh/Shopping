@@ -212,21 +212,22 @@ REPLAY_ORDER = [
 ]
 
 
-def retained(dt: DeltaTable, version: int, p: int) -> list[Landed]:
-    """Every Change of partition `p` the table holds as of `version`, in replay order.
+def retained(dt: DeltaTable, p: int) -> list[Landed]:
+    """Every Change of partition `p` in the version `dt` has loaded (the pin), in replay order.
 
-    For a worker whose offset is past what cleanup kept (step-5e.md). Compaction drops the commit
-    a row landed in, so each position is `(version, seq)`: the pin, not where the row landed.
+    For a worker whose offset is past what cleanup kept (step-5e.md). It never refreshes `dt`, so
+    the worker's one handle serves as the pin. Compaction drops the commit a row landed in, so each
+    position is `(pin, seq)`, not where the row landed.
     """
-    # ponytail: replay order matches landing order except for requests racing within a
-    # millisecond, and decides only same-version conflicts; a landing column would make it exact.
+    # ponytail: replay order matches landing order unless received_at runs backwards across
+    # commits (two requests within a millisecond, or the wall clock stepping back), and it decides
+    # only same-version conflicts; a column written at append time would make it exact.
     # ponytail: the partition is read and sorted in memory (about 470k rows at 7 days of 50/s);
     # sort in DuckDB, which spills, if it matters.
-    at = DeltaTable(dt.table_uri, version=version)
     rows = delta.plain(
-        at.to_pyarrow_dataset(file_pruning_predicate=f"partition IN ({p})").to_table()
+        dt.to_pyarrow_dataset(file_pruning_predicate=f"partition IN ({p})").to_table()
     ).sort_by(REPLAY_ORDER)
-    return [_landed(r | {"_commit_version": version}) for r in rows.to_pylist()]
+    return [_landed(r | {"_commit_version": dt.version()}) for r in rows.to_pylist()]
 
 
 def _landed(r: dict) -> Landed:

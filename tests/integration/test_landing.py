@@ -177,7 +177,7 @@ def test_retained_returns_one_partition_as_of_a_version_in_replay_order(log):
     pinned = landing.append(log, [("s1", 0, reclassify(A), NOW)])
     landing.append(log, [("s0", 0, up(A, 4), NOW)])  # after the pin
     log.optimize.compact()  # rewrites the files: commit versions are gone
-    got = landing.retained(log, pinned, 3)
+    got = landing.retained(DeltaTable(log.table_uri, version=pinned), 3)
     assert [(x.submission_id, x.change_index, x.change, x.partition) for x in got] == [
         ("s1", 0, reclassify(A), 3),  # same received_at: submission, then change index
         ("s1", 1, delete(A, 1), 3),

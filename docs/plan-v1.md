@@ -403,6 +403,7 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
 **Phase 7 — Load and chaos**
 - Multi-process load generator. Scenarios: steady 50/s, a 10k-item bulk batch, a 1M initial load, out-of-order changes, duplicate retries, a delete followed by a late update, a poison change, a classifier outage, killing a worker, rescaling, and a disk-guard trip.
 - Metrics as saved DuckDB SQL: freshness p50/p99, lag per partition, classify latency, stale/conflict/failed rates, Uncategorized rate, worker utilization.
+  - Count each Change once, by `(submission_id, change_index)`, keeping its best Outcome as `status.fold` does. Crash replays and 5e's bootstraps re-emit Outcome events (`already_applied` or `stale` for Changes already applied), so per-event counts double-count them (from the 5e review).
 - A runbook covers start, stop, rescale, reset and reading results.
 - Measure three costs from the PR #4 review at full batch size (1,000 random keys, 1M Listings) before the SLO run, and fix only the ones that break it:
   - `store.read` decodes every column of the touched partitions. Fix: scan the key columns first, then `take` the matching rows.

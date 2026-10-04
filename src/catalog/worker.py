@@ -107,27 +107,27 @@ def bootstrap(
     pinned, table = landing_dt.version(), landing.table_id(landing_dt)
     low = min(v for v, _ in offsets.values())
     for p in sorted(p for p, (v, _) in offsets.items() if v == low):
-        started, rows = clock(), landing.retained(landing_dt, pinned, p)
+        started, rows = clock(), landing.retained(landing_dt, p)  # the handle stays at the pin
         for i in range(0, len(rows), limit):
             if stop.is_set():  # the unfinished partition is redone at the next start
                 return
             _apply(store_dt, classifier, events, rows[i : i + limit], now)
             beat()  # a long bootstrap must not look hung (B1)
         state.save_offsets(state_dir, {p: (pinned + 1, 0)}, table)
+        was, offsets[p] = offsets[p], (pinned + 1, 0)  # before the event: if it fails, p is done
         events.emit(
             [
                 {
                     "type": "bootstrap",
                     "worker": name,
                     "partition": p,
-                    "from": offsets[p],
+                    "from": was,
                     "pinned": pinned,
                     "changes": len(rows),
                     "ms": round((clock() - started) * 1000),
                 }
             ]
         )
-        offsets[p] = (pinned + 1, 0)
 
 
 POLL = 0.2  # seconds between reads when caught up: the design doc's "1,000 changes or 200 ms"

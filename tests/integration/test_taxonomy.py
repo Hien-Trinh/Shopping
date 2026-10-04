@@ -141,7 +141,7 @@ def test_utf8_names_survive_a_latin_1_locale(tmp_path):
     path.write_bytes(text.encode())
     check = (
         "from pathlib import Path; from catalog.taxonomy import load; "
-        f"assert load(Path({str(path)!r})).paths == ('Café',)"
+        f"assert load(Path({str(path)!r})).paths == ('Caf\\u00e9',)"  # ASCII argv, any locale
     )
     latin = {**os.environ, "LC_ALL": "en_US.ISO8859-1"}
     subprocess.run([sys.executable, "-X", "utf8=0", "-c", check], env=latin, check=True)

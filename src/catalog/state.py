@@ -7,6 +7,8 @@ Layout under the state directory:
   locks/export.lock  flock held by the one Change Export
   locks/maintenance.lock  flock held by the one maintenance process
   locks/snapshots.lock  flock held by the one snapshotter
+  locks/backfill.lock  flock held by the one Backfill
+  backfill.json      the Backfill's last Landing log commit, and which Landing log (step 6c)
   heartbeat/<worker>.json   last sign of life, for the supervisor (B1)
   supervisor.lock    flock held by the one supervisor running against this directory
 """
@@ -107,6 +109,24 @@ def save_watermark(state: Path, version: int, table: str) -> None:
     save(state / "export_watermark.json", {"table": table, "version": version})
 
 
+def load_backfill(state: Path, table: str) -> int:
+    """The Landing log version of the Backfill's last commit; -1 if none. Refuses one saved
+    against another Landing log, as load_offsets does."""
+    saved = load(state / "backfill.json", None)
+    if saved is None:
+        return -1
+    if saved["table"] != table:
+        raise OffsetsMismatch(
+            f"backfill state belongs to Landing log {saved['table']}, not {table}:"
+            " reset the state and data directories together"
+        )
+    return saved["version"]
+
+
+def save_backfill(state: Path, version: int, table: str) -> None:
+    save(state / "backfill.json", {"table": table, "version": version})
+
+
 class PartitionTaken(RuntimeError):
     pass
 
@@ -140,6 +160,13 @@ def claim_snapshots(state: Path) -> Iterator[None]:
 def claim_maintenance(state: Path) -> Iterator[None]:
     """One maintenance per state directory: two would race their DELETEs and vacuums."""
     with _hold(state, {"maintenance": "Maintenance"}):
+        yield
+
+
+@contextmanager
+def claim_backfill(state: Path) -> Iterator[None]:
+    """One Backfill per state directory: two would append the same rows twice."""
+    with _hold(state, {"backfill": "Backfill"}):
         yield
 
 

@@ -303,7 +303,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--workers", type=int, required=True)
     args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--state", type=Path, default=state.STATE)
-    args.add_argument("--classifier", choices=["fake", "embedding"], default="fake")
+    args.add_argument("--classifier", choices=classify.KINDS, default="fake")
     args.add_argument("--models", type=Path, default=classify.MODELS)
     a = args.parse_args(argv)
     try:

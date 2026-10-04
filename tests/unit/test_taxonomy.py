@@ -1,9 +1,10 @@
+import os
 import subprocess
 import sys
 
 import pytest
 
-from catalog.taxonomy import Taxonomy, ancestor, load, trim
+from catalog.taxonomy import Taxonomy, ancestor, load, main, trim
 
 HEADER = (
     "# Shopify Product Taxonomy - Categories: 2026-08\n"
@@ -78,6 +79,7 @@ def test_load_parses_version_and_paths_in_file_order(tmp_path):
         (HEADER + "A > B\n", "line 3"),  # no ' : '
         (HEADER + f"{G}a : \n", "line 3"),  # empty name
         (HEADER + f"{G}a : A\n{G}b : A >  > C\n", "line 4"),  # empty middle name
+        (HEADER + f"{G}a : A\n{G}b : A > > C\n", "line 4"),  # '>' left inside a name
         (HEADER + f"{G}a : A\n{G}b : A > B\n{G}c : A > B > C\n{G}d : A > B > C > D\n", "line 6"),
         (HEADER + f"{G}a : A\n{G}b : A\n", "twice"),
         (HEADER + f"{G}a : A > B\n", "parent"),
@@ -109,12 +111,39 @@ def test_committed_file_is_already_trimmed():
 # main
 
 
-def test_main_prints_the_trimmed_file(tmp_path):
-    raw = write(tmp_path, RAW)
-    out = subprocess.run(
-        [sys.executable, "-m", "catalog.taxonomy", str(raw)],
+def taxonomy_main(raw, **env):
+    return subprocess.run(
+        [sys.executable, "-X", "utf8=0", "-m", "catalog.taxonomy", str(raw)],
         capture_output=True,
-        text=True,
-        check=True,
+        env={**os.environ, **env},
     )
-    assert out.stdout == TRIMMED
+
+
+def test_main_prints_the_trimmed_file(tmp_path, capsysbinary):
+    main([str(write(tmp_path, RAW))])
+    assert capsysbinary.readouterr().out.decode() == TRIMMED
+    out = taxonomy_main(write(tmp_path, RAW))  # the module entry point too
+    assert (out.returncode, out.stdout.decode()) == (0, TRIMMED)
+
+
+def test_main_fails_on_a_file_that_is_not_a_taxonomy(tmp_path, capsysbinary):
+    with pytest.raises(ValueError, match="version"):
+        main([str(write(tmp_path, "<html>rate limited</html>\n"))])
+    assert capsysbinary.readouterr().out == b""
+    out = taxonomy_main(write(tmp_path, "<html>rate limited</html>\n"))
+    assert out.returncode == 1
+    assert out.stdout == b""
+
+
+def test_utf8_names_survive_a_latin_1_locale(tmp_path):
+    text = HEADER + f"{G}a : Café\n"
+    path = tmp_path / "taxonomy.txt"
+    path.write_bytes(text.encode())
+    check = (
+        "from pathlib import Path; from catalog.taxonomy import load; "
+        f"assert load(Path({str(path)!r})).paths == ('Café',)"
+    )
+    latin = {**os.environ, "LC_ALL": "en_US.ISO8859-1"}
+    subprocess.run([sys.executable, "-X", "utf8=0", "-c", check], env=latin, check=True)
+    out = taxonomy_main(path, LC_ALL="en_US.ISO8859-1", PYTHONIOENCODING="latin-1")
+    assert out.stdout.decode() == text

@@ -7,11 +7,13 @@ The committed file keeps the release's line format, `{GID} : {Ancestor} > ... > 
 
 import re
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 
 from catalog.classify import UNCATEGORIZED
+from catalog.entry import exit_with
 
 DEPTH = 3
 SEP = " > "
@@ -49,7 +51,12 @@ def ancestor(path: str, depth: int = DEPTH) -> str:
 def load(path: Path | None = None) -> Taxonomy:
     """Parse and validate a trimmed file; ValueError on anything off."""
     source = path or DEFAULT
-    lines = source.read_text().splitlines()
+    return parse(source.read_text(encoding="utf-8"), source)
+
+
+def parse(text: str, source) -> Taxonomy:
+    """`load` on text already read; `source` names it in errors."""
+    lines = text.splitlines()
     match = _VERSION.match(lines[0]) if lines else None
     if not match:
         raise ValueError(f"{source}: no version header")
@@ -59,7 +66,11 @@ def load(path: Path | None = None) -> Taxonomy:
             continue
         p = _path(line)
         names = p.split(SEP)
-        if " : " not in line or not all(name.strip() for name in names) or len(names) > DEPTH:
+        if (
+            " : " not in line
+            or not all(name.strip() and ">" not in name for name in names)
+            or len(names) > DEPTH
+        ):
             raise ValueError(f"{source}: bad Category on line {n}: {line!r}")
         if p == UNCATEGORIZED:
             raise ValueError(f"{source}: line {n} is {UNCATEGORIZED}, the fallback's name")
@@ -75,5 +86,13 @@ def load(path: Path | None = None) -> Taxonomy:
     return Taxonomy(f"shopify-{match[1]}", tuple(paths))
 
 
+def main(argv: Sequence[str] | None = None) -> None:
+    """Print the trimmed file; a raw file that trims to an invalid taxonomy exits 1."""
+    (raw,) = sys.argv[1:] if argv is None else argv
+    trimmed = trim(Path(raw).read_text(encoding="utf-8"))
+    parse(trimmed, raw)
+    sys.stdout.buffer.write(trimmed.encode())
+
+
 if __name__ == "__main__":
-    sys.stdout.write(trim(Path(sys.argv[1]).read_text()))
+    exit_with(main)

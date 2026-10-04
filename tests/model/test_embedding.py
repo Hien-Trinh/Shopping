@@ -48,15 +48,17 @@ def test_other_threads_run_while_it_embeds(real):
 
 
 def test_a_bulk_batch_overruns_the_budget_by_at_most_about_a_chunk(real):
-    bulk = [
-        listing(f"Cotton t-shirt {i}", description="soft cotton crew neck " * 25)
-        for i in range(200)
-    ]
+    """Bounds relative to this machine: CI's runner is several times slower than a Mac."""
+    text = "Cotton t-shirt " + "soft cotton crew neck " * 25  # a 500-character description
+    real.embed([text] * 16)  # warm
     started = time.monotonic()
-    answers = real.classify(bulk)
+    real.embed([text] * 16)
+    sixteen = time.monotonic() - started  # one chunk of 16 here
+    started = time.monotonic()
+    answers = real.classify([listing(text[:150], description=text) for _ in range(400)])
     took = time.monotonic() - started
     assert answers[0] is not None and answers[-1] is None  # some answered, the rest left over
-    assert took < real.budget + 0.4, took  # a 64-Listing chunk alone took 0.7 s here
+    assert took < real.budget + 2 * sixteen, (took, sixteen)  # a 64 chunk alone takes 4x sixteen
 
 
 def test_the_worker_cli_classifies_with_the_real_model(tmp_path):

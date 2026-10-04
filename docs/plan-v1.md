@@ -127,8 +127,8 @@ def partition(merchant_id: str, merchant_product_id: str) -> int:
 | B1 | MERGE hung once in the spike, with no timeout available | Each worker writes a heartbeat file every batch, and the supervisor kills and restarts a worker whose heartbeat is older than 60 s. At-least-once delivery plus A3 make the restart safe. Phase 0 tries to reproduce the hang. |
 | B2 | OPTIMIZE running at the same time as a MERGE or append | Phase 0 spike. Workers compact only their own partitions. The Landing log is compacted by a maintenance job, and appends (which never read) shouldn't conflict with it. |
 | B3 | Reading the Landing log change feed per partition without reading every partition | Phase 0 spike: `load_cdf` with a partition predicate on a table partitioned by `partition`. |
-| B4 | Classifier throughput on bulk uploads | Batch-embedding a whole worker batch is fine. Laya does about 13 ms per decision, one at a time, so roughly 75/s per process. Jev is capped at 40 requests/s, so a 1M-Listing initial load through Jev takes about 7 h, and most of it would time out into Uncategorized. The **timeout applies to the whole batch**, not to each change. |
-| B5 | Memory with 16 GB | Laya at FP16 is about 0.85 GB per process, so 8 workers use about 7 GB. If Laya wins the eval, run **one shared classifier process** instead of loading the model into every worker. |
+| B4 | Classifier throughput on bulk uploads | Batch-embedding a whole worker batch is fine. laya-mlx (an independent MLX port of upstream `laya`) reports 13.4 ms per short English decision, or 7.4 ms on the multilingual checkpoint, on an M3 Max. That is at least 75/s per process one at a time, and it now batches (`batch_size`, 16 by default), so 75/s is a floor. The 16 GB Mac will be slower, so 6e measures it. Upstream `laya` on PyTorch MPS is much slower on a Mac and serves as the answer-parity reference. Jev is capped at 40 requests/s, so a 1M-Listing initial load through Jev takes about 7 h, and most of it would time out into Uncategorized. The **timeout applies to the whole batch**, not to each change. |
+| B5 | Memory with 16 GB | Laya at FP16 is about 0.85 GB per process (421M parameters × 2 bytes), so 8 workers use about 7 GB. If Laya wins the eval, run **one shared classifier process** instead of loading the model into every worker. laya-mlx has no server, so that process needs a small wrapper; upstream's `laya-serve` is the fallback. Upstream warns that concurrent torch forwards on MPS crash the process, so a shared process on upstream runs one forward at a time. |
 | B6 | Docker | Ruled out: MLX can't use the GPU inside Docker on macOS. Processes run natively from a `Procfile`, under our own supervisor (honcho stops everything when one process exits and never restarts). |
 | B7 | Laptop sleep pauses every process and skews freshness numbers | Run stress tests under `caffeinate -dims`. |
 | B8 | Unbounded request bodies | FastAPI and uvicorn don't limit body size. Add middleware that caps bodies at 32 MB and returns 413 above that. |
@@ -145,7 +145,7 @@ def partition(merchant_id: str, merchant_product_id: str) -> int:
 - Jev sends merchant data to a third party. Prompt injection in a title can at worst cause a misclassification, because `Choice` can only answer from the given options.
 - The Amazon Reviews '23 dataset is for research use. Fine for learning, not for a commercial product.
 - "Catalog" will clash with Databricks' Unity Catalog if you port. Minor.
-- `laya-mlx` installs from a GitHub repo. Review it before installing. I won't install it without your OK.
+- `laya-mlx` installs from PyPI (`pip install laya-mlx`). It's an unofficial port maintained by one person, created Sep 19, 2026. Review it before installing. I won't install it without your OK.
 
 ## DuckDB's role: read-only query engine
 

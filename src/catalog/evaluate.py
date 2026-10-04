@@ -11,6 +11,7 @@ import json
 import math
 import os
 import platform
+import random
 import resource
 import sys
 import time
@@ -18,6 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.request import urlopen
 
 from pydantic import ValidationError
 
@@ -27,6 +29,45 @@ from catalog.envelope import Content
 LABELS = Path("eval/labels.jsonl")
 RESULTS = Path("eval/results")
 REPORT = Path("eval/report.md")
+AMAZON = (
+    "https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main"
+    "/raw/meta_categories"
+)
+CATEGORIES = [  # Amazon Reviews '23's category files, less Unknown
+    "All_Beauty",
+    "Amazon_Fashion",
+    "Appliances",
+    "Arts_Crafts_and_Sewing",
+    "Automotive",
+    "Baby_Products",
+    "Beauty_and_Personal_Care",
+    "Books",
+    "CDs_and_Vinyl",
+    "Cell_Phones_and_Accessories",
+    "Clothing_Shoes_and_Jewelry",
+    "Digital_Music",
+    "Electronics",
+    "Gift_Cards",
+    "Grocery_and_Gourmet_Food",
+    "Handmade_Products",
+    "Health_and_Household",
+    "Health_and_Personal_Care",
+    "Home_and_Kitchen",
+    "Industrial_and_Scientific",
+    "Kindle_Store",
+    "Magazine_Subscriptions",
+    "Movies_and_TV",
+    "Musical_Instruments",
+    "Office_Products",
+    "Patio_Lawn_and_Garden",
+    "Pet_Supplies",
+    "Software",
+    "Sports_and_Outdoors",
+    "Subscription_Boxes",
+    "Tools_and_Home_Improvement",
+    "Toys_and_Games",
+    "Video_Games",
+]
 THRESHOLDS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 .. 0.90
 
 
@@ -71,6 +112,60 @@ def load_labels(path: Path, tax: taxonomy.Taxonomy) -> tuple[list[Labeled], str]
 
 def _short(e: ValidationError) -> str:
     return "; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors())
+
+
+def sample(
+    source: str, categories: Sequence[str], *, per_category: int, seed: int, lines: int = 1000
+) -> list[dict]:
+    """`per_category` items drawn from the first `lines` of each category file under `source`,
+    shaped as Listings the API accepts (step-6e.md, 6e.1). A repeated id is kept once."""
+    rng, seen, out = random.Random(seed), set(), []
+    for category in categories:
+        # ponytail: a file's first lines may not be a random slice of it; stream more if it shows
+        url = f"{source}/meta_{category}.jsonl"
+        with urlopen(url, timeout=60) as f:  # a stalled read fails instead of hanging
+            raw = [line for _, line in zip(range(lines), f, strict=False)]
+        usable = {}
+        for n, line in enumerate(raw, 1):
+            try:
+                x = json.loads(line)
+            except ValueError as e:
+                raise ValueError(f"{url}: line {n}: {e}") from None
+            if not isinstance(x, dict):
+                raise ValueError(f"{url}: line {n}: not an object")
+            id, title = x.get("parent_asin"), x.get("title")
+            if not isinstance(id, str) or not id.strip() or id in seen:
+                continue
+            if not isinstance(title, str) or not title.strip():
+                continue
+            parts = [
+                p
+                for key in ("description", "features")
+                if isinstance(x.get(key), list)
+                for p in x[key]
+                if isinstance(p, str)
+            ]
+            usable.setdefault(
+                id,
+                {
+                    "id": id,
+                    "title": _cut(title.strip(), 150),
+                    "description": "\n".join(parts)[:5000],
+                    "amazon_category": category,
+                },
+            )
+        picked = rng.sample(list(usable.values()), min(per_category, len(usable)))
+        seen |= {x["id"] for x in picked}
+        out += picked
+    return out
+
+
+def _cut(text: str, n: int) -> str:
+    """`text` cut to `n` characters at the last space within them, else hard."""
+    if len(text) <= n:
+        return text
+    head = text[: n + 1].rpartition(" ")[0].rstrip()
+    return head or text[:n]
 
 
 def run(
@@ -235,12 +330,16 @@ def _result(path: Path) -> dict:
     return r
 
 
-def candidate(kind: str, models: Path):
+def candidate(kind: str, models: Path, *, description: int = classify.DESCRIPTION):
     """The classifier at threshold 0 with no budget: every Listing gets its best path and raw
     confidence, and `score` applies thresholds afterwards (decision 2)."""
     if kind == "embedding":
         return classify.EmbeddingClassifier(
-            taxonomy.load(), classify.fastembed(models), threshold=0.0, budget=math.inf
+            taxonomy.load(),
+            classify.fastembed(models),
+            threshold=0.0,
+            budget=math.inf,
+            description=description,
         )
     return classify.FakeClassifier()
 
@@ -255,6 +354,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     r.add_argument("--name")
     r.add_argument("--results", type=Path, default=RESULTS)
     r.add_argument("--models", type=Path, default=classify.MODELS)
+    r.add_argument("--description", type=int, default=classify.DESCRIPTION)
+    s = sub.add_parser("sample")
+    s.add_argument("--source", default=AMAZON)
+    s.add_argument("--categories", nargs="+", default=CATEGORIES)
+    s.add_argument("--per-category", type=int, default=6)
+    s.add_argument("--seed", type=int, default=0)
     p = sub.add_parser("report")
     p.add_argument("--results", type=Path, default=RESULTS)
     p.add_argument("--out", type=Path, default=REPORT)
@@ -263,12 +368,22 @@ def main(argv: Sequence[str] | None = None) -> None:
     if a.command == "run":
         if a.batch < 1:
             args.error("--batch must be at least 1")
+        if a.description < 0:
+            args.error("--description must be at least 0")
         tax = taxonomy.load()
         labeled, sha = load_labels(a.labels, tax)
-        result = run(candidate(a.classifier, a.models), labeled, tax, batch=a.batch)
+        classifier = candidate(a.classifier, a.models, description=a.description)
+        result = run(classifier, labeled, tax, batch=a.batch)
         name = a.name or a.classifier
-        result |= {"name": name, "labels_sha256": sha}
+        result |= {"name": name, "labels_sha256": sha, "description": a.description}
         state.save(a.results / f"{name}.json", result)  # whole or not at all
+    elif a.command == "sample":  # printed only once every category is read: no half sample
+        if a.per_category < 1:
+            args.error("--per-category must be at least 1")
+        items = sample(a.source, a.categories, per_category=a.per_category, seed=a.seed)
+        sys.stdout.write("".join(json.dumps(x) + "\n" for x in items))
+        drawn = [x["amazon_category"] for x in items]  # a short category shows here
+        print(", ".join(f"{c} {drawn.count(c)}" for c in a.categories), file=sys.stderr)
     else:
         results = [_result(f) for f in sorted(a.results.glob("*.json"))]
         if not results:

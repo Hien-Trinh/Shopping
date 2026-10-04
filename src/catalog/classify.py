@@ -52,13 +52,19 @@ class EmbeddingClassifier:
     model: str = MODEL
     threshold: float = THRESHOLD
     budget: float = 0.2  # the design's batch timeout
-    chunk: int = 64
+    chunk: int = 16  # about 160 ms with 500-character descriptions, so it overruns `budget` by
+    # at most that; the cost per Listing barely depends on it
     clock: Callable[[], float] = time.monotonic
     taxonomy_version: str = field(init=False)
 
     def __post_init__(self):
         self.taxonomy_version = f"{self.taxonomy.version}+{self.model.rpartition('/')[2]}"
-        self._paths = _unit(self.embed(self.taxonomy.paths))
+        paths = self.taxonomy.paths  # in chunks: one ONNX run over all of them peaks at 1.2 GB
+        self._paths = _unit(
+            np.vstack(
+                [self.embed(paths[i : i + self.chunk]) for i in range(0, len(paths), self.chunk)]
+            )
+        )
 
     def classify(self, listings: Sequence[Content]) -> list[tuple[str, float] | None]:
         deadline = self.clock() + self.budget
@@ -87,14 +93,17 @@ def fastembed(models: Path, model: str = MODEL, *, download: bool = False):
     """An `embed` function over fastembed's `model` in `models`; offline unless `download`."""
     from fastembed import TextEmbedding  # here: importing onnxruntime takes a second
 
+    def embed(texts: Sequence[str]) -> np.ndarray:  # one ONNX run: the classifier sizes chunks
+        return np.array(list(loaded.embed(list(texts), batch_size=max(len(texts), 1))))
+
     try:
         loaded = TextEmbedding(model, cache_dir=str(models), local_files_only=not download)
+        embed(["probe"])  # a model that loads but won't run is as good as missing
     except Exception as e:  # missing or corrupt: fastembed raises ValueError, onnxruntime others
         raise ModelMissing(
             f"{model} won't load from {models}: run python -m catalog.classify --download"
         ) from e
-    # One ONNX run per call: the classifier already sizes its chunks.
-    return lambda texts: np.array(list(loaded.embed(list(texts), batch_size=max(len(texts), 1))))
+    return embed
 
 
 def main(argv: Sequence[str] | None = None) -> None:

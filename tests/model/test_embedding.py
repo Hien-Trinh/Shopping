@@ -1,10 +1,16 @@
+import signal
+import subprocess
+import sys
 import threading
 import time
+from datetime import UTC, datetime
 
 import pytest
-from support import listing
+from support import listing, product_in, up
 
-from catalog import classify, taxonomy
+from catalog import classify, landing, store, taxonomy
+
+NOW = datetime(2026, 10, 4, tzinfo=UTC)
 
 pytestmark = pytest.mark.model
 
@@ -38,4 +44,40 @@ def test_other_threads_run_while_it_embeds(real):
         done.set()
         thread.join()
     took = time.monotonic() - started  # one native call: embed runs a single ONNX batch
-    assert took > 0.3 and gaps[0] < 0.1, (took, gaps[0])
+    assert gaps[0] < took / 4, (took, gaps[0])  # holding the GIL, the gap would be the call
+
+
+def test_a_bulk_batch_overruns_the_budget_by_at_most_about_a_chunk(real):
+    bulk = [
+        listing(f"Cotton t-shirt {i}", description="soft cotton crew neck " * 25)
+        for i in range(200)
+    ]
+    started = time.monotonic()
+    answers = real.classify(bulk)
+    took = time.monotonic() - started
+    assert answers[0] is not None and answers[-1] is None  # some answered, the rest left over
+    assert took < real.budget + 0.4, took  # a 64-Listing chunk alone took 0.7 s here
+
+
+def test_the_worker_cli_classifies_with_the_real_model(tmp_path):
+    data, state_dir = tmp_path / "data", tmp_path / "state"
+    mpid = product_in(0)
+    landing.append(
+        landing.ensure(str(data / "landing_log")),
+        [("s1", 0, up(mpid, 1, listing("Men's cotton t-shirt")), NOW)],
+    )
+    args = ["--index", "0", "--workers", "4", "--data", str(data), "--state", str(state_dir)]
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "catalog.worker", *args, "--classifier", "embedding"]
+    )
+    try:
+        deadline = time.monotonic() + 120
+        while not (rows := store.read(store.ensure(str(data / "listing_store")), [("m_1", mpid)])):
+            assert proc.poll() is None and time.monotonic() < deadline
+            time.sleep(0.2)
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        proc.wait(timeout=30)
+    cls = rows[("m_1", mpid)].classification
+    assert cls.category.startswith("Apparel & Accessories")
+    assert cls.taxonomy_version == "shopify-2026-08+bge-small-en-v1.5"

@@ -85,7 +85,28 @@ def test_no_listings_need_no_embedding():
     assert c.classify([]) == [] and len(calls) == 1  # the taxonomy only
 
 
+def test_the_taxonomy_is_embedded_in_chunks_too():
+    sizes = []
+    EmbeddingClassifier(TAXONOMY, lambda texts: sizes.append(len(texts)) or embed(texts), chunk=2)
+    assert sizes == [2, 1]  # one run over 1,862 paths peaks at 1.2 GB per worker
+
+
 def test_a_missing_model_raises_model_missing_without_downloading(tmp_path):
     with pytest.raises(ModelMissing, match="--download"):
         fastembed(tmp_path)
     assert not any(tmp_path.rglob("*.onnx"))
+
+
+def test_a_model_that_loads_but_wont_embed_is_missing(tmp_path, monkeypatch):
+    import fastembed as package
+
+    class Broken:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def embed(self, texts, batch_size):
+            raise RuntimeError("ONNX runtime error")
+
+    monkeypatch.setattr(package, "TextEmbedding", Broken)
+    with pytest.raises(ModelMissing):
+        fastembed(tmp_path)

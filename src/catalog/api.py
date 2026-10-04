@@ -129,11 +129,13 @@ def create_app(
             parsed = uuid.UUID(submission_id)
             if parsed.version != 7:
                 raise ValueError
-            # Only the hours from the id's own (A12). ponytail: an id dated 1970 scans every
-            # hour kept, until 5d's events retention lets it 404 an id older than the horizon.
+            # Only the hours from the id's own (A12).
             since = datetime.fromtimestamp(0, UTC) + timedelta(milliseconds=parsed.int >> 80)
         except ValueError, OverflowError:  # a 48-bit timestamp reaches past the year 9999
             return not_found("unknown_submission")
+        # Its events are pruned (step 5d): a forged old id would otherwise scan every hour kept.
+        if since < datetime.fromtimestamp(clock(), UTC) - event_files.RETENTION:
+            return not_found("expired_submission")
         submission = str(parsed)  # canonical, so case and braces don't matter
         # In a thread, so a long scan doesn't stall the POSTs; emits stay on this one.
         found = await run_in_threadpool(

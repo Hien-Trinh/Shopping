@@ -1,5 +1,6 @@
 """Maintenance (docs/specs/step-5d.md): retention and cleanup, never past the slowest reader."""
 
+import os
 import threading
 from datetime import UTC, datetime, timedelta
 
@@ -8,7 +9,7 @@ import pytest
 from support import classified, listing, product_in, up
 from test_supervisor import wait_for
 
-from catalog import events, landing, maintenance, state, store
+from catalog import events, export, landing, maintenance, state, store
 from catalog.events import EventLog
 from catalog.keys import PARTITIONS
 from catalog.plan import Write
@@ -16,6 +17,8 @@ from catalog.plan import Write
 A, B = product_in(3), product_in(40)  # two partitions
 LATER = timedelta(days=8)  # past the 7-day Landing log retention
 LANDING_RETENTION = timedelta(days=7)  # plan-v1 A13, independent of the module's constant
+EVENTS_RETENTION = timedelta(days=3)  # plan-v1 A13, for events and export files
+HALF_HOUR = timedelta(minutes=30)
 
 
 class Env:
@@ -50,7 +53,8 @@ class Env:
 
     def tick(self, later=timedelta(), floor=timedelta(hours=1)):
         now = datetime.now(UTC) + later
-        maintenance.tick(self.log, self.store, self.state, self.events, now, floor=floor)
+        data = self.tmp / "data"
+        maintenance.tick(self.log, self.store, data, self.state, self.events, now, floor=floor)
 
     def rows(self):
         return landing.ensure(self.log.table_uri).to_pyarrow_table().num_rows
@@ -153,9 +157,20 @@ def test_change_data_files_go_once_exported(env):
     assert env.change_data()  # the MERGEs' updates; vacuum never removes these
     env.watermark(head)
     env.offsets()
-    env.tick(floor=timedelta())
+    env.tick(later=timedelta(hours=2), floor=timedelta())  # an hour past the retention and more
     assert env.change_data() == []
     assert env.reports()[-1]["listing_store"]["change_data"] > 0
+
+
+def test_change_data_files_stay_an_hour_past_the_retention(env):
+    """A file is written before its commit: the hour keeps one whose commit is still landing."""
+    for sv in range(1, 3):
+        head = env.merge(sv)
+    files = env.change_data()
+    env.watermark(head)
+    env.offsets()
+    env.tick(later=timedelta(minutes=30), floor=timedelta())
+    assert env.change_data() == files
 
 
 def test_change_data_files_stay_while_the_exporter_has_not_read_them(env):
@@ -241,3 +256,47 @@ def test_new_tables_leave_log_cleanup_to_maintenance(env):
         config = dt.metadata().configuration
         assert config["delta.enableExpiredLogCleanup"] == "false"
         assert config["delta.logRetentionDuration"] == "interval 1 hours"  # the tick's floor
+
+
+def _emitted_at(env, when):
+    log = EventLog(env.tmp / "data" / "events", "api", clock=lambda: when.timestamp())
+    log.emit([{"type": "probe", "at": when.isoformat()}])
+
+
+def test_event_hours_past_the_retention_go(env):
+    real = datetime.now(UTC)
+    now = real.replace(minute=10)  # early in the hour, so `kept` shares the horizon's hour
+    edge = now - EVENTS_RETENTION - timedelta(hours=1)  # its hour ends at or before the horizon
+    kept = now - EVENTS_RETENTION + HALF_HOUR
+    for when in (now - EVENTS_RETENTION - timedelta(hours=2), edge, kept):
+        _emitted_at(env, when)
+    env.offsets()
+    env.tick(later=now - real)
+    found = events.read(env.tmp / "data" / "events")
+    assert [e["at"] for e in found if e["type"] == "probe"] == [kept.isoformat()]
+    assert env.reports()[-1]["event_hours"] == 2
+
+
+def _export_file(env, first, last, age):
+    path = env.tmp / "data" / "export" / f"{first:012}-{last:012}.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"")
+    written = (datetime.now(UTC) - age).timestamp()
+    os.utime(path, (written, written))
+    return path.name
+
+
+def test_export_files_past_the_retention_go_once_the_watermark_passed_them(env):
+    old = EVENTS_RETENTION + HALF_HOUR
+    exported = _export_file(env, 0, 4, old)
+    _export_file(env, 5, 9, old)  # a crash before its watermark: the exporter adopts it next
+    _export_file(env, 0, 2, EVENTS_RETENTION - HALF_HOUR)
+    stray = env.tmp / "data" / "export" / "backup.parquet"  # not the exporter's: left alone
+    stray.write_bytes(b"")
+    env.watermark(4)
+    env.offsets()
+    env.tick()
+    names = [p.name for p in export.files(env.tmp / "data" / "export")]
+    assert exported not in names
+    assert names == [f"{0:012}-{2:012}.parquet", f"{5:012}-{9:012}.parquet", stray.name]
+    assert env.reports()[-1]["export_files"] == 1

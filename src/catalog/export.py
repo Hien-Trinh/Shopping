@@ -9,10 +9,12 @@ If cleanup removed history the change feed needs, the next file is the whole sto
 
 import argparse
 import os
+import re
 import threading
 import time
 import uuid
 from collections.abc import Sequence
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pyarrow as pa
@@ -28,6 +30,7 @@ INTERVAL = 60.0  # seconds between ticks once caught up (design doc: every minut
 # ponytail: caps versions, not rows, and collapse runs in Python: a 1M initial load still puts
 # ~1M rows in memory per file. Measure in Phase 7; cap by rows or collapse in Arrow if it matters.
 MAX_VERSIONS = 1000
+RETENTION = timedelta(days=3)  # plan-v1 A13
 SCHEMA = store.SCHEMA.append(pa.field("op", pa.string(), nullable=False))
 
 
@@ -56,6 +59,21 @@ def run(
 def files(export_dir: Path) -> list[Path]:
     """The export files in version order; a consumer replays them in this order."""
     return sorted(export_dir.glob("*.parquet"))
+
+
+def prune(export_dir: Path, now: datetime, watermark: int) -> int:
+    """Delete the files older than RETENTION that end at or below the watermark; returns how
+    many. One past it is a crash's file that the exporter adopts on its next tick."""
+    cutoff = (now - RETENTION).timestamp()
+    old = []
+    for p in files(export_dir):
+        if not (name := re.fullmatch(r"\d+-(\d+)", p.stem)):
+            continue  # not the exporter's: one stray file must not stop every pass
+        if int(name[1]) <= watermark and p.stat().st_mtime < cutoff:
+            old.append(p)
+    for p in old:
+        p.unlink()
+    return len(old)
 
 
 def tick(

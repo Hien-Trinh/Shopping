@@ -48,3 +48,12 @@ def plain(table: pa.Table) -> pa.Table:
     """Cast string_view columns, which delta-rs returns but Arrow can't yet compare, to string."""
     fields = [f.with_type(pa.string()) if f.type == pa.string_view() else f for f in table.schema]
     return table.cast(pa.schema(fields))
+
+
+def history_gone(error: Exception) -> bool:
+    """A change-feed read failed because cleanup removed history it needs (step-5b.md): a file
+    under `_change_data` deleted, or the commits themselves removed by log cleanup."""
+    # ponytail: matches delta-rs 1.6.6's messages. A changed message crash-loops, never skips
+    # data; the upgrade path is checking the needed log entries and files directly.
+    text = str(error)
+    return "Invalid table version" in text or ("Object at location" in text and "not found" in text)

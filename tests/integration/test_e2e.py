@@ -14,9 +14,10 @@ from pathlib import Path
 import httpx2
 import pyarrow.parquet as pq
 import pytest
+from deltalake import DeltaTable
 from test_supervisor import alive, wait_for
 
-from catalog import events, export, landing, state, store
+from catalog import events, export, landing, snapshots, state, store
 from catalog.keys import PARTITIONS, partition
 from catalog.landing import START
 from catalog.replay import diff, expected_store, live, replay_exports
@@ -63,6 +64,10 @@ def maintenance_pids(tmp: Path) -> list[int]:
     return worker_pids(tmp, "maintenance_start")
 
 
+def snapshot_pids(tmp: Path) -> list[int]:
+    return worker_pids(tmp, "snapshots_start")
+
+
 def serving(port: int) -> bool:
     with contextlib.suppress(httpx2.TransportError):
         return httpx2.get(f"http://127.0.0.1:{port}/submissions/x").status_code == 401
@@ -84,6 +89,10 @@ class System:
         text, n = re.subn(r"^maintenance: python -m catalog\.maintenance$",
                           r"\g<0> --interval 0.2", text, flags=re.M)  # fmt: skip
         assert n == 1, "the Procfile's maintenance line changed"
+        # Every second at least, so consecutive snapshots never share a second's name.
+        text, n = re.subn(r"^snapshots: python -m catalog\.snapshots$", r"\g<0> --every 1",
+                          text, flags=re.M)  # fmt: skip
+        assert n == 1, "the Procfile's snapshots line changed"
         (tmp / "Procfile").write_text(text)
         create = [sys.executable, "-m", "catalog.merchants", "create", "--currency", "USD"]
         out = subprocess.run(create, cwd=tmp, capture_output=True, text=True, check=True).stdout
@@ -117,8 +126,8 @@ class System:
         for proc in self.supervisors:
             proc.kill()
             proc.wait()
-        others = [*export_pids(self.tmp), *maintenance_pids(self.tmp), *api_pids(self.port)]
-        for pid in [*worker_pids(self.tmp), *others]:
+        others = [*export_pids(self.tmp), *snapshot_pids(self.tmp), *maintenance_pids(self.tmp)]
+        for pid in [*worker_pids(self.tmp), *others, *api_pids(self.port)]:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
 
@@ -175,9 +184,16 @@ def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system
     files = [pq.read_table(p).to_pylist() for p in export.files(data / "export")]
     assert diff(live(store.fingerprints(listings, head)), replay_exports(files)) == []
 
-    pids = [*worker_pids(system.tmp), *export_pids(system.tmp), *api_pids(system.port)]
-    pids += maintenance_pids(system.tmp)
-    assert len(pids) == 7  # 4 workers, Change Export, maintenance and the API, each started once
+    # Catalog Snapshots (step 5c): each equals the Listing Store at its pinned version.
+    wait_for(lambda: [snapshots.pinned(p) for p in snapshots.existing(data / "snapshots")][-1:]
+             == [head])  # fmt: skip
+    for path in snapshots.existing(data / "snapshots"):
+        copy = store.fingerprints(DeltaTable(str(path)))
+        assert diff(store.fingerprints(listings, snapshots.pinned(path)), copy) == []
+
+    pids = [*worker_pids(system.tmp), *export_pids(system.tmp), *snapshot_pids(system.tmp)]
+    pids += [*maintenance_pids(system.tmp), *api_pids(system.port)]
+    assert len(pids) == 8  # 4 workers, Change Export, Catalog Snapshots, maintenance, the API
     assert not bindable(system.port)  # so the check below can fail
     supervisor.send_signal(signal.SIGTERM)
     assert supervisor.wait(timeout=30) == 0
@@ -195,6 +211,7 @@ def test_killing_the_supervisor_stops_its_api_so_a_new_one_serves_on_its_port(sy
     wait_for(lambda: not any(map(alive, workers)), timeout=10)  # 3e: their locks are free
     wait_for(lambda: not any(map(alive, export_pids(system.tmp))), timeout=10)  # and its lock
     wait_for(lambda: not any(map(alive, maintenance_pids(system.tmp))), timeout=10)
+    wait_for(lambda: not any(map(alive, snapshot_pids(system.tmp))), timeout=10)
     second = system.start()  # its API binds the same port: no restart loop
     assert api_pids(system.port) not in ([], [api])
     second.send_signal(signal.SIGTERM)

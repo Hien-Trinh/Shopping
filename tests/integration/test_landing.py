@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import pyarrow as pa
 import pytest
 from deltalake import DeltaTable, write_deltalake
+from deltalake.exceptions import CommitFailedError
 from support import delete, listing, product_in, race, reclassify, up
 
 from catalog import landing
@@ -115,6 +116,20 @@ def test_a_delete_between_refresh_and_commit_is_retried(log, monkeypatch):
     add(log, up(B, 1))
     assert deletes
     assert [c.change.key for c in landing.read(log, {40: START}, limit=10).changes] == [("m_1", B)]
+
+
+def test_a_second_lost_race_fails_the_append(log, monkeypatch):
+    """One retry, not a loop: the API answers 500 and the Merchant resends."""
+    refresh, other = log.update_incremental, landing.ensure(log.table_uri)
+
+    def refresh_then_always_lose():
+        add(other, up(A, 1))  # a row the refresh sees, so the DELETE removes from its snapshot
+        refresh()
+        other.delete("true")
+
+    monkeypatch.setattr(log, "update_incremental", refresh_then_always_lose)
+    with pytest.raises(CommitFailedError):
+        add(log, up(B, 1))
 
 
 def test_empty_append_makes_no_commit(log):

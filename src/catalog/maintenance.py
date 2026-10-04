@@ -66,7 +66,8 @@ def tick(
     unread = {}
     for name, (dt, next_version) in readers.items():  # only deletes, so a full disk still frees
         unread[name] = _unread_since(dt, next_version)
-        report[name] = {"next": next_version} | _clean(dt, unread[name], now, floor)
+        when = None if unread[name] is None else unread[name].isoformat()  # how far behind
+        report[name] = {"next": next_version, "unread": when} | _clean(dt, unread[name], now, floor)
     report["landing_log"]["slowest"] = min(offsets, key=offsets.__getitem__)
     landing_dt.optimize.compact()  # beside the API's appends (spike B2)
     report["deleted_rows"] = 0

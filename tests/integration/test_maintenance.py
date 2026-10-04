@@ -15,6 +15,7 @@ from catalog.plan import Write
 
 A, B = product_in(3), product_in(40)  # two partitions
 LATER = timedelta(days=8)  # past the 7-day Landing log retention
+LANDING_RETENTION = timedelta(days=7)  # plan-v1 A13, independent of the module's constant
 
 
 class Env:
@@ -71,6 +72,14 @@ def test_rows_past_the_retention_are_deleted_once_every_partition_read_them(env)
     assert env.reports()[-1]["deleted_rows"] == 2
 
 
+def test_rows_within_the_hour_past_the_retention_stay(env):
+    """received_at is stamped before the commit: the hour keeps a slow commit's rows."""
+    env.add(up(A, 1))
+    env.offsets()
+    env.tick(later=LANDING_RETENTION + timedelta(minutes=30))
+    assert env.rows() == 1
+
+
 def test_rows_stay_while_a_partition_has_not_read_them(env):
     first = env.add(up(A, 1))
     env.add(up(B, 1))
@@ -80,6 +89,7 @@ def test_rows_stay_while_a_partition_has_not_read_them(env):
     (report,) = env.reports()
     assert report["deleted_rows"] == 0
     assert report["landing_log"]["next"] == first
+    assert datetime.fromisoformat(report["landing_log"]["unread"]) <= datetime.now(UTC)
 
 
 def test_a_vacuum_keeps_what_a_partition_behind_still_reads(env):
@@ -224,3 +234,10 @@ def test_a_second_maintenance_is_refused_before_touching_anything(env):
         maintenance.run(env.tmp / "data", env.state, stop=threading.Event())
     assert landing.ensure(env.log.table_uri).version() == version
     assert env.reports() == []
+
+
+def test_new_tables_leave_log_cleanup_to_maintenance(env):
+    for dt in (env.log, env.store):
+        config = dt.metadata().configuration
+        assert config["delta.enableExpiredLogCleanup"] == "false"
+        assert config["delta.logRetentionDuration"] == "interval 1 hours"  # the tick's floor

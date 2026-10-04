@@ -180,6 +180,7 @@ def run(
     """Classify every Listing `batch` at a time after one untimed warm-up call (lazy loads)."""
     paths = set(tax.paths) | {classify.UNCATEGORIZED}
     classifier.classify([labeled[0].listing])
+    warm_up_usd = float(getattr(classifier, "usd", 0.0))  # not the run's: usd_per_m divides by n
     answers, seconds = [], []
     for i in range(0, len(labeled), batch):
         chunk = labeled[i : i + batch]
@@ -210,7 +211,7 @@ def run(
         "batch": batch,
         "answers": answers,
         "seconds": seconds,
-        "usd": float(getattr(classifier, "usd", 0.0)),
+        "usd": float(getattr(classifier, "usd", 0.0)) - warm_up_usd,
         "rss_mb": rss / (2**20 if sys.platform == "darwin" else 2**10),
         "date": datetime.now(UTC).date().isoformat(),
         "machine": f"{platform.platform()}, {os.cpu_count()} CPUs",

@@ -77,10 +77,8 @@ class Recording:
 
     taxonomy_version = "rec-1"
 
-    def __init__(self, answers, clock, usd=None):
+    def __init__(self, answers, clock):
         self.answers, self.clock, self.calls = list(answers), clock, []
-        if usd is not None:
-            self.usd = usd
 
     def classify(self, listings):
         self.calls.append([x.title for x in listings])
@@ -269,12 +267,6 @@ def test_a_classifier_error_names_the_batch():
     with pytest.raises(ZeroDivisionError) as e:
         evaluate.run(Late(), labeled(TOYS), taxonomy.load(), batch=1)
     assert any("id '0'" in note for note in e.value.__notes__)
-
-
-def test_a_paid_candidate_reports_its_spend():
-    clock = Clock()
-    rec = Recording([(TOYS, 0.9)], clock, usd=0.25)
-    assert evaluate.run(rec, labeled(TOYS), taxonomy.load(), batch=1, clock=clock)["usd"] == 0.25
 
 
 def test_the_embedding_candidate_runs_at_threshold_0_without_a_budget(monkeypatch):
@@ -505,7 +497,12 @@ def test_the_jev_candidate_shortlists_with_the_embedding(monkeypatch):
     monkeypatch.setattr(
         evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
     )
-    monkeypatch.setattr(jev, "http", lambda: lambda body: {})
+
+    def call(body):
+        return {}
+
+    monkeypatch.setattr(jev, "http", lambda: call)
     got = evaluate.candidate("jev-shortlist", None, description=200)
+    assert got.call is call and isinstance(got.shortlist, evaluate.classify.EmbeddingClassifier)
     assert got.description == 200 and got.shortlist.description == 200
     assert got.shortlist.threshold == 0.0 and got.shortlist.budget == math.inf

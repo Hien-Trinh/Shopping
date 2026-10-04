@@ -3,17 +3,22 @@ version range (design doc, lifecycle step 9; docs/specs/step-5a.md).
 
 A file is named by its version range, zero-padded so name order is version order, and appears
 complete or not at all. The watermark moves only after its file is written.
+If cleanup removed history the change feed needs, the next file is the whole store instead
+(A18, docs/specs/step-5b.md).
 """
 
 import argparse
 import os
+import re
 import threading
 import time
 import uuid
 from collections.abc import Sequence
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from deltalake import DeltaTable
 
@@ -25,6 +30,7 @@ INTERVAL = 60.0  # seconds between ticks once caught up (design doc: every minut
 # ponytail: caps versions, not rows, and collapse runs in Python: a 1M initial load still puts
 # ~1M rows in memory per file. Measure in Phase 7; cap by rows or collapse in Arrow if it matters.
 MAX_VERSIONS = 1000
+RETENTION = timedelta(days=3)  # plan-v1 A13
 SCHEMA = store.SCHEMA.append(pa.field("op", pa.string(), nullable=False))
 
 
@@ -55,6 +61,21 @@ def files(export_dir: Path) -> list[Path]:
     return sorted(export_dir.glob("*.parquet"))
 
 
+def prune(export_dir: Path, now: datetime, watermark: int) -> int:
+    """Delete the files older than RETENTION that end at or below the watermark; returns how
+    many. One past it is a crash's file that the exporter adopts on its next tick."""
+    cutoff = (now - RETENTION).timestamp()
+    old = []
+    for p in files(export_dir):
+        if not (name := re.fullmatch(r"\d+-(\d+)", p.stem)):
+            continue  # not the exporter's: one stray file must not stop every pass
+        if int(name[1]) <= watermark and p.stat().st_mtime < cutoff:
+            old.append(p)
+    for p in old:
+        p.unlink()
+    return len(old)
+
+
 def tick(
     dt: DeltaTable, export_dir: Path, state_dir: Path, events: EventLog, *, max_versions: int
 ) -> bool:
@@ -67,8 +88,8 @@ def tick(
     # Its event may be lost too, so it is logged again: a repeated event is harmless.
     while written := sorted(export_dir.glob(f"{first:012}-*.parquet")):
         end = int(written[-1].stem.split("-")[1])
-        ops = pq.read_table(written[-1], columns=["op"])["op"].to_pylist()
-        events.emit([_event(first, end, ops, started, head=None) | {"adopted": True}])
+        ops = pq.read_table(written[-1], columns=["op"])["op"]
+        events.emit([_event("export", first, end, ops, started, None) | {"adopted": True}])
         state.save_watermark(state_dir, end, table)
         first = end + 1
     dt.update_incremental()
@@ -76,35 +97,50 @@ def tick(
     last = min(head, first + max_versions - 1)
     if first > last:
         return False
-    feed = delta.plain(
-        pa.table(dt.load_cdf(starting_version=first, ending_version=last).read_all())
-    )
-    rows = collapse(feed.to_pylist())
-    if rows:  # compaction commits carry no feed rows: pass them without an empty file
-        _write(export_dir / f"{first:012}-{last:012}.parquet", rows)
-        events.emit([_event(first, last, [r["op"] for r in rows], started, head)])
+    try:
+        feed = delta.plain(
+            pa.table(dt.load_cdf(starting_version=first, ending_version=last).read_all())
+        )
+    except Exception as e:
+        if not delta.history_gone(e):
+            raise
+        # A gap (A18): export the whole store at head instead. Tombstones are kept forever (A17),
+        # so upserting the live rows and deleting the Tombstones leaves a consumer exactly right.
+        kind, last, out = "gap_recovered", head, _whole(dt)
+    else:
+        kind, out = "export", pa.Table.from_pylist(collapse(feed.to_pylist()), schema=SCHEMA)
+    if out.num_rows:  # compaction commits carry no feed rows: pass them without an empty file
+        _write(export_dir / f"{first:012}-{last:012}.parquet", out)
+        events.emit([_event(kind, first, last, out["op"], started, head)])
     state.save_watermark(state_dir, last, table)
     return last < head
 
 
-def _event(first: int, last: int, ops: list[str], started: float, head: int | None) -> dict:
+def _whole(dt: DeltaTable) -> pa.Table:
+    """Every row of the Listing Store at the loaded version, as export rows, never in Python."""
+    rows = delta.plain(dt.to_pyarrow_dataset().to_table())
+    op = pc.if_else(rows["is_tombstone"], "delete", "upsert")
+    return rows.append_column("op", op).select(SCHEMA.names).cast(SCHEMA)
+
+
+def _event(kind: str, first: int, last: int, ops, started: float, head: int | None) -> dict:
     return {
-        "type": "export",
+        "type": kind,
         "from": first,
         "to": last,
         "rows": len(ops),
-        "deletes": ops.count("delete"),
+        "deletes": pc.sum(pc.equal(ops, "delete")).as_py() or 0,
         "ms": round((time.monotonic() - started) * 1000),
         "head": head,  # None for an adopted file: the head it was cut at is gone
     }
 
 
-def _write(path: Path, rows: list[dict]) -> None:
+def _write(path: Path, rows: pa.Table) -> None:
     """Atomic, as state.save: a kill -9 leaves only a hidden temp file, which files() skips."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        pq.write_table(pa.Table.from_pylist(rows, schema=SCHEMA), tmp)
+        pq.write_table(rows, tmp)
         with open(tmp, "rb") as f:
             os.fsync(f.fileno())
         os.replace(tmp, path)

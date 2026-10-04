@@ -6,13 +6,15 @@ process never appends after the torn last line its predecessor may have left.
 
 import json
 import os
+import shutil
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 _HOUR = "%Y-%m-%dT%H"
+RETENTION = timedelta(days=3)  # plan-v1 A13; the API answers 404 for an id older than this
 
 
 class EventLog:
@@ -40,6 +42,15 @@ class EventLog:
         except OSError:  # e.g. a full disk mid-write: the next emit starts a new file
             self._new_file()
             raise
+
+
+def prune(root: Path, now: datetime) -> int:
+    """Delete the hour directories whose last second is past RETENTION; returns how many."""
+    last = (now - RETENTION - timedelta(hours=1)).astimezone(UTC).strftime(_HOUR)
+    old = [p for p in root.glob("*") if p.is_dir() and p.name <= last]
+    for hour in old:
+        shutil.rmtree(hour)
+    return len(old)
 
 
 def read(root: Path, since: datetime | None = None, submission_id: str | None = None) -> list[dict]:

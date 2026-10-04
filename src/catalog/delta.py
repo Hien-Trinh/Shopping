@@ -8,6 +8,8 @@ import pyarrow as pa
 from deltalake import DeltaTable
 from deltalake.exceptions import TableNotFoundError
 
+LOG_RETENTION_HOURS = 1  # Delta log files kept; maintenance's guard uses the same hour
+
 
 def ensure(path: str, schema: pa.Schema) -> DeltaTable:
     """Open the table, creating it first if it does not exist.
@@ -26,7 +28,13 @@ def ensure(path: str, schema: pa.Schema) -> DeltaTable:
                 path,
                 schema=schema,
                 partition_by=["partition"],
-                configuration={"delta.enableChangeDataFeed": "true"},
+                configuration={
+                    "delta.enableChangeDataFeed": "true",
+                    # Only maintenance removes log files, never past the slowest reader. Delta's
+                    # own cleanup goes by age alone (docs/specs/step-5d.md, decision 4).
+                    "delta.enableExpiredLogCleanup": "false",
+                    "delta.logRetentionDuration": f"interval {LOG_RETENTION_HOURS} hours",
+                },
             )
 
 
@@ -40,3 +48,12 @@ def plain(table: pa.Table) -> pa.Table:
     """Cast string_view columns, which delta-rs returns but Arrow can't yet compare, to string."""
     fields = [f.with_type(pa.string()) if f.type == pa.string_view() else f for f in table.schema]
     return table.cast(pa.schema(fields))
+
+
+def history_gone(error: Exception) -> bool:
+    """A change-feed read failed because cleanup removed history it needs (step-5b.md): a file
+    under `_change_data` deleted, or the commits themselves removed by log cleanup."""
+    # ponytail: matches delta-rs 1.6.6's messages. A changed message crash-loops, never skips
+    # data; the upgrade path is checking the needed log entries and files directly.
+    text = str(error)
+    return "Invalid table version" in text or ("Object at location" in text and "not found" in text)

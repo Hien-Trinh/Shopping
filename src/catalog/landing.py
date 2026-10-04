@@ -14,6 +14,7 @@ from datetime import datetime
 import pyarrow as pa
 import pyarrow.compute as pc
 from deltalake import DeltaTable, write_deltalake
+from deltalake.exceptions import CommitFailedError
 
 from catalog import delta
 from catalog.envelope import Change, Content
@@ -98,7 +99,15 @@ def append(dt: DeltaTable, entries: Sequence[Entry]) -> int:
         }
         for seq, (submission_id, index, c, received_at) in enumerate(entries)
     ]
-    write_deltalake(dt, pa.Table.from_pylist(rows, schema=SCHEMA), mode="append")
+    table = pa.Table.from_pylist(rows, schema=SCHEMA)
+    # Refreshed first: on a snapshot older than retention's DELETE, every append would fail. A
+    # DELETE landing between the refresh and the commit costs one retry.
+    dt.update_incremental()
+    try:
+        write_deltalake(dt, table, mode="append")
+    except CommitFailedError:
+        dt.update_incremental()
+        write_deltalake(dt, table, mode="append")
     return dt.version()
 
 
@@ -203,6 +212,31 @@ def read(
     else:
         done = (last + 1, 0)
     return Batch(changes, {p: max(pos, done) for p, pos in after.items()})
+
+
+REPLAY_ORDER = [
+    ("received_at", "ascending"),
+    ("submission_id", "ascending"),
+    ("change_index", "ascending"),
+]
+
+
+def retained(dt: DeltaTable, p: int) -> list[Landed]:
+    """Every Change of partition `p` in the version `dt` has loaded (the pin), in replay order.
+
+    For a worker whose offset is past what cleanup kept (step-5e.md). It never refreshes `dt`, so
+    the worker's one handle serves as the pin. Compaction drops the commit a row landed in, so each
+    position is `(pin, seq)`, not where the row landed.
+    """
+    # ponytail: replay order matches landing order unless received_at runs backwards across
+    # commits (two requests within a millisecond, or the wall clock stepping back), and it decides
+    # only same-version conflicts; a column written at append time would make it exact.
+    # ponytail: the partition is read and sorted in memory (about 470k rows at 7 days of 50/s);
+    # sort in DuckDB, which spills, if it matters.
+    rows = delta.plain(
+        dt.to_pyarrow_dataset(file_pruning_predicate=f"partition IN ({p})").to_table()
+    ).sort_by(REPLAY_ORDER)
+    return [_landed(r | {"_commit_version": dt.version()}) for r in rows.to_pylist()]
 
 
 def _landed(r: dict) -> Landed:

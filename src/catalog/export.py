@@ -64,9 +64,13 @@ def tick(
     first = state.load_watermark(state_dir, table) + 1
     # A crash between a file and its watermark: adopt the file. Exporting again from the old
     # watermark would write a second file over the same versions, ending at a newer head.
+    # Its event may be lost too, so it is logged again: a repeated event is harmless.
     while written := sorted(export_dir.glob(f"{first:012}-*.parquet")):
-        first = int(written[-1].stem.split("-")[1]) + 1
-        state.save_watermark(state_dir, first - 1, table)
+        end = int(written[-1].stem.split("-")[1])
+        ops = pq.read_table(written[-1], columns=["op"])["op"].to_pylist()
+        events.emit([_event(first, end, ops, started, head=None) | {"adopted": True}])
+        state.save_watermark(state_dir, end, table)
+        first = end + 1
     dt.update_incremental()
     head = dt.version()
     last = min(head, first + max_versions - 1)
@@ -78,31 +82,35 @@ def tick(
     rows = collapse(feed.to_pylist())
     if rows:  # compaction commits carry no feed rows: pass them without an empty file
         _write(export_dir / f"{first:012}-{last:012}.parquet", rows)
-        events.emit(
-            [
-                {
-                    "type": "export",
-                    "from": first,
-                    "to": last,
-                    "rows": len(rows),
-                    "deletes": sum(r["op"] == "delete" for r in rows),
-                    "ms": round((time.monotonic() - started) * 1000),
-                    "head": head,
-                }
-            ]
-        )
+        events.emit([_event(first, last, [r["op"] for r in rows], started, head)])
     state.save_watermark(state_dir, last, table)
     return last < head
 
 
+def _event(first: int, last: int, ops: list[str], started: float, head: int | None) -> dict:
+    return {
+        "type": "export",
+        "from": first,
+        "to": last,
+        "rows": len(ops),
+        "deletes": ops.count("delete"),
+        "ms": round((time.monotonic() - started) * 1000),
+        "head": head,  # None for an adopted file: the head it was cut at is gone
+    }
+
+
 def _write(path: Path, rows: list[dict]) -> None:
-    """Atomic, as state.save: a crash leaves only a hidden temp file, which files() skips."""
+    """Atomic, as state.save: a kill -9 leaves only a hidden temp file, which files() skips."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    pq.write_table(pa.Table.from_pylist(rows, schema=SCHEMA), tmp)
-    with open(tmp, "rb") as f:
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    try:
+        pq.write_table(pa.Table.from_pylist(rows, schema=SCHEMA), tmp)
+        with open(tmp, "rb") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # else every retry on a full disk leaves one more
+        raise
 
 
 def main(argv: Sequence[str] | None = None) -> None:

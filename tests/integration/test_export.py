@@ -94,6 +94,9 @@ def test_compaction_alone_writes_no_file_but_moves_the_watermark(env):
     assert env.tick() is False
     assert env.names() == before
     assert env.watermark() == env.dt.version()
+    assert [e["to"] for e in events.read(env.tmp / "data" / "events") if e["type"] == "export"] == [
+        v
+    ]  # no event for the compaction
     assert env.oracle() == []
 
 
@@ -116,13 +119,32 @@ def test_a_crash_before_the_watermark_adopts_the_file_rather_than_overlap_it(env
     assert env.oracle() == []
 
 
-def test_a_torn_write_leaves_a_temp_file_the_files_skip(env):
+def crash(*_):
+    raise OSError("disk full")
+
+
+def test_a_failed_write_leaves_no_file_and_no_temp_file(env, monkeypatch):
     env.merge(write(A, 1, listing()))
-    env.out.mkdir(parents=True)
-    (env.out / f".{name(0, 1)}.0123.tmp").write_bytes(b"PAR1 torn")
+    monkeypatch.setattr(export.os, "replace", crash)
+    with pytest.raises(OSError, match="disk full"):
+        env.tick()
+    monkeypatch.undo()
+    assert (list(env.out.iterdir()), env.watermark()) == ([], -1)
     env.tick()
     assert env.names() == [name(0, 1)]
-    assert env.oracle() == []
+
+
+def test_an_adopted_file_saves_its_watermark_and_logs_its_export(env, monkeypatch):
+    env.merge(write(A, 1, listing()), write(B, 2))  # one live Listing, one Tombstone
+    monkeypatch.setattr(env.events, "emit", crash)  # the crash: after the file, before the rest
+    with pytest.raises(OSError):
+        env.tick()
+    monkeypatch.undo()
+    assert (env.names(), env.watermark()) == ([name(0, 1)], -1)
+    assert env.tick() is False  # nothing new to export: only the adoption moves the watermark
+    assert env.watermark() == 1
+    found = [e for e in events.read(env.tmp / "data" / "events") if e["type"] == "export"]
+    assert [(e["from"], e["to"], e["rows"], e["deletes"]) for e in found] == [(0, 1, 2, 1)]
 
 
 def test_a_watermark_from_a_recreated_store_is_refused(env):

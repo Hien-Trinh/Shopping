@@ -1,10 +1,10 @@
 # Step 5e: Retention-horizon bootstrap (mini PRD)
 
-Status: approved Oct 3. Confirmed: the horizon file saved by 5d (decision 1), the startup-only check (decision 2), the Landing log as the retained snapshot (decision 3), the replay order (decision 4), one partition at a time (decision 5), and the test points. Plan row: [plan-v1.md, PR steps, 5e](../plan-v1.md), and Phase 5's "Retention horizon (from the Phase 2 review)": "a worker below the horizon bootstraps from the retained snapshot (pinned version, in `seq` order), then follows the change feed". Design: offsets in the [design doc's state section](../design-commerce-ingestion-pipeline.md) (an offset is the next `(commit version, seq)` to read), A3, A6, A9 and A13 in [plan-v1.md](../plan-v1.md), and [ADR-0002](../adr/0002-local-first-delta-no-queue.md) (workers read the Landing log by offset). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 3, then revised the same day to follow 5b: the gap is detected with 5b's `delta.history_gone` at every tick (decision 1, chosen Oct 3). Confirmed: bootstrapping the partitions at the lowest offset version (decision 2), the revised test points, and, unchanged, the Landing log as the retained snapshot (decision 3), the replay order (decision 4), one partition at a time (decision 5). Plan row: [plan-v1.md, PR steps, 5e](../plan-v1.md), and Phase 5's "Retention horizon (from the Phase 2 review)": "a worker below the horizon bootstraps from the retained snapshot (pinned version, in `seq` order), then follows the change feed". Design: offsets in the [design doc's state section](../design-commerce-ingestion-pipeline.md) (an offset is the next `(commit version, seq)` to read), A3, A6, A9 and A13 in [plan-v1.md](../plan-v1.md), and [ADR-0002](../adr/0002-local-first-delta-no-queue.md) (workers read the Landing log by offset). Builds on [step-5b.md](step-5b.md), whose spike and `history_gone` this reuses. Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
-Workers read the Landing log's change feed from their offsets. Once Landing log retention (5d) deletes old rows, compacts and vacuums, the change feed below some version can't be read any more: `load_cdf` from a vacuumed version fails with a generic `Exception` ("Failed to fetch metadata for file …", checked on delta-rs 1.6.6), on every retry. A worker whose offset is below that version crash-loops forever. Two cases reach it:
+Workers read the Landing log's change feed from their offsets. Once Landing log retention (5d) deletes old rows, compacts and vacuums, the change feed below some version can't be read any more, and every retry fails the same way (5b's spike: a bare `Exception` once VACUUM removed a file, a `DeltaError` once log cleanup removed a commit). A worker whose offset is below that horizon crash-loops forever. Two cases reach it:
 
 - a fresh `START` (no offset file, so `(0, 0)`) after retention has vacuumed version 0, for example a new state directory next to an old Landing log;
 - a worker so far behind that retention passed its offset anyway (5d never vacuums past the slowest offset, but its disk guard can).
@@ -13,9 +13,9 @@ Workers read the Landing log's change feed from their offsets. Once Landing log 
 
 ## Solution
 
-1. `state.py`: the Landing log horizon file, `state/landing_horizon.json` (`{table, version}`): "the change feed is readable from `version` on". `load_horizon(state, table)` returns 0 when the file is missing and refuses one saved against another Landing log (`OffsetsMismatch`). `save_horizon` is for 5d, which saves it before vacuum deletes any file.
+1. `delta.py`: `history_gone(error)`, as 5b specifies it. Whichever of 5b and 5e lands first adds it; the other reuses it.
 2. `landing.py`: `retained(dt, version, partition)`: every Change row of one partition in the table as of `version` (what retention kept), in replay order (decision 4).
-3. `worker.py`: at startup, after loading the offsets, every owned partition whose offset version is below the horizon is bootstrapped: pin `P` = the Landing log's current version, re-apply that partition's retained rows through the normal batch path in chunks of `limit`, then save its offset as `(P + 1, 0)`. The poll loop then follows the change feed as usual.
+3. `worker.py`: when a tick's read fails and `history_gone` is true, the next tick bootstraps instead of reading. A bootstrap pins `P` = the Landing log's current version and, for each owned partition at the lowest offset version, re-applies its retained rows through the normal batch path in chunks of `limit`, then saves its offset as `(P + 1, 0)`. The poll loop then follows the change feed as usual.
 
 ## User stories
 
@@ -23,7 +23,7 @@ Workers read the Landing log's change feed from their offsets. Once Landing log 
 2. As the operator, starting with a fresh state directory next to a Landing log that retention has trimmed works: the retained Changes are applied and the worker follows the change feed.
 3. As a Merchant, a Change that was retained but never applied gets applied, with the usual Outcome event, so its Submission completes.
 4. As the operator, Changes that were already applied are not applied twice: the Listing Store is unchanged by them, they cost no classifier calls, and their Submissions keep their Outcomes.
-5. As the operator, I can see each bootstrap in the events (`bootstrap`: worker, partition, old offset, horizon, pinned version, changes, ms).
+5. As the operator, I can see each bootstrap in the events (`bootstrap`: worker, partition, old offset, pinned version, changes, ms), after the `tick_failed` event holding the gap's error.
 6. As the operator, a bootstrap that is killed partway resumes at the next start without redoing the partitions it finished.
 
 ## Failure scenarios
@@ -32,29 +32,29 @@ Each becomes a test or is named out of scope.
 
 | Scenario | Expected |
 |---|---|
-| No horizon file | Horizon 0: no bootstrap, the worker behaves exactly as today |
-| Every owned offset at or above the horizon | No bootstrap, no `bootstrap` event |
-| No offset file (`START`) and horizon > 0 | That partition is bootstrapped; the others are untouched |
-| Offset below the horizon (far behind, disk guard) | That partition is bootstrapped from its retained rows, then its offset is `(P + 1, 0)` |
-| A worker owning partitions both below and above the horizon | Only the ones below are bootstrapped; the others keep their offsets |
+| History intact | No bootstrap: the worker behaves exactly as today |
+| No offset files (`START`) after VACUUM removed version 0's files | The first read fails with gone history (`tick_failed`); the next tick bootstraps every owned partition |
+| An offset older than what log cleanup kept | Same, through the `DeltaError` case of `history_gone` |
+| Offset below the horizon (far behind, disk guard) | The partitions at the lowest offset version are bootstrapped, then their offsets are `(P + 1, 0)` |
+| VACUUM overtakes a worker that is already running | Its next read fails with gone history and it bootstraps at the next tick, without exiting |
+| Owned partitions at different offset versions | Only those at the lowest version are bootstrapped; if the next read still finds a gap, the next lowest are |
 | Retained rows that were already applied | `already_applied` or `stale` Outcomes; Listing Store unchanged; no classifier call for them |
 | Retained rows never applied | `written` Outcomes, classified as usual; the Listing Store then matches the replay oracle over every Change applied so far |
 | Two retained Changes for one key, same source version, different content | The first in replay order wins; the other is `conflict` (A3) |
 | A retained row that can't be stored | `failed` Outcome for it alone, as in a normal batch (3b) |
-| `kill -9` during a bootstrap | Partitions already finished keep `(P + 1, 0)`; the unfinished one still has its old offset and is bootstrapped again at the next start, with a new pin. Re-applying is safe (A3) |
+| `kill -9` during a bootstrap | Finished partitions keep `(P + 1, 0)`; the unfinished one still has its old offset, so it alone is at the lowest version and is bootstrapped after the restart, with a new pin. Re-applying is safe (A3) |
 | SIGTERM during a bootstrap | Stops after the current chunk; the unfinished partition is redone at the next start |
 | A bootstrap longer than the watchdog's 60 s | A heartbeat after every chunk, so the supervisor doesn't kill it |
-| Horizon file saved against another Landing log | `OffsetsMismatch` at startup (exit 4, fatal), as for offsets |
-| Horizon file torn or not JSON | `CorruptState` (exit 5, fatal), as for offsets |
-| Reading the retained rows fails (I/O, a vacuum during the read) | Error out of startup, no offset moves; exit 1, the supervisor restarts it |
-| Disk full writing events or an offset during a bootstrap | As above: exit 1, that partition is redone after the restart |
-| The horizon passes a worker that is already running | Its reads fail; after `ATTEMPTS` failed ticks it exits 1 (A6); the restart bootstraps (decision 2) |
-| Changes retention deleted before any worker applied them | Out of scope: they are gone, and their Submissions stay pending. Only 5d's disk guard can cause it; the `bootstrap` event's old offset and horizon make it visible |
+| Reading the retained rows fails (I/O, a VACUUM during the read) | A failed tick (A6): backoff, no offset moves, the next tick bootstraps again |
+| Disk full writing events or an offset during a bootstrap | As above |
+| `history_gone` true for something that isn't a gap (a false positive) | A bootstrap, which is harmless (A3). If the error keeps coming back, a gap counts as a failed tick and only a successful read resets the count, so the worker exits 1 after `ATTEMPTS` (decision 1) |
+| Any other read error | Unchanged: a failed tick, then exit 1 after `ATTEMPTS` |
+| Changes retention deleted before any worker applied them | Out of scope: they are gone, and their Submissions stay pending. Only 5d's disk guard can cause it; the `bootstrap` event's old offset makes it visible |
 
 ## Implementation decisions
 
-1. **Maintenance publishes the horizon; workers don't infer it.** 5d is the only thing that makes versions unreadable, so it saves `state/landing_horizon.json` before vacuum deletes any file. Alternatives rejected: reading the Delta log to find the oldest readable version (the Landing log commits up to 10 times a second, about 860k commits a day, and a `remove` doesn't say whether vacuum has deleted the file yet), and treating a read error as "below the horizon" (delta-rs raises a generic `Exception`, the same as for a corrupt file, which must crash, not bootstrap). **This adds one duty to 5d:** save the horizon before each vacuum.
-2. **Checked at startup only**, as A18 does for Change Export. A horizon that moves under a running worker costs one crash and restart (about 15 s of backoff plus the restart), and only the disk guard can cause it. A check every tick would read a file 5 times a second for a case that should never happen.
+1. **The gap is detected from the read error with 5b's `delta.history_gone`, at every tick**, not from a horizon file 5d would write. Same reasons as 5b's decision 1: no coupling to 5d, it covers a VACUUM that overtakes a running worker, and both ways it can be wrong are safe (a false positive bootstraps, which re-applies harmlessly; a false negative crash-loops loudly, as today). The gap tick counts as a failed tick (logged as `tick_failed` with the error, with its backoff), and a bootstrap doesn't reset the count; only a successful read does. So an error that `history_gone` matches but a bootstrap can't cure still ends in exit 1 after `ATTEMPTS`.
+2. **A gap bootstraps the owned partitions at the lowest offset version**, the version the failed read started from. delta-rs can't say where history starts, so the worker can't tell which partitions are below it. A worker's partitions usually share one version (every commit moves them all), so this is usually all of them. It also makes a killed bootstrap resume: the partitions it finished are already at `P + 1`. If the next read still finds a gap, the next lowest version is bootstrapped then. Each of those rounds counts as a failed tick, so more than `ATTEMPTS` distinct versions below the horizon would exit 1 and resume after the restart. Accepted: it needs partitions far apart in one worker.
 3. **"The retained snapshot" is the Landing log itself as of a pinned version**, not a Catalog Snapshot (those are copies of the Listing Store). Bootstrapping re-applies every retained row of the partition. Some of them were applied before; A3 makes that safe (`already_applied` or `stale`, and Submission status keeps each Change's best Outcome). This avoids having to know which retained rows the worker already saw, which compaction makes impossible (below).
 4. **Replay order is `(received_at, submission_id, change_index)`**, not landing order. Compaction rewrites rows into new files, so a row's commit version is lost, and `seq` is only the position within one commit. The new order matches landing order except for two requests racing within a millisecond, and order only decides which of two same-version, different-content Changes for one key wins (A3). `ponytail:` comment naming it; if it matters, the Landing log needs a column written at append time.
 5. **One partition at a time, its offset saved when it finishes.** Order only matters per Listing key, and a key lives in one partition, so sorting per partition is enough. It bounds memory to one partition and makes a killed bootstrap resume per partition. Ceiling: at the design's 50 changes/s, 7 days is about 470k rows per partition, read and sorted in memory. `ponytail:` comment; if it matters, sort in DuckDB, which spills, or bootstrap a day at a time.
@@ -65,21 +65,20 @@ Each becomes a test or is named out of scope.
 
 - **Test points (seams), confirmed:**
   1. **`landing.retained`** (new, red first, `tests/integration/test_landing.py`, real Delta in `tmp_path`): returns only that partition's rows, as of the given version, in `(received_at, submission_id, change_index)` order, after a compaction has rewritten the files.
-  2. **`state.load_horizon`** (new, red first, `tests/integration/test_state.py`): missing file is 0; another Landing log's horizon raises `OffsetsMismatch`; a torn file raises `CorruptState`.
-  3. **`worker.run` with an offset below the horizon** (new, red first, `tests/integration/test_worker.py`, real Delta, FakeClassifier): retention simulated by a test helper (delete old rows, compact, vacuum with zero retention, save the horizon). Covered: a partition with no offset file bootstraps and its store rows match the replay oracle; already-applied rows leave the Listing Store unchanged and make no classifier calls; a partition above the horizon keeps its offset; the offset becomes `(P + 1, 0)` and a later append is read from the change feed; the `bootstrap` event; a crash between partitions (an apply that raises on the second partition) leaves the first one's offset saved and the second redone on the next run; `stop` set during a bootstrap ends it without saving the unfinished partition.
-  4. **`worker.process_batch`** (unchanged tests): they must still pass after the apply helper is extracted, which is the characterization check for decision 6.
+  2. **`worker.run` after a real gap** (new, red first, `tests/integration/test_worker.py`, real Delta, FakeClassifier): retention simulated by a test helper (delete old rows, compact, VACUUM with zero retention). Covered: a partition with no offset file bootstraps and its store rows match the replay oracle; already-applied rows leave the Listing Store unchanged and make no classifier calls; a partition at a higher offset version is not bootstrapped; the offset becomes `(P + 1, 0)` and a later append is read from the change feed; the `tick_failed` and `bootstrap` events; a VACUUM between two ticks of a running worker; a crash between partitions (an apply that raises on the second partition) leaves the first one's offset saved and only the second redone; `stop` set during a bootstrap ends it without saving the unfinished partition; a gone-history error that keeps coming back (fault injected by `monkeypatch`, as the worker tests do) exits after `ATTEMPTS`.
+  3. **`worker.process_batch`** (unchanged tests): they must still pass after the apply helper is extracted, which is the characterization check for decision 6.
+  4. **`delta.history_gone`**: through 5b's tests if 5b lands first; otherwise through test point 2's real VACUUM, and 5b adds the log-cleanup case.
 - **No sleeps tuned to the machine.** `run` is driven with `stop` and the FakeClassifier, as in the existing worker tests.
-- **Coverage:** `worker.py`, `landing.py` and `state.py` stay under the 90% package gate.
+- **Coverage:** `worker.py`, `landing.py` and `delta.py` stay under the 90% package gate.
 
 ## Out of scope
 
-- Writing the horizon, retention, compaction and vacuum of the Landing log (5d; decision 1 adds the horizon save to it).
-- Change Export's watermark below the Listing Store's horizon (5b, A18).
+- Landing log retention, compaction and VACUUM (5d).
+- Change Export's own gap (5b, A18).
 - Recovering Changes retention deleted before they were applied: they are gone.
-- Checking the horizon on every tick (decision 2).
 - Exact landing order within a bootstrap (decision 4).
 - Power loss: as everywhere, process crashes only (ADR-0002).
 
 ## Size
 
-About 70 lines of production code (about 45 in `worker.py`, 15 in `landing.py`, 10 in `state.py`) and about 170 of tests, so under 300.
+About 65 lines of production code (about 45 in `worker.py`, 15 in `landing.py`, 5 in `delta.py` if 5b hasn't added it) and about 170 of tests, so under 300.

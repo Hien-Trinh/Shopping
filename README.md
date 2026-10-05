@@ -17,7 +17,7 @@ make check   # ruff + tests + coverage gates, same as CI
 The workers categorize with an embedding shortlist and TypeSafe's paid Jev API (about $62 per 1M Listings).
 
 ```bash
-uv run python -m catalog.classify --download   # once: the embedding model, into models/
+uv run python -m catalog.classify --download   # once: the embedding model and the shortlist vectors (about 2 min), into models/
 export TYPESAFE_API_KEY=...                     # your TypeSafe key; never logged
 uv run python -m catalog.supervisor             # runs the Procfile
 ```

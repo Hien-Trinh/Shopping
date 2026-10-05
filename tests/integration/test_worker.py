@@ -459,12 +459,12 @@ def test_classify_failed_names_the_classifiers_error(env):  # PR #63
     assert failed["error"] == Partial.error
 
 
-def test_the_jev_kind_runs_with_the_pipeline_settings(monkeypatch):  # PR #63
+def test_the_jev_kind_runs_with_the_pipeline_settings(monkeypatch, tmp_path):  # PR #63
     import math
 
     import numpy as np
 
-    from catalog import classify, jev
+    from catalog import classify, jev, taxonomy
 
     got = {}
     monkeypatch.setattr(jev, "http", lambda **kw: got.update(kw) or (lambda body: {}))
@@ -472,11 +472,23 @@ def test_the_jev_kind_runs_with_the_pipeline_settings(monkeypatch):  # PR #63
         classify, "fastembed", lambda models: lambda texts: np.ones((len(texts), 3))
     )
     monkeypatch.setattr(worker, "run", lambda *a, stop: got.update(classifier=a[4]))
-    worker.main(["--index", "0", "--workers", "4", "--classifier", "jev"])
+    tax = taxonomy.load()
+    jev.shortlist(tax, classify.fastembed(None)).save(tmp_path / "texts")  # what --download does
+    worker.main(
+        ["--index", "0", "--workers", "4", "--classifier", "jev", "--models", str(tmp_path)]
+    )
     c = got["classifier"]
     assert got["attempts"] == 1  # no retries in a batch: the Backfill retries
     assert (c.rate, c.budget, c.threshold, c.k, c.description) == (20, 10, 0.40, 50, 200)
     assert (c.shortlist.description, c.shortlist.budget) == (200, math.inf)
+    assert c.texts == "deeper" and c.shortlist.cache == tmp_path / "texts"  # step-6f.md, 6f.3
+    assert len(c.shortlist.texts) > 14_000
+
+    empty = tmp_path / "empty"
+    with pytest.raises(classify.ModelMissing, match="--download"):  # exit 6: FATAL
+        worker.main(
+            ["--index", "0", "--workers", "4", "--classifier", "jev", "--models", str(empty)]
+        )
 
 
 def test_a_worker_behind_reads_again_without_waiting(env, monkeypatch):

@@ -2,7 +2,14 @@ import numpy as np
 import pytest
 from support import listing
 
-from catalog.classify import UNCATEGORIZED, EmbeddingClassifier, ModelMissing, fastembed, texts
+from catalog.classify import (
+    UNCATEGORIZED,
+    EmbeddingClassifier,
+    ModelMissing,
+    cache_key,
+    fastembed,
+    texts,
+)
 from catalog.taxonomy import Taxonomy
 
 TAXONOMY = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
@@ -129,6 +136,7 @@ def test_the_jev_kind_version_needs_no_model_or_key(monkeypatch):  # step-6f.md,
     loaded = jev.JevClassifier(tax, shortlist, lambda body: {})
     assert "jev" in classify.KINDS
     assert classify.taxonomy_version("jev") == loaded.taxonomy_version
+    assert "+bge-small-en-v1.5+deeper+jev-" in loaded.taxonomy_version  # step-6f.md, 6f.3
 
 
 # --- step-6e.md, 6e.1 ----------------------------------------------------------------------
@@ -255,3 +263,86 @@ def test_negative_best_scores_still_rank():
 def test_texts_must_name_taxonomy_paths_and_cover_them_all(pairs, message):
     with pytest.raises(ValueError, match=message):
         classifier(texts=pairs)
+
+
+# --- step-6f.md, 6f.3: the text-vector cache ------------------------------------------------
+
+
+class Recording:
+    """`embed` that records every call's texts."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, texts):
+        self.calls.append(list(texts))
+        return embed(texts)
+
+
+def test_a_cached_classifier_answers_alike_without_embedding_the_texts(tmp_path):
+    items = [listing(t) for t in ("Shirt", "Ball", "Jacket")]
+    classifier().save(tmp_path)
+    rec = Recording()
+    cached = EmbeddingClassifier(TAXONOMY, rec, threshold=0.5, cache=tmp_path)
+    assert rec.calls == [["probe"]]  # only the width check
+    assert cached.classify(items) == classifier().classify(items)
+
+
+def test_a_missing_corrupt_or_misshapen_cache_is_model_missing(tmp_path):
+    with pytest.raises(ModelMissing, match="--download"):
+        classifier(cache=tmp_path)
+    path = tmp_path / f"{cache_key(classifier().model, [(p, p) for p in TAXONOMY.paths])}.npy"
+    path.write_bytes(b"not numpy")
+    with pytest.raises(ModelMissing):
+        classifier(cache=tmp_path)
+    for shape in [(2, 3), (3, 4)]:  # a row per text, the model's width
+        np.save(path, np.ones(shape))
+        with pytest.raises(ModelMissing):
+            classifier(cache=tmp_path)
+
+
+def test_any_text_change_changes_the_key():
+    pairs = [(p, p) for p in TAXONOMY.paths]
+    assert cache_key("m", pairs) != cache_key("m", [("Toy", "Toys"), *pairs[1:]])
+    assert cache_key("m", pairs) != cache_key("n", pairs)
+
+
+def test_a_failed_save_leaves_no_file(tmp_path, monkeypatch):
+    from catalog import classify
+
+    def fail(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(classify.os, "replace", fail)
+    with pytest.raises(OSError):
+        classifier().save(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+# --- review fixes (PR #71) -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"", np.full((3, 3), np.nan), np.ones((3, 3), dtype=np.int8)],
+    ids=["empty", "nan", "integers"],
+)
+def test_an_empty_or_unusable_cache_is_model_missing_naming_the_cause(tmp_path, content):
+    path = tmp_path / f"{cache_key(classifier().model, [(p, p) for p in TAXONOMY.paths])}.npy"
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+    else:
+        np.save(path, content)
+    with pytest.raises(ModelMissing, match="--download") as e:
+        classifier(cache=tmp_path)
+    assert str(path) in str(e.value)
+
+
+def test_download_builds_the_cache_the_worker_loads(tmp_path, monkeypatch):
+    from catalog import classify, jev, taxonomy
+
+    fake = lambda texts: np.ones((len(texts), 3))  # noqa: E731
+    monkeypatch.setattr(classify, "fastembed", lambda models, download=False: fake)
+    classify.main(["--download", "--models", str(tmp_path)])
+    loaded = jev.shortlist(taxonomy.load(), fake, tmp_path / "texts")  # what the worker does
+    assert loaded._paths.shape == (len(loaded.texts), 3)

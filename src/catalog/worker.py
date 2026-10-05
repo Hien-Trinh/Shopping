@@ -8,7 +8,6 @@ history they still needed (step-5e.md); `python -m catalog.worker` starts it.
 
 import argparse
 import contextlib
-import math
 import os
 import signal
 import sys
@@ -326,9 +325,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if a.classifier == "jev":
         call = jev.http(attempts=1)  # first: a missing key stops it before the model loads
         tax = taxonomy.load()
-        shortlist = classify.EmbeddingClassifier(
-            tax, classify.fastembed(a.models), description=jev.DESCRIPTION, budget=math.inf
-        )  # JevClassifier owns the budget
+        shortlist = jev.shortlist(tax, classify.fastembed(a.models), a.models / "texts")
         # ponytail: a static share of Jev's limit; an idle worker's share goes unused
         classifier = jev.JevClassifier(tax, shortlist, call, rate=jev.LIMIT / a.workers)
     elif a.classifier == "embedding":

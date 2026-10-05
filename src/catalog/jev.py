@@ -30,6 +30,7 @@ LIMIT = 80  # Jev's requests per second for this key
 SHORTLIST = 50
 DESCRIPTION = 200
 THRESHOLD = 0.40
+TEXTS = "deeper"  # the shortlist's Category text (step-6h.md; step-6f.md, 6f.3)
 BUDGET = 10.0  # seconds per batch: one call takes about 250 ms (step-6f.md, decision 1)
 
 
@@ -53,6 +54,7 @@ class JevClassifier:
     k: int = SHORTLIST
     description: int = DESCRIPTION
     threshold: float = THRESHOLD  # 0 keeps every answer raw, an unknown key too (the eval)
+    texts: str = TEXTS  # the recipe `shortlist` was built with: in the version
     budget: float = BUDGET
     rate: float = LIMIT  # calls started per second; workers split LIMIT between them
     threads: int = 0  # 0: enough for `rate` calls of up to 500 ms each
@@ -65,7 +67,12 @@ class JevClassifier:
 
     def __post_init__(self):
         self.taxonomy_version = version(
-            self.taxonomy.version, self.shortlist.model, self.k, self.description, self.threshold
+            self.taxonomy.version,
+            self.shortlist.model,
+            self.k,
+            self.description,
+            self.threshold,
+            self.texts,
         )
         self.pool = self.pool or ThreadPoolExecutor(self.threads or math.ceil(self.rate / 2))
         self._next = -math.inf  # when the next call may start
@@ -140,10 +147,20 @@ def version(
     k: int = SHORTLIST,
     description: int = DESCRIPTION,
     threshold: float = THRESHOLD,
+    texts: str = TEXTS,
 ) -> str:
     """Every setting that changes an answer, so changing one reclassifies (step-6e.md, 6)."""
     embedding = classify._version(taxonomy_version, model)
-    return f"{embedding}+{MODEL}+k{k}+d{description}+t{threshold:.2f}"
+    return f"{embedding}+{texts}+{MODEL}+k{k}+d{description}+t{threshold:.2f}"
+
+
+def shortlist(tax: taxonomy.Taxonomy, embed, cache=None) -> classify.EmbeddingClassifier:
+    """The pipeline's shortlist: TEXTS over `tax`, vectors from `cache` (the worker) or embedded
+    now (`--download`, which then saves them). JevClassifier owns the budget."""
+    pairs = classify.texts(tax, TEXTS, taxonomy.load_deeper(tax))
+    return classify.EmbeddingClassifier(
+        tax, embed, description=DESCRIPTION, budget=math.inf, texts=pairs, cache=cache
+    )
 
 
 def http(*, urlopen=_urlopen, sleep=time.sleep, attempts: int = 5) -> Callable[[dict], dict]:

@@ -77,10 +77,8 @@ class Recording:
 
     taxonomy_version = "rec-1"
 
-    def __init__(self, answers, clock, usd=None):
+    def __init__(self, answers, clock):
         self.answers, self.clock, self.calls = list(answers), clock, []
-        if usd is not None:
-            self.usd = usd
 
     def classify(self, listings):
         self.calls.append([x.title for x in listings])
@@ -271,12 +269,6 @@ def test_a_classifier_error_names_the_batch():
     assert any("id '0'" in note for note in e.value.__notes__)
 
 
-def test_a_paid_candidate_reports_its_spend():
-    clock = Clock()
-    rec = Recording([(TOYS, 0.9)], clock, usd=0.25)
-    assert evaluate.run(rec, labeled(TOYS), taxonomy.load(), batch=1, clock=clock)["usd"] == 0.25
-
-
 def test_the_embedding_candidate_runs_at_threshold_0_without_a_budget(monkeypatch):
     monkeypatch.setattr(
         evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
@@ -457,7 +449,7 @@ def test_sample_reports_each_categorys_yield_on_stderr(tmp_path, capsys):
 def test_run_passes_the_description_length_and_records_it(tmp_path, monkeypatch):
     seen = {}
 
-    def candidate(kind, models, *, description):
+    def candidate(kind, models, *, description, shortlist):
         seen["description"] = description
         return FakeClassifier()
 
@@ -497,3 +489,57 @@ def test_the_laya_candidates_run_without_a_threshold(monkeypatch):
     assert shortlist.mode == "shortlist" and shortlist.description == 200
     assert shortlist.shortlist.threshold == 0.0 and shortlist.shortlist.budget == math.inf
     assert shortlist.shortlist.description == 200
+
+
+def test_the_jev_candidate_shortlists_with_the_embedding(monkeypatch):
+    from catalog import jev
+
+    monkeypatch.setattr(
+        evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
+    )
+
+    def call(body):
+        return {}
+
+    monkeypatch.setattr(jev, "http", lambda: call)
+    got = evaluate.candidate("jev-shortlist", None, description=200)
+    assert got.call is call and isinstance(got.shortlist, evaluate.classify.EmbeddingClassifier)
+    assert got.description == 200 and got.shortlist.description == 200
+    assert got.shortlist.threshold == 0.0 and got.shortlist.budget == math.inf
+
+
+def test_shortlist_sets_the_jev_and_laya_shortlist_length(monkeypatch):
+    from catalog import jev, laya
+
+    monkeypatch.setattr(
+        evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
+    )
+    monkeypatch.setattr(jev, "http", lambda: lambda body: {})
+    monkeypatch.setattr(laya, "mlx", lambda models: lambda text, options: [1.0] * len(options))
+    assert evaluate.candidate("jev-shortlist", None, shortlist=50).k == 50
+    assert evaluate.candidate("laya-shortlist", None, shortlist=50).k == 50
+    assert evaluate.candidate("jev-shortlist", None).k == 10
+
+
+def test_run_passes_the_shortlist_and_records_it(tmp_path, monkeypatch):
+    seen = {}
+
+    def candidate(kind, models, *, description, shortlist):
+        seen["shortlist"] = shortlist
+        return FakeClassifier()
+
+    monkeypatch.setattr(evaluate, "candidate", candidate)
+    path, results = write(tmp_path, row("a")), tmp_path / "results"
+    evaluate.main(
+        ["run", "--classifier", "fake", "--labels", str(path), "--results", str(results)]
+        + ["--shortlist", "50"]
+    )
+    assert seen == {"shortlist": 50}
+    assert json.loads((results / "fake.json").read_text())["shortlist"] == 50
+
+
+@pytest.mark.parametrize("n", ["0", "256"])
+def test_a_shortlist_outside_1_to_255_is_a_usage_error(n):
+    with pytest.raises(SystemExit) as e:
+        evaluate.main(["run", "--classifier", "fake", "--shortlist", n])
+    assert e.value.code == 2

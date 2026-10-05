@@ -68,7 +68,7 @@ CATEGORIES = [  # Amazon Reviews '23's category files, less Unknown
     "Toys_and_Games",
     "Video_Games",
 ]
-CANDIDATES = (*classify.KINDS, "laya-hierarchical", "laya-shortlist")
+CANDIDATES = (*classify.KINDS, "laya-hierarchical", "laya-shortlist", "jev-shortlist")
 THRESHOLDS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 .. 0.90
 
 
@@ -180,6 +180,7 @@ def run(
     """Classify every Listing `batch` at a time after one untimed warm-up call (lazy loads)."""
     paths = set(tax.paths) | {classify.UNCATEGORIZED}
     classifier.classify([labeled[0].listing])
+    warm_up_usd = float(getattr(classifier, "usd", 0.0))  # not the run's: usd_per_m divides by n
     answers, seconds = [], []
     for i in range(0, len(labeled), batch):
         chunk = labeled[i : i + batch]
@@ -210,7 +211,7 @@ def run(
         "batch": batch,
         "answers": answers,
         "seconds": seconds,
-        "usd": float(getattr(classifier, "usd", 0.0)),
+        "usd": float(getattr(classifier, "usd", 0.0)) - warm_up_usd,
         "rss_mb": rss / (2**20 if sys.platform == "darwin" else 2**10),
         "date": datetime.now(UTC).date().isoformat(),
         "machine": f"{platform.platform()}, {os.cpu_count()} CPUs",
@@ -331,23 +332,31 @@ def _result(path: Path) -> dict:
     return r
 
 
-def candidate(kind: str, models: Path, *, description: int = classify.DESCRIPTION):
+def candidate(
+    kind: str, models: Path, *, description: int = classify.DESCRIPTION, shortlist: int = 10
+):
     """The classifier at threshold 0 with no budget: every Listing gets its best path and raw
     confidence, and `score` applies thresholds afterwards (decision 2)."""
     if kind == "fake":
         return classify.FakeClassifier()
     tax = taxonomy.load()
     embedding = None
-    if kind in ("embedding", "laya-shortlist"):
+    if kind in ("embedding", "laya-shortlist", "jev-shortlist"):
         embedding = classify.EmbeddingClassifier(
             tax, classify.fastembed(models), threshold=0.0, budget=math.inf, description=description
         )
     if kind == "embedding":
         return embedding
+    if kind == "jev-shortlist":
+        from catalog import jev
+
+        return jev.JevClassifier(tax, embedding, jev.http(), shortlist, description)
     from catalog import laya  # here: it loads laya_mlx, an optional Apple Silicon only group
 
     mode = kind.removeprefix("laya-")
-    return laya.LayaClassifier(tax, laya.mlx(models), mode, embedding, description=description)
+    return laya.LayaClassifier(
+        tax, laya.mlx(models), mode, embedding, shortlist, description=description
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -361,6 +370,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     r.add_argument("--results", type=Path, default=RESULTS)
     r.add_argument("--models", type=Path, default=classify.MODELS)
     r.add_argument("--description", type=int, default=classify.DESCRIPTION)
+    r.add_argument("--shortlist", type=int, default=10)  # paths a Laya or Jev choice sees
     s = sub.add_parser("sample")
     s.add_argument("--source", default=AMAZON)
     s.add_argument("--categories", nargs="+", default=CATEGORIES)
@@ -376,12 +386,17 @@ def main(argv: Sequence[str] | None = None) -> None:
             args.error("--batch must be at least 1")
         if a.description < 0:
             args.error("--description must be at least 0")
+        if not 1 <= a.shortlist <= 255:  # Jev takes at most 255 options per Choice
+            args.error("--shortlist must be 1 to 255")
         tax = taxonomy.load()
         labeled, sha = load_labels(a.labels, tax)
-        classifier = candidate(a.classifier, a.models, description=a.description)
+        classifier = candidate(
+            a.classifier, a.models, description=a.description, shortlist=a.shortlist
+        )
         result = run(classifier, labeled, tax, batch=a.batch)
         name = a.name or a.classifier
         result |= {"name": name, "labels_sha256": sha, "description": a.description}
+        result["shortlist"] = a.shortlist
         state.save(a.results / f"{name}.json", result)  # whole or not at all
     elif a.command == "sample":  # printed only once every category is read: no half sample
         if a.per_category < 1:

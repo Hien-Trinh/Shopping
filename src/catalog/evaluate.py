@@ -2,7 +2,8 @@
 
 `python -m catalog.evaluate run --classifier embedding` writes one candidate's answers and timings
 to `eval/results/<name>.json`, one candidate per process so peak RSS is its own;
-`python -m catalog.evaluate report` turns every result there into `eval/report.md`.
+`python -m catalog.evaluate report` turns every result there into `eval/report.md`;
+`python -m catalog.evaluate recall` measures the embedding shortlist (`eval/recall.md`, step-6g.md).
 """
 
 import argparse
@@ -29,6 +30,7 @@ from catalog.envelope import Content
 LABELS = Path("eval/labels.jsonl")
 RESULTS = Path("eval/results")
 REPORT = Path("eval/report.md")
+RECALL = Path("eval/recall.md")
 AMAZON = (
     "https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main"
     "/raw/meta_categories"
@@ -243,6 +245,86 @@ def score(result: dict, thresholds: Sequence[float]) -> dict[float, dict]:
     return out
 
 
+_DEPTHS = {"exact": None, "level2": 2, "level1": 1}
+
+
+def _at(path: str, n: int | None) -> str | list[str]:
+    return path if n is None else _levels(path, n)
+
+
+def recall(
+    shortlists: Sequence[Sequence[str]], labels: Sequence[str], ks: Sequence[int]
+) -> dict[int, dict[str, float]]:
+    """Per k: the share of Listings whose label is among their first k paths, exactly or by its
+    first two levels or top level (step-6g.md)."""
+    out = {}
+    for k in ks:
+        out[k] = {}
+        for depth, n in _DEPTHS.items():
+            hits = sum(
+                any(_at(p, n) == _at(label, n) for p in shortlist[:k])
+                for shortlist, label in zip(shortlists, labels, strict=True)
+            )
+            out[k][depth] = hits / len(labels)
+    return out
+
+
+def misses(result: dict, shortlists: dict[str, Sequence[str]], sha: str, description: int) -> dict:
+    """A result's wrong answers at threshold 0, split by whether the label was in the shortlist
+    it chose from (the chooser's error) or not (a retrieval miss)."""
+    name = result["name"]
+    if result["labels_sha256"] != sha:
+        raise ValueError(f"{name}: scored on another label set")
+    if result.get("description") != description:
+        raise ValueError(
+            f"{name}: its shortlist read {result.get('description')} description characters, "
+            f"not {description}"
+        )
+    k = result.get("shortlist")
+    if k is None:
+        raise ValueError(f"{name}: no shortlist to split on")
+    wrong = [a for a in result["answers"] if a["category"] != a["label"]]
+    for a in result["answers"]:
+        if a["id"] not in shortlists:
+            raise ValueError(f"{name}: no labelled Listing {a['id']!r}")
+    chooser = sum(a["label"] in shortlists[a["id"]][:k] for a in wrong)
+    return {"k": k, "wrong": len(wrong), "chooser": chooser, "retrieval": len(wrong) - chooser}
+
+
+def render_recall(
+    table: dict[int, dict[str, float]], splits: Sequence[tuple[str, dict]], heading: str
+) -> str:
+    """eval/recall.md: recall by k and depth, then each split result's wrong answers by cause."""
+    lines = [
+        "# Shortlist recall",
+        "",
+        heading,
+        "",
+        "## Label in the top k",
+        "",
+        "| k | Exact | L2 | L1 |",
+        "|---|---|---|---|",
+    ]
+    lines += [
+        f"| {k} | {_pct(r['exact'])} | {_pct(r['level2'])} | {_pct(r['level1'])} |"
+        for k, r in table.items()
+    ]
+    if splits:
+        lines += [
+            "",
+            "## Wrong answers by cause (threshold 0)",
+            "",
+            "| Candidate | Shortlist | Wrong | Label in shortlist (chooser) "
+            "| Label not in shortlist (retrieval) |",
+            "|---|---|---|---|---|",
+        ]
+        lines += [
+            f"| {name} | {m['k']} | {m['wrong']} | {m['chooser']} | {m['retrieval']} |"
+            for name, m in splits
+        ]
+    return "\n".join(lines) + "\n"
+
+
 def summary(result: dict) -> dict:
     ms, n = sorted(s * 1000 for s in result["seconds"]), len(result["answers"])
 
@@ -380,6 +462,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     p.add_argument("--results", type=Path, default=RESULTS)
     p.add_argument("--out", type=Path, default=REPORT)
     p.add_argument("--threshold", type=float, default=classify.THRESHOLD)
+    c = sub.add_parser("recall")
+    c.add_argument("--labels", type=Path, default=LABELS)
+    c.add_argument("--models", type=Path, default=classify.MODELS)
+    c.add_argument("--description", type=int, default=classify.DESCRIPTION)
+    c.add_argument("--ks", type=int, nargs="+", default=[1, 5, 10, 20, 50, 100, 200])
+    c.add_argument("--split", type=Path, action="append", default=[])  # results to split
+    c.add_argument("--out", type=Path, default=RECALL)
     a = args.parse_args(argv)
     if a.command == "run":
         if a.batch < 1:
@@ -405,14 +494,36 @@ def main(argv: Sequence[str] | None = None) -> None:
         sys.stdout.write("".join(json.dumps(x) + "\n" for x in items))
         drawn = [x["amazon_category"] for x in items]  # a short category shows here
         print(", ".join(f"{c} {drawn.count(c)}" for c in a.categories), file=sys.stderr)
+    elif a.command == "recall":
+        tax = taxonomy.load()
+        ks = sorted(set(a.ks))
+        if not 1 <= ks[0] <= ks[-1] <= len(tax.paths):
+            args.error(f"--ks must be 1 to {len(tax.paths)}")
+        labeled, sha = load_labels(a.labels, tax)
+        splits = [_result(f) for f in a.split]  # a bad file fails before the model loads
+        embedding = candidate("embedding", a.models, description=a.description)
+        shortlists = embedding.top([x.listing for x in labeled], ks[-1])
+        table = recall(shortlists, [x.category for x in labeled], ks)
+        by_id = {x.id: s for x, s in zip(labeled, shortlists, strict=True)}
+        split = [(r["name"], misses(r, by_id, sha, a.description)) for r in splits]
+        heading = (
+            f"Generated by `python -m catalog.evaluate recall`. Labels `{sha[:12]}`, "
+            f"{len(labeled)} Listings, {embedding.taxonomy_version}, "
+            f"{a.description} description characters."
+        )
+        _write(a.out, render_recall(table, split, heading))
     else:
         results = [_result(f) for f in sorted(a.results.glob("*.json"))]
         if not results:
             args.error(f"no results in {a.results}")
-        a.out.parent.mkdir(parents=True, exist_ok=True)
-        tmp = a.out.with_name(f".{a.out.name}.tmp")
-        tmp.write_text(render(results, a.threshold))
-        os.replace(tmp, a.out)  # a killed report leaves the old one
+        _write(a.out, render(results, a.threshold))
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)  # a killed run leaves the old file
 
 
 if __name__ == "__main__":

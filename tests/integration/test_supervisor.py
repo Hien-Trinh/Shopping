@@ -58,8 +58,8 @@ def test_parse_procfile():
         (None, 1000, 0, None, False, None),  # a process that doesn't beat is never stale
         (1, 5, 0, 1, True, "exit"),  # gave up: a restart may help
         (-9, 5, 0, 1, True, "exit"),  # killed by a signal
-        (7, 5, 0, 1, True, "exit"),  # not one of a worker's fatal codes
-        *[(code, 5, 0, 1, True, "fatal") for code in (2, 3, 4, 5)],
+        (8, 5, 0, 1, True, "exit"),  # not one of a worker's fatal codes
+        *[(code, 5, 0, 1, True, "fatal") for code in (2, 3, 4, 5, 6, 7)],
         (3, 5, 0, None, False, "exit"),  # another process's code 3 means something else
     ],
 )

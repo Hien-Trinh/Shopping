@@ -216,7 +216,7 @@ src/catalog/
   collapse.py     change-feed rows → latest row per key, tombstone → delete            [pure]
   classify.py     Classifier protocol, threshold, EmbeddingClassifier, FakeClassifier
   laya.py         LayaClassifier for the eval (hierarchical or shortlist), laya-mlx chooser
-  jev.py          JevClassifier for the eval (embedding shortlist, then Jev), TypeSafe HTTP call
+  jev.py          JevClassifier (embedding shortlist, then Jev): the workers' `--classifier jev` and an eval candidate; TypeSafe HTTP call
   evaluate.py     the classifier eval: labeled set, sample, run, score, report
   taxonomy.py     load Shopify taxonomy, trim to depth 3, version string
   merchants.py    SQLite registry, key issue/verify, CLI

@@ -442,7 +442,10 @@ def candidate(
     if kind == "jev-shortlist":
         from catalog import jev
 
-        return jev.JevClassifier(tax, embedding, jev.http(), shortlist, description)
+        return jev.JevClassifier(
+            tax, embedding, jev.http(), shortlist, description,
+            threshold=0, budget=math.inf, rate=math.inf, threads=1,  # one call at a time
+        )  # fmt: skip
     from catalog import laya  # here: it loads laya_mlx, an optional Apple Silicon only group
 
     mode = kind.removeprefix("laya-")

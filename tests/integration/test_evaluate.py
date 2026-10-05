@@ -506,6 +506,8 @@ def test_the_jev_candidate_shortlists_with_the_embedding(monkeypatch):
     assert got.call is call and isinstance(got.shortlist, evaluate.classify.EmbeddingClassifier)
     assert got.description == 200 and got.shortlist.description == 200
     assert got.shortlist.threshold == 0.0 and got.shortlist.budget == math.inf
+    assert (got.threshold, got.budget, got.rate) == (0, math.inf, math.inf)  # raw, unpaced
+    assert got.pool._max_workers == 1  # one call at a time: latency per Listing
 
 
 def test_shortlist_sets_the_jev_and_laya_shortlist_length(monkeypatch):

@@ -179,13 +179,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--db", type=Path, default=merchants.DB)
     args.add_argument("--port", type=int, default=8000)
+    args.add_argument("--min-free", type=int, default=MIN_FREE, help="bytes; 0 turns the guard off")
     a = args.parse_args(argv)
     try:
         supervisor = worker.supervisor_pid()
     except ValueError as e:
         args.error(str(e))  # exit 2, as for a worker
     try:
-        app = create_app(a.data, a.db)
+        app = create_app(a.data, a.db, min_free=a.min_free)
     except sqlite3.Error as e:
         args.error(f"no usable merchant registry at {a.db} ({e}): run catalog.merchants create")
     # Never wider than localhost: there is no TLS and no rate limit yet (plan-v1, section C).

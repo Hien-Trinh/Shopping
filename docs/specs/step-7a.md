@@ -25,7 +25,7 @@ Both give the same answers. 0.40 s is a third of the review's guess, and it isn'
 ## Solution
 
 1. **`python -m catalog.load`**, a new module. It posts generated Changes to a running API and prints one JSON summary line.
-   - Flags: `--url` (default `http://127.0.0.1:8000`), `--rate` (Changes/s, 0 = as fast as the API answers), `--changes` (total), `--batch` (Changes per request, up to 10,000), `--keys` (the key space), `--order {random,sequential}`, `--processes` (default 4), `--seed`.
+   - Flags: `--url` (default `http://127.0.0.1:8000`, http or https only), `--rate` (Changes/s, 0 = as fast as the API answers), `--changes` (total), `--batch` (Changes per request, up to 10,000), `--keys` (the key space), `--order {random,sequential}`, `--processes` (default 16; 4 at approval, see Outcome), `--seed`, and `--currency` (default USD, the Merchant's; added in the PR).
    - The Merchant's key comes from `CATALOG_API_KEY`, never a flag (a flag shows in `ps`), and is never printed.
    - The three Phase 7 load shapes are flag sets, not code:
      - steady: `--rate 50 --changes 30000 --batch 1`
@@ -52,15 +52,17 @@ Both give the same answers. 0.40 s is a third of the review's guess, and it isn'
 |---|---|
 | `CATALOG_API_KEY` unset | Exit 2 naming the variable, before any process starts |
 | A wrong or revoked key (401) | That process stops after its first 401; the run exits 1 and the summary counts the 401s. The key is in no output |
-| The API isn't up (connection refused), or goes down mid-run | Counted as connection errors; sending goes on (the supervisor may restart it). Exit 1 if no request got a 202 |
+| The API isn't up (connection refused), or goes down mid-run | Counted as connection errors; sending goes on (the supervisor may restart it). Exit 1 |
 | The API refuses for low disk (503) | Counted by status; sending goes on |
 | A request times out (30 s) | Counted as an error; not retried, since a retry is a duplicate (7b's scenario, on purpose) |
 | The API answers slower than the rate | Sends fall behind; achieved rate and lateness show it. No error |
 | Ctrl-C | Every process stops after its request in flight; the summary covers what was sent; exit 130 |
-| A child process crashes | The parent reports which, prints the summary of the others, exits 1 |
+| A child process crashes, or is killed | The parent reports which, prints the summary of the others (with `failed_processes`), exits 1. Never a hang (fixed in review: `multiprocessing.Pool` waited forever on a killed child) |
+| Any Change not accepted (5xx, connection errors, a rejected currency) | Exit 1: a run exits 0 only if every Change got accepted (tightened in review) |
+| Fewer batches than `--processes` | Only as many processes as batches, so no share of the rate is lost |
 | A 10k batch with 500-character descriptions | About 8 MB, under the 32 MB cap |
 | 1M Changes at under 1,000/s | `source_version` runs up to 1M ms (17 min) ahead of the clock, inside A14's 24 h slack. Over about 86M Changes it wouldn't be: `--changes` is capped at 10M |
-| Two generators at once, or a rerun | Both post as one Merchant; the later `start_ms` makes the later run's versions newer. Overlapping in time, some Changes go stale, which the oracles handle |
+| Two generators at once, or a rerun | Both post as one Merchant. A later run's versions are newer only once it starts after the earlier run's last version (`start_ms + changes` ms; 17 min after a 1M run). Sooner, Changes to shared keys go stale, which the oracles handle (corrected in review) |
 | The e2e test's API on a full disk | `--min-free 0`: the guard never refuses; a write that truly fails is a 500, as today |
 
 ## Implementation decisions
@@ -99,6 +101,18 @@ Both give the same answers. 0.40 s is a third of the review's guess, and it isn'
 
 1. **Keep `np.maximum.at`** (solution 6), given 0.08 s per batch today? `reduceat` is about 5 lines and 20× faster. I'd switch only when something shortlists whole batches. **Yes: keep it.**
 2. **The hand run uses the `fake` classifier**, so it costs nothing. A `jev` run at 50/s for 60 s would be about 3,000 calls, about $0.19. Want one too, or leave paid runs to 7d? **`fake` only.**
+
+## Outcome (Oct 5)
+
+The hand run, on the `fake` classifier, with 4 workers on this Mac:
+
+| Run | Sent | Got 202 | Changes/s | POST p50 / p99 / max |
+|---|---|---|---|---|
+| Steady, 4 processes | 3,000 | 3,000 | 25.8 | 156 / 233 / 1,327 ms |
+| Steady, 16 processes | 3,000 | 3,000 | 49.7 | 156 / 298 / 343 ms |
+| Bulk, one 10k batch | 10,000 | 10,000 | n/a | 372 ms |
+
+All 16,000 Changes got an Outcome, all `written`. A batch-1 POST waits for the group commit (about 156 ms), so the open loop's ceiling of `processes / latency` held 4 processes to 25/s. `--processes` now defaults to 16. The first steady run took 17 minutes of wall time for 116 s of monotonic time: the Mac slept during it, and `time.monotonic` stops while it sleeps. Run long loads under `caffeinate -i`.
 
 ## Out of scope
 

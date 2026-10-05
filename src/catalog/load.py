@@ -198,7 +198,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.error(f"--changes must be 1 to {MAX_CHANGES}")
     if not 1 <= a.batch <= envelope.MAX_BATCH:
         args.error(f"--batch must be 1 to {envelope.MAX_BATCH}")
-    if a.keys < 1 or a.processes < 1 or a.rate < 0:
+    if a.keys < 1 or a.processes < 1 or not 0 <= a.rate < math.inf:  # nan fails too
         args.error("--keys and --processes must be at least 1, and --rate at least 0")
     if not 0 <= a.deletes <= 1:
         args.error("--deletes must be 0 to 1")

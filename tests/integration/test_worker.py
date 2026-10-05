@@ -884,3 +884,11 @@ def test_a_bootstrap_applies_in_chunks_and_beats_after_each(env, monkeypatch):
     assert stored(env, A).source_version == 3
     assert env.outcomes() == {0: "written", 1: "written", 2: "written"}
     assert ops[:7] == ["beat", 1, "beat", 1, "beat", 1, "beat"]  # startup, then each chunk's
+
+
+def test_the_down_classifier_fails_every_call(monkeypatch):
+    got = {}
+    monkeypatch.setattr(worker, "run", lambda *a, stop: got.update(classifier=a[4]))
+    worker.main(["--index", "0", "--workers", "4", "--classifier", "down"])
+    with pytest.raises(RuntimeError, match="unavailable"):  # the chaos runner's outage
+        got["classifier"].classify([listing()])

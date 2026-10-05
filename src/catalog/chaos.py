@@ -8,6 +8,7 @@ only if every oracle holds.
 import argparse
 import contextlib
 import json
+import math
 import os
 import random
 import re
@@ -133,7 +134,7 @@ class System:
 
     def __init__(self, root: Path):
         self.root, self.data = root, root / "data"
-        self.port, self.supervisor, self.restarts = _free_port(), None, 0
+        self.port, self.supervisor, self.restarts, self.loads = _free_port(), None, 0, []
         (root / "data").mkdir(parents=True, exist_ok=True)
         _, self.key = merchants.create(root / merchants.DB, "USD")
         self.url = f"http://127.0.0.1:{self.port}"
@@ -145,7 +146,7 @@ class System:
         # go to stderr, so stdout holds only the summary.
         self.supervisor = subprocess.Popen(argv, cwd=self.root, start_new_session=True,
                                            stdout=2)  # fmt: skip
-        self.wait(self.serving, 60, "the API never served")
+        wait(self.serving, 60, "the API never served")
 
     def restart(self, **options) -> None:
         """Stop, as an operator does, and start with another Procfile (rescale, a flag)."""
@@ -155,16 +156,20 @@ class System:
 
     def stop(self) -> None:
         self.supervisor.send_signal(signal.SIGTERM)
-        if (code := self.supervisor.wait(timeout=60)) != 0:
+        try:
+            code = self.supervisor.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            raise Failed("the supervisor took over 60 s to stop") from None
+        if code != 0:
             raise Failed(f"the supervisor stopped with exit {code}")
 
     def kill(self) -> None:
         """kill -9 the supervisor, reap it (an unreaped pid looks alive, 3e), and wait for what
         it ran to stop by itself, so their locks and the port are free."""
-        old = self.pids()
+        old = [pid for pid in self.pids() if alive(pid)]  # a long-dead one's pid may be reused
         self.supervisor.kill()
         self.supervisor.wait()
-        self.wait(lambda: not any(map(alive, old)), 10, "processes outlived their supervisor")
+        wait(lambda: not any(map(alive, old)), 10, "processes outlived their supervisor")
         self.start()
         self.restarts += 1
 
@@ -189,19 +194,13 @@ class System:
         if self.supervisor.poll() is not None:
             raise Failed(f"the supervisor exited with {self.supervisor.returncode}")
 
-    def wait(self, condition: Callable[[], object], timeout: float, why: str) -> None:
-        deadline = time.monotonic() + timeout
-        while not condition():
-            if time.monotonic() > deadline:
-                raise Failed(why)
-            time.sleep(0.2)
-
     def load(self, *flags) -> subprocess.Popen:
         """catalog.load in the background; its key goes through the environment, never argv."""
         argv = [sys.executable, "-m", "catalog.load", "--url", self.url, "--keys", str(KEYS),
                 "--processes", "8", *map(str, flags)]  # fmt: skip
         env = os.environ | {"CATALOG_API_KEY": self.key}
-        return subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, text=True)
+        self.loads.append(subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, text=True))
+        return self.loads[-1]
 
     def poison(self, rng: random.Random, n: int = 10) -> None:
         """Changes whose content fails storage, beside the API's appends: no post can carry one."""
@@ -217,15 +216,35 @@ class System:
 
     def close(self) -> None:
         """Kill whatever is left, so a failed run leaks no process holding the port or locks."""
+        for load in self.loads:
+            load.kill()  # a no-op once it exited
+            load.wait()
         if self.supervisor and self.supervisor.poll() is None:
             with contextlib.suppress(Failed, subprocess.TimeoutExpired):
                 self.stop()
         if self.supervisor:
             self.supervisor.kill()
             self.supervisor.wait()
-        for pid in self.pids():
+        for pid in filter(ours, self.pids()):
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
+
+
+def ours(pid: int) -> bool:
+    """Whether `pid` still runs a catalog process: a long-dead one's pid may be reused."""
+    command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True)
+    return b"catalog." in command.stdout
+
+
+def wait(condition: Callable[[], object], timeout: float, why: str | Callable[[], str]) -> None:
+    """Until `condition` holds; past `timeout` seconds, Failed with `why` (called if callable)."""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            raise Failed(why() if callable(why) else why)
+        # ponytail: each settle poll rescans the events and the whole Landing log; fine at a
+        # scenario's size, keep a cursor if runs grow to the 1M load.
+        time.sleep(0.5)
 
 
 def _free_port() -> int:
@@ -247,13 +266,16 @@ def _windowed(**options):
     return fault
 
 
-def _second_load(earlier):
-    """Another load beside the main one, same seed: `earlier` ms before it (0: duplicates)."""
+def _duplicates(system, rng, at):
+    """The main load again, at once: same seed and versions, as a retrying client sends."""
+    system.extra.append(system.load(*system.flags, "--start-ms", system.start_ms))
 
-    def fault(system, rng, at):
-        system.extra.append(system.load(*system.flags, "--start-ms", system.start_ms - earlier))
 
-    return fault
+def _out_of_order(system, rng, at):
+    """The main load again, at once, its versions half the run's Changes older: each key gets
+    older and newer versions in random arrival order, deletes among them."""
+    earlier = system.start_ms - system.changes // 2
+    system.extra.append(system.load(*system.flags, "--start-ms", earlier))
 
 
 def _bulk(system, rng, at):
@@ -290,8 +312,8 @@ def _rescale(system, rng, at):
 SCENARIOS = {
     "steady": lambda system, rng, at: None,
     "bulk": _bulk,
-    "out-of-order": None,  # set in run: half the run's versions earlier
-    "duplicates": _second_load(0),
+    "out-of-order": _out_of_order,
+    "duplicates": _duplicates,
     "poison": _poison,
     "classifier-outage": _windowed(classifier="down"),
     "kill-worker": _kill_worker,
@@ -300,46 +322,97 @@ SCENARIOS = {
     "disk-full": _windowed(min_free=2**62),
 }
 
+# What each fault must leave behind, so a fault that silently did nothing fails the run.
+EFFECTS = {
+    "steady": ("nothing", lambda r: True),
+    "bulk": ("10,000 more accepted", lambda r: r["loads"][1]["accepted"] == 10_000),
+    "out-of-order": ("stale Outcomes", lambda r: r["outcomes"].get("stale", 0) > 0),
+    "duplicates": ("already_applied Outcomes", lambda r: r["outcomes"].get("already_applied")),
+    "poison": ("10 failed Outcomes", lambda r: r["outcomes"].get("failed", 0) >= 10),
+    "classifier-outage": ("classify_failed events", lambda r: r["events"]["classify_failed"]),
+    "kill-worker": ("3 process exits", lambda r: r["events"]["process_exit"] >= 3),
+    "kill-supervisor": ("a second supervisor", lambda r: r["events"]["supervisor_start"] == 2),
+    "rescale": ("a 3-worker start", lambda r: r["rescaled"]),
+    "disk-full": ("503s", lambda r: any("503" in load["statuses"] for load in r["loads"])),
+}
+
 
 def run(system: System, scenario: str, *, seconds: float, rate: float, seed: int,
         settle: float) -> dict:  # fmt: skip
     """The scenario on a started system; the summary, with each oracle's differing keys."""
-    rng, changes = random.Random(f"{seed}:{scenario}"), max(1, round(rate * seconds))
+    rng, system.changes = random.Random(f"{seed}:{scenario}"), max(1, round(rate * seconds))
     system.start_ms, system.extra = time.time_ns() // 1_000_000, []
-    system.flags = ["--rate", rate, "--changes", changes, "--seed", seed, "--deletes", 0.1]
-    fault = SCENARIOS[scenario] or _second_load(changes // 2)  # out-of-order
+    system.flags = ["--rate", rate, "--changes", system.changes, "--seed", seed, "--deletes", 0.1]
     began = time.monotonic()
     main = system.load(*system.flags, "--start-ms", system.start_ms)
 
     def at(fraction):  # until that fraction of the load time has passed
         due = began + fraction * seconds
-        system.wait(lambda: time.monotonic() >= due, seconds, "the load time ran out")
+        wait(lambda: time.monotonic() >= due, seconds, "the load time ran out")
 
-    fault(system, rng, at)
-    loads = [json.loads(p.communicate()[0] or "null") for p in (main, *system.extra)]
+    SCENARIOS[scenario](system, rng, at)
+    loads = []
+    for p in (main, *system.extra):
+        try:
+            out = p.communicate(timeout=seconds + settle)[0]
+        except subprocess.TimeoutExpired:
+            raise Failed(f"a load ran {seconds + settle:.0f} s past its start") from None
+        try:
+            loads.append(json.loads(out))
+        except ValueError:
+            raise Failed(f"a load printed no summary (exit {p.returncode})") from None
+    if not loads[0]["accepted"]:
+        raise Failed(f"nothing landed: {loads[0]['statuses']}, {loads[0]['errors']} errors")
     system.check()
-    settled = time.monotonic()
-    system.wait(lambda: system.check() or not pending(system.data), settle, "Changes pending")
-    listings = store.ensure(str(system.data / "listing_store"))
-    table = listings.metadata().id
-    system.wait(lambda: state.load_watermark(system.root / "state", table) >= listings.version(),
-                settle, "Change Export never reached the Listing Store's head")  # fmt: skip
-    if scenario == "classifier-outage":
-        system.wait(lambda: not flagged(system.data), settle, "Listings still flagged")
-    out = {"settle_s": round(time.monotonic() - settled, 1)}
+    out = {"settle_s": settle_down(system, scenario, settle)}
     system.stop()
     found = events.read(system.data / "events")
-    outcomes = Counter(e["type"] for e in found if e["type"] in OUTCOMES)
-    restarts = sum(e["type"] == "process_exit" for e in found)
+    kinds = Counter(e["type"] for e in found)
     checks = oracles(system.data, system.root / "state")
+    seen = {
+        "landed": len(_landed(landing.ensure(str(system.data / "landing_log")))),
+        "export_files": len(export.files(system.data / "export")),
+        "snapshots": len(snapshots.existing(system.data / "snapshots")),
+    }
+    rescaled = any(e["type"] == "worker_start" and e["workers"] == 3 for e in found)
+    effect, happened = EFFECTS[scenario]
+    record = {"loads": loads, "outcomes": {k: kinds[k] for k in sorted(OUTCOMES & kinds.keys())},
+              "events": kinds, "rescaled": rescaled}  # fmt: skip
+    problems = [f"no {k}" for k, n in seen.items() if not n]  # an oracle that checked nothing
+    problems += [] if happened(record) else [f"the fault left no {effect}"]
     return out | {
         "loads": loads,
-        "outcomes": dict(sorted(outcomes.items())),
-        "process_exits": restarts,
+        "outcomes": record["outcomes"],
+        "process_exits": kinds["process_exit"],
         "supervisor_restarts": system.restarts,
-        "oracles": {k: v[:SHOWN] or "ok" for k, v in checks.items()},
-        "ok": not any(checks.values()),
+        "checked": seen,
+        "oracles": {
+            k: {"differ": len(v), "first": v[:SHOWN]} if v else "ok" for k, v in checks.items()
+        },  # fmt: skip
+        "problems": problems,
+        "ok": not any(checks.values()) and not problems,
     }
+
+
+def settle_down(system, scenario: str, budget: float) -> float:
+    """Wait, `budget` seconds in all, until every landed Change has an Outcome, Change Export
+    has caught up and (after an outage) the Backfill has reclassified every flagged Listing.
+    Returns the seconds it took."""
+    began = time.monotonic()
+
+    def left():
+        return began + budget - time.monotonic()
+
+    wait(lambda: system.check() or not pending(system.data), left(),
+         lambda: f"{pending(system.data)} Changes pending after {budget:.0f} s")  # fmt: skip
+    listings = store.ensure(str(system.data / "listing_store"))
+    table = listings.metadata().id
+    wait(lambda: state.load_watermark(system.root / "state", table) >= listings.version(), left(),
+         "Change Export never reached the Listing Store's head")  # fmt: skip
+    if scenario == "classifier-outage":
+        wait(lambda: not flagged(system.data), left(),
+             lambda: f"{flagged(system.data)} Listings still flagged")  # fmt: skip
+    return round(time.monotonic() - began, 1)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -351,7 +424,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.add_argument("--dir", type=Path, help="an empty or new folder; default a temp one")
     args.add_argument("--settle", type=float, default=120, help="seconds to wait for Outcomes")
     a = args.parse_args(argv)
-    if a.seconds <= 0 or a.rate <= 0 or a.settle <= 0:
+    if not all(math.isfinite(x) and x > 0 for x in (a.seconds, a.rate, a.settle)):
         args.error("--seconds, --rate and --settle must be above 0")
     if a.dir and a.dir.exists() and any(a.dir.iterdir()):
         args.error(f"--dir {a.dir} is not empty: the store oracle needs an empty system (A4)")

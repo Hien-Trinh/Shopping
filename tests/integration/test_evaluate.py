@@ -685,7 +685,7 @@ def test_misses_refuses_shortlists_shorter_than_its_k():
 def test_misses_refuses_a_result_missing_a_labelled_listing():
     r = split_result(("a", SHIRT, SHIRT))
     with pytest.raises(ValueError, match="jev: no answer for labelled Listing 'b'"):
-        evaluate.misses(r, {"a": [SHIRT, KIDS], "b": [SHIRT, KIDS]}, "a" * 64, 200)
+        evaluate.misses(r, {k: [SHIRT, KIDS] for k in "abcdef"}, "a" * 64, 200)
 
 
 def test_render_recall_puts_each_depth_in_its_column():
@@ -716,3 +716,8 @@ def test_a_failed_write_leaves_the_old_file_and_no_temp_file(tmp_path, monkeypat
     with pytest.raises(OSError):
         evaluate._write(out, "new")
     assert [p.name for p in tmp_path.iterdir()] == ["recall.md"] and out.read_text() == "old"
+
+
+def test_a_written_report_is_readable_by_others(tmp_path):
+    evaluate._write(tmp_path / "recall.md", "x")
+    assert (tmp_path / "recall.md").stat().st_mode & 0o777 == 0o644

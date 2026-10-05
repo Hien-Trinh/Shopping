@@ -290,8 +290,10 @@ def misses(result: dict, shortlists: dict[str, Sequence[str]], sha: str, descrip
     for id in ids:
         if id not in shortlists:
             raise ValueError(f"{name}: no labelled Listing {id!r}")
-    for id in set(shortlists) - set(ids):  # a partial run would split a different set
-        raise ValueError(f"{name}: no answer for labelled Listing {id!r}")
+    answered = set(ids)
+    for id in shortlists:  # in label order; a partial run would split a different set
+        if id not in answered:
+            raise ValueError(f"{name}: no answer for labelled Listing {id!r}")
     if any(len(s) < k for s in shortlists.values()):  # it would count chooser errors as misses
         raise ValueError(f"{name}: shortlists shorter than its {k}")
     wrong = [a for a in result["answers"] if a["category"] != a["label"]]
@@ -541,6 +543,7 @@ def _write(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
+        os.chmod(tmp, 0o644)  # mkstemp's 0600 would make the report private
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)

@@ -120,6 +120,17 @@ def test_the_version_of_a_classifier_kind_needs_no_model():  # step-6c.md: Backf
     assert classify.taxonomy_version("embedding") == loaded.taxonomy_version
 
 
+def test_the_jev_kind_version_needs_no_model_or_key(monkeypatch):  # step-6f.md, test point 3
+    from catalog import classify, jev, taxonomy
+
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    tax = taxonomy.load()
+    shortlist = EmbeddingClassifier(tax, lambda texts: np.ones((len(texts), 3)))
+    loaded = jev.JevClassifier(tax, shortlist, lambda body: {})
+    assert "jev" in classify.KINDS
+    assert classify.taxonomy_version("jev") == loaded.taxonomy_version
+
+
 # --- step-6e.md, 6e.1 ----------------------------------------------------------------------
 
 

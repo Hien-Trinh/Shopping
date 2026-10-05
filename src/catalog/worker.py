@@ -8,6 +8,7 @@ history they still needed (step-5e.md); `python -m catalog.worker` starts it.
 
 import argparse
 import contextlib
+import math
 import os
 import signal
 import sys
@@ -21,7 +22,7 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from catalog import classify, delta, entry, landing, state, store, taxonomy
+from catalog import classify, delta, entry, jev, landing, state, store, taxonomy
 from catalog.classify import UNCATEGORIZED
 from catalog.events import EventLog
 from catalog.keys import owned, partition
@@ -140,6 +141,7 @@ FATAL = {
     state.OffsetsMismatch: 4,
     state.CorruptState: 5,
     classify.ModelMissing: 6,
+    jev.KeyMissing: 7,
 }
 SUPERVISOR = "CATALOG_SUPERVISOR"  # set to the supervisor's pid in its children's environment
 
@@ -185,6 +187,7 @@ def run(
                     gap = False
                     continue  # never resets `failures`: only a good read does, so a gap that
                     # a bootstrap can't cure still ends the worker after ATTEMPTS
+                spent = getattr(classifier, "usd", None)
                 batch = process_batch(
                     landing_dt, store_dt, classifier, events, state_dir, offsets, limit=limit
                 )
@@ -200,6 +203,8 @@ def run(
                         "head": landing_dt.version(),  # lag of p = head + 1 - next[p][0]
                         "next": moved,
                     }
+                    if spent is not None:  # a paid classifier: its cost, summed over events
+                        tick["usd"] = round(classifier.usd - spent, 6)
                     events.emit([tick])
                 # Only this thread beats, after the batch: a hung MERGE stops the beats (B1).
                 # Before compacting, so a long compaction gets the watchdog's full budget.
@@ -316,7 +321,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.error(str(e))
     stop = stop_on_signals()
     watch_supervisor(supervisor, stop)  # so a kill -9ed supervisor leaves no worker behind
-    if a.classifier == "embedding":  # fake by default until 6e picks the threshold
+    if a.classifier == "jev":
+        call = jev.http(attempts=1)  # first: a missing key stops it before the model loads
+        tax = taxonomy.load()
+        shortlist = classify.EmbeddingClassifier(
+            tax, classify.fastembed(a.models), description=jev.DESCRIPTION, budget=math.inf
+        )  # JevClassifier owns the budget
+        # ponytail: a static share of Jev's limit; an idle worker's share goes unused
+        classifier = jev.JevClassifier(tax, shortlist, call, rate=jev.LIMIT / a.workers)
+    elif a.classifier == "embedding":
         classifier = classify.EmbeddingClassifier(taxonomy.load(), classify.fastembed(a.models))
     else:
         classifier = classify.FakeClassifier()

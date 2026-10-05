@@ -23,7 +23,7 @@ from deltalake import DeltaTable
 
 from catalog import classify, delta, entry, jev, landing, state, store, taxonomy
 from catalog.classify import UNCATEGORIZED
-from catalog.events import EventLog
+from catalog.events import EventLog, prepared
 from catalog.keys import owned, partition
 from catalog.landing import Batch, Landed, Position
 from catalog.plan import Classification, Outcome, Write, plan
@@ -220,7 +220,7 @@ def run(
                 logged = [
                     {"type": "tick_failed", "worker": name, "attempt": failures, "error": error}
                 ]
-                if gave_up := failures >= ATTEMPTS:
+                if gave_up := failures >= ATTEMPTS or type(e) in FATAL:  # no retry fixes those
                     logged.append({"type": "worker_stop", "worker": name, "error": error})
                 with contextlib.suppress(OSError):  # best effort: the error itself matters more
                     events.emit(logged)
@@ -235,28 +235,41 @@ def run(
             failures = 0
             if min(v for v, _ in offsets.values()) > landing_dt.version():  # caught up
                 stop.wait(POLL)
-        events.emit([{"type": "worker_stop", "worker": name}])
+        reason = getattr(stop, "reason", None)  # set by watch()
+        events.emit(
+            [{"type": "worker_stop", "worker": name} | ({"reason": reason} if reason else {})]
+        )
 
 
 def watch(
     alive: Callable[[], bool],
-    stop: threading.Event,
+    stop,
+    events_root: Path | None = None,
+    process: str = "",
     deadline: float = 30.0,
     *,
     sleep: Callable[[float], None] = time.sleep,
     exit: Callable[[int], None] = os._exit,
 ) -> None:
-    """Check `alive()` every second; once it's False, set `stop`, so the tick in progress finishes
-    and the claims are released, and exit 1 if the process still runs `deadline` seconds later.
+    """Check `alive()` every second; once it's False, set `stop` (with `stop.reason`), so the tick
+    in progress finishes and the claims are released, and exit 1 if the process still runs
+    `deadline` seconds later.
 
     Run it in a daemon thread: a worker that stops in time has exited by then. One that hasn't is
     stuck in a native call, and would otherwise hold its partition locks forever. So `exit` is
-    os._exit with no flush and no log line: either could block on what the stuck thread holds.
+    os._exit with no flush, after a `watch_exit` event written by events.prepared: anything more
+    could block on what the stuck thread holds.
     """
     while alive():
         sleep(1)
+    stop.reason = "supervisor_gone"  # before set(): the stopped thread reads it once set
     stop.set()
+    event = {"type": "watch_exit", "process": process, "pid": os.getpid(), "deadline": deadline}
+    # stamped with the planned exit time; skipped when there's no events dir (tests)
+    trace = events_root and prepared(events_root, process, event, time.time() + deadline)
     sleep(deadline)
+    if trace:
+        trace()
     exit(1)
 
 
@@ -270,13 +283,14 @@ def supervisor_pid() -> int | None:
     return int(pid) if pid else None
 
 
-def watch_supervisor(pid: int | None, stop) -> None:
+def watch_supervisor(pid: int | None, stop, events_root: Path, process: str) -> None:
     """Run watch() on supervisor `pid` in a daemon thread; nothing when no supervisor started us.
 
-    `stop` needs only a set() method.
+    `stop` needs only a set() method and to take a `reason` attribute.
     """
     if pid:
-        threading.Thread(target=watch, args=(lambda: _alive(pid), stop), daemon=True).start()
+        args = (lambda: _alive(pid), stop, events_root, process)
+        threading.Thread(target=watch, args=args, daemon=True).start()
 
 
 def _alive(pid: int) -> bool:
@@ -321,7 +335,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     except ValueError as e:
         args.error(str(e))
     stop = stop_on_signals()
-    watch_supervisor(supervisor, stop)  # so a kill -9ed supervisor leaves no worker behind
+    # so a kill -9ed supervisor leaves no worker behind
+    watch_supervisor(supervisor, stop, a.data / "events", f"{state.WORKER}{a.index}")
     if a.classifier == "jev":
         call = jev.http(attempts=1)  # first: a missing key stops it before the model loads
         tax = taxonomy.load()
@@ -378,6 +393,8 @@ def _classify(writes: Sequence[Write], classifier) -> tuple[list[Write], list[di
         ]
         # for the Listings it answered None: a classifier may say why (jev.JevClassifier.error)
         error = getattr(classifier, "error", None) or "budget spent"
+    except jev.KeyMissing:  # a refused key: no batch can succeed, so stop (exit 7)
+        raise
     except Exception as e:  # an outage or a bad answer: never stall the partition
         found, error = [None] * len(todo), repr(e)[:500]  # a provider error may echo listing text
     missed = [w for w, f in zip(todo, found, strict=True) if f is None]

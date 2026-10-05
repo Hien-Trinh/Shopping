@@ -243,6 +243,8 @@ def test_run_ticks_until_stopped(tmp_path):
         stop.set()
         t.join(timeout=10)
     assert not t.is_alive()
+    [stop] = [e for e in events.read(data / "events") if e["type"] == "backfill_stop"]
+    assert "error" not in stop and "reason" not in stop  # a plain stop
 
 
 def types(data):
@@ -255,3 +257,14 @@ def test_main_refuses_a_flag_that_would_spin(flag, monkeypatch):
     with pytest.raises(SystemExit) as e:
         backfill.main(["--classifier", "fake", *flag])
     assert e.value.code == 2
+
+
+def test_an_error_that_ends_the_run_is_in_the_events_too(tmp_path, monkeypatch):  # 5c review
+    def broken(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(backfill, "tick", broken)
+    with pytest.raises(OSError):
+        backfill.run(tmp_path / "data", tmp_path / "state", "v2", stop=threading.Event())
+    [stop] = [e for e in events.read(tmp_path / "data" / "events") if e["type"] == "backfill_stop"]
+    assert stop["error"] == "OSError(28, 'No space left on device')"

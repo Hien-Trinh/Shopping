@@ -24,7 +24,7 @@ from deltalake import DeltaTable
 
 from catalog import delta, entry, state, store, worker
 from catalog.collapse import collapse
-from catalog.events import EventLog
+from catalog.events import EventLog, stopping
 
 INTERVAL = 60.0  # seconds between ticks once caught up (design doc: every minute)
 # ponytail: caps versions, not rows, and collapse runs in Python: a 1M initial load still puts
@@ -51,9 +51,10 @@ def run(
         dt = store.ensure(str(data / "listing_store"))
         events = EventLog(data / "events", "export")
         events.emit([{"type": "export_start", "pid": os.getpid()}])
-        while not stop.is_set():
-            if not tick(dt, data / "export", state_dir, events, max_versions=max_versions):
-                stop.wait(interval)
+        with stopping(events, stop):
+            while not stop.is_set():
+                if not tick(dt, data / "export", state_dir, events, max_versions=max_versions):
+                    stop.wait(interval)
 
 
 def files(export_dir: Path) -> list[Path]:
@@ -160,7 +161,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     except ValueError as e:
         args.error(str(e))
     stop = worker.stop_on_signals()
-    worker.watch_supervisor(supervisor, stop)  # so a kill -9ed supervisor leaves no exporter
+    # so a kill -9ed supervisor leaves no exporter
+    worker.watch_supervisor(supervisor, stop, a.data / "events", "export")
     run(a.data, a.state, stop=stop, interval=a.interval)
 
 

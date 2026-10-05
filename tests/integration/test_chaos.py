@@ -33,6 +33,37 @@ def test_a_watched_worker_stops_when_its_supervisor_dies_and_exits_hard_if_stuck
     assert seen == [(1, False), (1, False), (1.5, True), 1]
 
 
+def test_the_watch_says_why_it_stopped_and_leaves_a_trace_of_its_hard_exit(tmp_path):  # 3e
+    stop, exits = threading.Event(), []
+    worker.watch(lambda: False, stop, tmp_path, "worker-2", deadline=30,
+                 sleep=lambda s: None, exit=exits.append)  # fmt: skip
+    assert stop.is_set() and stop.reason == "supervisor_gone" and exits == [1]
+    [trace] = events.read(tmp_path)
+    assert {k: v for k, v in trace.items() if k != "ts"} == {
+        "type": "watch_exit", "process": "worker-2", "pid": os.getpid(), "deadline": 30,
+    }  # fmt: skip
+
+
+def test_the_hard_exit_happens_even_when_its_trace_cant_be_written(tmp_path):
+    tmp_path.chmod(0o500)  # read-only, as good as a full disk here
+    try:
+        exits = []
+        worker.watch(lambda: False, threading.Event(), tmp_path, "api",
+                     sleep=lambda s: None, exit=exits.append)  # fmt: skip
+    finally:
+        tmp_path.chmod(0o700)
+    assert exits == [1] and not list(tmp_path.iterdir())
+
+
+def test_a_worker_the_watch_stopped_says_so_in_its_last_event(tmp_path):
+    env, stop = Env(tmp_path), threading.Event()
+    worker.watch(lambda: False, stop, sleep=lambda s: None, exit=lambda code: None)
+    worker.run(env.tmp, env.state, 0, 4, env.classifier, stop=stop)
+    last = [e for e in events.read(env.events_root) if e["type"] == "worker_stop"]
+    assert last == [{"type": "worker_stop", "worker": "worker-0", "reason": "supervisor_gone",
+                     "ts": last[0]["ts"]}]  # fmt: skip
+
+
 @pytest.mark.parametrize("pid", ["abc", "0", "-1", " 7", str(2**31)])
 def test_a_malformed_supervisor_pid_is_refused_as_a_bad_flag(monkeypatch, capsys, pid):
     monkeypatch.setenv("CATALOG_SUPERVISOR", pid)  # 0 or -1 would make the watch signal a group

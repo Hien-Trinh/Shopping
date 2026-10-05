@@ -19,7 +19,7 @@ from pathlib import Path
 from deltalake import CommitProperties, DeltaTable, write_deltalake
 
 from catalog import entry, state, store, worker
-from catalog.events import EventLog
+from catalog.events import EventLog, stopping
 
 NAME = "%Y%m%dT%H%M%SZ"  # UTC; name order is time order
 EVERY, KEEP = timedelta(hours=6), timedelta(days=7)  # design doc: every 6 h, keep 7 days
@@ -39,9 +39,10 @@ def run(
         dt = store.ensure(str(data / "listing_store"))
         events = EventLog(data / "events", "snapshots")
         events.emit([{"type": "snapshots_start", "pid": os.getpid()}])
-        while not stop.is_set():
-            wait = tick(dt, data / "snapshots", events, clock(), every=every, keep=keep)
-            stop.wait(wait.total_seconds())
+        with stopping(events, stop):
+            while not stop.is_set():
+                wait = tick(dt, data / "snapshots", events, clock(), every=every, keep=keep)
+                stop.wait(wait.total_seconds())
 
 
 def tick(
@@ -138,7 +139,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     except ValueError as e:
         args.error(str(e))
     stop = worker.stop_on_signals()
-    worker.watch_supervisor(supervisor, stop)  # so a kill -9ed supervisor leaves no snapshotter
+    # so a kill -9ed supervisor leaves no snapshotter
+    worker.watch_supervisor(supervisor, stop, a.data / "events", "snapshots")
     run(a.data, a.state, stop=stop, every=timedelta(seconds=a.every))
 
 

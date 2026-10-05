@@ -24,7 +24,7 @@ from deltalake import DeltaTable
 
 from catalog import api, classify, delta, entry, landing, state, store, worker
 from catalog.envelope import Change, Key
-from catalog.events import EventLog
+from catalog.events import EventLog, stopping
 from catalog.keys import PARTITIONS
 
 INTERVAL = 10.0  # seconds between ticks
@@ -137,9 +137,12 @@ def run(
         store_dt = store.ensure(str(data / "listing_store"))
         events = EventLog(data / "events", "backfill")
         events.emit([{"type": "backfill_start", "pid": os.getpid(), "version": version}])
-        while not stop.is_set():
-            tick(landing_dt, store_dt, state_dir, events, version, datetime.now(UTC), limit=limit)
-            stop.wait(interval)
+        with stopping(events, stop):
+            while not stop.is_set():
+                tick(
+                    landing_dt, store_dt, state_dir, events, version, datetime.now(UTC), limit=limit
+                )
+                stop.wait(interval)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -160,7 +163,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     except ValueError as e:
         args.error(str(e))
     stop = worker.stop_on_signals()
-    worker.watch_supervisor(supervisor, stop)  # so a kill -9ed supervisor leaves none behind
+    # so a kill -9ed supervisor leaves none behind
+    worker.watch_supervisor(supervisor, stop, a.data / "events", "backfill")
     version = classify.taxonomy_version(a.classifier)
     run(a.data, a.state, version, stop=stop, interval=a.interval, limit=a.limit)
 

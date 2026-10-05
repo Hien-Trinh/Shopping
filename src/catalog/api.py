@@ -193,9 +193,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=a.port))
     # So a kill -9ed supervisor leaves no API holding the port: uvicorn finishes the requests in
     # flight and stops (step 4e).
-    stop = SimpleNamespace(set=lambda: setattr(server, "should_exit", True))
-    worker.watch_supervisor(supervisor, stop)
+    stop = SimpleNamespace(set=lambda: setattr(server, "should_exit", True), reason=None)
+    worker.watch_supervisor(supervisor, stop, a.data / "events", "api")
     server.run()
+    with contextlib.suppress(OSError):  # best effort, as every stop event
+        why = {"reason": stop.reason} if stop.reason else {}
+        EventLog(a.data / "events", "api").emit([{"type": "api_stop"} | why])
 
 
 if __name__ == "__main__":

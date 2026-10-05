@@ -80,7 +80,8 @@ def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=state.CLO
         spawn=Group) -> int:  # fmt: skip
     """Run `procs` until `stopping` is non-empty (returns 0) or a worker fails fatally (its code).
 
-    `clock` must be the workers' beat clock.
+    Every exit is logged: the rest of the pass that saw a fatal one, and each child stopped at
+    shutdown. `clock` must be the workers' beat clock.
     """
     live, due, killed = {}, {}, set()  # name -> (child, start); name -> restart time; stale kills
     fatal = None
@@ -110,7 +111,7 @@ def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=state.CLO
         while not stopping and fatal is None:
             for name in procs:
                 if name in due:
-                    if clock() >= due[name]:
+                    if fatal is None and clock() >= due[name]:
                         del due[name]
                         start(name)
                     continue
@@ -131,9 +132,11 @@ def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=state.CLO
                     pid, code = child.pid, child.returncode
                     note({"type": "process_exit", "process": name, "reason": why, "code": code,
                           "pid": pid})  # fmt: skip
+                    del live[name]  # logged: shutdown won't log it again
                     if why == "fatal":
-                        fatal = code
-                        break
+                        fatal = fatal or code  # the first one's: fatal codes are never 0
+                    if fatal is not None:  # the pass goes on, only to log the others' exits
+                        continue
                     if now - started < STABLE:
                         due[name] = now + RETRY
                     else:
@@ -141,22 +144,29 @@ def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=state.CLO
             if fatal is None:
                 sleep(TICK)
     finally:  # also on a bug here: never leave workers running unsupervised
-        _stop([child for child, _ in live.values()], clock)
+        stopped = [(name, live[name][0]) for name in procs if name in live]
+        for name, why, child in _stop(stopped, clock):
+            note({"type": "process_exit", "process": name, "reason": why,
+                  "code": child.returncode, "pid": child.pid})  # fmt: skip
     note({"type": "supervisor_stop", "code": fatal or 0})
     return fatal or 0
 
 
-def _stop(children, clock) -> None:
-    """SIGTERM every child, then SIGKILL any still running once one shared GRACE has passed."""
-    for child in children:
+def _stop(children, clock) -> list[tuple[str, str, subprocess.Popen]]:
+    """SIGTERM every (name, child), then SIGKILL any still running once one shared GRACE has
+    passed. Returns (name, "exit" if it had already exited else "shutdown", child) for each."""
+    why = [(name, "exit" if child.poll() is not None else "shutdown", child)
+           for name, child in children]  # fmt: skip
+    for _, child in children:
         child.terminate()
     deadline = clock() + GRACE
-    for child in children:
+    for _, child in children:
         try:
             child.wait(max(0.0, deadline - clock()))
         except subprocess.TimeoutExpired:
             child.kill()
             child.wait()
+    return why
 
 
 def _only_supervisor(state_dir: Path) -> bool:

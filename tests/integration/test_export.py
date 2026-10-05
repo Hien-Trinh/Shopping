@@ -262,3 +262,14 @@ def test_a_read_error_that_is_not_a_gap_propagates(env):
     finally:
         feed.chmod(0o644)
     assert (env.names(), env.watermark()) == ([], -1)
+
+
+def test_an_error_that_ends_the_run_is_in_the_events_too(env, monkeypatch):  # 5c review
+    def broken(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(export, "tick", broken)
+    with pytest.raises(OSError):
+        export.run(env.tmp / "data", env.state, stop=threading.Event())
+    [stop] = [e for e in events.read(env.tmp / "data" / "events") if e["type"] == "export_stop"]
+    assert stop["error"] == "OSError(28, 'No space left on device')"

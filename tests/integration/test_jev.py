@@ -154,6 +154,15 @@ def test_other_errors_and_too_many_retries_fail_without_the_key(monkeypatch):
         jev.http(urlopen=Urlopen({}, *[429] * 5), sleep=lambda s: None, attempts=5)({})
 
 
+@pytest.mark.parametrize("code", [401, 403])
+def test_a_refused_key_is_fatal_at_once(monkeypatch, code):  # 6f.2 hand run
+    monkeypatch.setenv("TYPESAFE_API_KEY", "k-secret")
+    urlopen = Urlopen({}, code, code)
+    with pytest.raises(jev.KeyMissing, match=f"refused \\({code}\\)") as e:
+        jev.http(urlopen=urlopen, sleep=lambda s: pytest.fail("retried"), attempts=5)({})
+    assert len(urlopen.requests) == 1 and "k-secret" not in str(e.value)
+
+
 # --- review fixes (PR #59) -----------------------------------------------------------------
 
 

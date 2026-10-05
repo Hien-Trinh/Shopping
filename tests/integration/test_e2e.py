@@ -209,6 +209,11 @@ def test_killing_the_supervisor_stops_its_api_so_a_new_one_serves_on_its_port(sy
     wait_for(lambda: not any(map(alive, maintenance_pids(system.tmp))), timeout=10)
     wait_for(lambda: not any(map(alive, snapshot_pids(system.tmp))), timeout=10)
     wait_for(lambda: not any(map(alive, backfill_pids(system.tmp))), timeout=10)
+    stops = [e for e in events.read(system.tmp / "data" / "events") if e["type"].endswith("_stop")]
+    why = {(e["type"], e.get("reason")) for e in stops}  # 3e and the 4e review: the watch's stops
+    assert why == {("api_stop", "supervisor_gone"), ("worker_stop", "supervisor_gone")} | {
+        (f"{p}_stop", "supervisor_gone") for p in ("export", "maintenance", "snapshots", "backfill")
+    }
     second = system.start()  # its API binds the same port: no restart loop
     assert api_pids(system.port) not in ([], [api])
     second.send_signal(signal.SIGTERM)

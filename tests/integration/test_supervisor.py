@@ -149,7 +149,8 @@ def test_a_hung_worker_is_killed_a_minute_after_its_last_sign_of_life(tmp_path):
     # worker-1 61 s after its last beat (t=5), then 61 s after its restart: the predecessor's beat
     # doesn't count for the new run.
     assert w.started == [0, 0, 0, 62, 67, 124, 129]
-    assert w.exits() == [(n, "stale", -9) for n in ("worker-0", "worker-1") * 2]
+    stopped = [(n, "shutdown", -9) for n in ("worker-0", "worker-1")] + [("api", "shutdown", -15)]
+    assert w.exits() == [(n, "stale", -9) for n in ("worker-0", "worker-1") * 2] + stopped
 
 
 def test_a_stale_worker_is_killed_once_and_restarted_only_once_gone(tmp_path):
@@ -169,8 +170,32 @@ def test_an_exit_restarts_a_process_but_a_fatal_one_stops_everything(tmp_path):
     w = World(tmp_path, 100, script, deaf={"api"})
     assert w.run("worker-0", "worker-1", "api") == 3
     assert w.started == [0, 0, 0]  # worker-0's restart was due at t=6, after the fatal exit
-    assert w.exits() == [("worker-0", "exit", 1), ("worker-1", "fatal", 3)]
+    assert w.exits() == [("worker-0", "exit", 1), ("worker-1", "fatal", 3), ("api", "shutdown", -9)]
     assert [k.returncode for k in w.kids] == [1, 3, -9]  # the deaf api was killed after GRACE
+
+
+def test_every_exit_in_the_pass_that_hit_a_fatal_one_is_logged(tmp_path):  # 3d review
+    def script(w):
+        if w.t == 2:
+            w.kids[0].returncode = 3  # worker-0 found its partitions taken...
+            w.kids[1].returncode = 4  # ...and worker-1 its offsets mismatched: both fatal
+            w.kids[2].returncode = 1  # the api exited in the same second
+
+    w = World(tmp_path, 100, script)
+    assert w.run("worker-0", "worker-1", "api", "export") == 3  # the first fatal code
+    assert w.started == [0, 0, 0, 0]  # nothing restarted once a fatal exit was seen
+    assert w.exits() == [("worker-0", "fatal", 3), ("worker-1", "fatal", 4), ("api", "exit", 1),
+                         ("export", "shutdown", -15)]  # fmt: skip
+
+
+def test_a_child_that_exits_just_before_shutdown_is_logged_as_an_exit(tmp_path):
+    def script(w):
+        if w.t == 3:  # the same tick `stopping` is set: no pass sees it
+            w.kids[0].returncode = 1
+
+    w = World(tmp_path, 3, script, deaf={"api"})
+    assert w.run("worker-0", "api") == 0
+    assert w.exits() == [("worker-0", "exit", 1), ("api", "shutdown", -9)]
 
 
 def test_only_a_workers_exit_code_can_be_fatal(tmp_path):
@@ -180,7 +205,7 @@ def test_only_a_workers_exit_code_can_be_fatal(tmp_path):
 
     w = World(tmp_path, 3, script)
     assert w.run("api", "worker-0") == 0
-    assert w.exits() == [("api", "exit", 3)]
+    assert w.exits() == [("api", "exit", 3), ("worker-0", "shutdown", -15)]
 
 
 def test_shutdown_gives_everyone_one_grace_then_kills_the_deaf(tmp_path):
@@ -229,7 +254,9 @@ def test_a_failed_restart_is_retried_and_spares_the_others(tmp_path):
     w = World(tmp_path, 15, script)
     assert w.run("worker-0", "worker-1") == 0
     assert w.started == [0, 0, 11]  # the restart failed at t=6 and was retried RETRY later
-    assert w.exits() == [("worker-0", "exit", 1), ("worker-0", "spawn", None)]
+    assert w.exits() == [("worker-0", "exit", 1), ("worker-0", "spawn", None)] + [
+        (n, "shutdown", -15) for n in ("worker-0", "worker-1")
+    ]
 
     w = World(tmp_path / "startup", 5)
     w.refusing.add("api")
@@ -361,7 +388,8 @@ def test_the_supervisor_restarts_a_killed_process_and_stops_cleanly(tmp_path):
     finally:
         sup.kill()
     logged = events.read(tmp_path / "data" / "events")
-    assert [e["pid"] for e in logged if e["type"] == "process_exit"] == [first]
+    exits = [(e["pid"], e["reason"]) for e in logged if e["type"] == "process_exit"]
+    assert exits == [(first, "exit"), (second, "shutdown")]
     assert not alive(second)  # the replacement went down with it
 
 

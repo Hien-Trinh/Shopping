@@ -12,7 +12,7 @@ import pyarrow as pa
 import pytest
 from support import delete, listing, product_in, reclassify, up
 
-from catalog import events, landing, state, store, supervisor, worker
+from catalog import events, jev, landing, state, store, supervisor, worker
 from catalog.classify import UNCATEGORIZED, FakeClassifier
 from catalog.envelope import Change, Content
 from catalog.events import EventLog
@@ -569,6 +569,22 @@ def test_it_gives_up_after_attempts_failed_ticks_in_a_row(env, monkeypatch):
     assert env.load_offsets() == {p: START for p in range(PARTITIONS)}
     with state.claim(env.state, range(16)):  # the crash released the claim
         pass
+
+
+class Refused(FakeClassifier):
+    def classify(self, listings):
+        raise jev.KeyMissing("TYPESAFE_API_KEY was refused (401)")
+
+
+def test_a_refused_classifier_key_stops_the_worker_at_once(tmp_path):  # 6f.2 hand run
+    env = Env(tmp_path, Refused())
+    env.land(up(A, 1))
+    ticks = Ticks(10)
+    with pytest.raises(jev.KeyMissing):  # exit 7 (worker.FATAL): the supervisor stops everything
+        run(env, ticks)
+    assert ticks.waits == []  # no retries: a restart can't fix a key
+    assert stored(env, A) is None  # never stored Uncategorized...
+    assert env.load_offsets() == {p: START for p in range(PARTITIONS)}  # ...and rerun once fixed
 
 
 def test_it_compacts_every_k_busy_batches_and_retries_a_failed_compaction(env, monkeypatch):

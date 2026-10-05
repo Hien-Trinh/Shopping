@@ -146,6 +146,7 @@ def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=state.CLO
     finally:  # also on a bug here: never leave workers running unsupervised
         stopped = [(name, live[name][0]) for name in procs if name in live]
         for name, why, child in _stop(stopped, clock):
+            why = "stale" if name in killed else why  # killed for silence, not yet reaped
             note({"type": "process_exit", "process": name, "reason": why,
                   "code": child.returncode, "pid": child.pid})  # fmt: skip
     note({"type": "supervisor_stop", "code": fatal or 0})

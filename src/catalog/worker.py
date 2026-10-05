@@ -250,6 +250,7 @@ def watch(
     *,
     sleep: Callable[[float], None] = time.sleep,
     exit: Callable[[int], None] = os._exit,
+    clock: Callable[[], float] = time.time,
 ) -> None:
     """Check `alive()` every second; once it's False, set `stop` (with `stop.reason`), so the tick
     in progress finishes and the claims are released, and exit 1 if the process still runs
@@ -266,7 +267,7 @@ def watch(
     stop.set()
     event = {"type": "watch_exit", "process": process, "pid": os.getpid(), "deadline": deadline}
     # stamped with the planned exit time; skipped when there's no events dir (tests)
-    trace = events_root and prepared(events_root, process, event, time.time() + deadline)
+    trace = events_root and prepared(events_root, process, event, clock() + deadline)
     sleep(deadline)
     if trace:
         trace()

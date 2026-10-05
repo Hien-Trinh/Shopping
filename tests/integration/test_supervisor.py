@@ -188,6 +188,17 @@ def test_every_exit_in_the_pass_that_hit_a_fatal_one_is_logged(tmp_path):  # 3d 
                          ("export", "shutdown", -15)]  # fmt: skip
 
 
+def test_a_stale_kill_still_dying_at_shutdown_is_logged_as_stale(tmp_path):  # PR #79 review
+    def script(w):
+        state.beat(tmp_path / "state", "worker-1", w.t)  # only worker-0 goes quiet
+        if w.t == 62:  # worker-0 was SIGKILLed for staleness at t=61 and dies at t=63
+            w.kids[1].returncode = 3
+
+    w = World(tmp_path, 100, script, deaf={"worker-0"}, slow={"worker-0"})
+    assert w.run("worker-0", "worker-1") == 3
+    assert w.exits() == [("worker-1", "fatal", 3), ("worker-0", "stale", -9)]
+
+
 def test_a_child_that_exits_just_before_shutdown_is_logged_as_an_exit(tmp_path):
     def script(w):
         if w.t == 3:  # the same tick `stopping` is set: no pass sees it

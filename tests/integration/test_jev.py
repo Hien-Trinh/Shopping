@@ -163,6 +163,19 @@ def test_a_refused_key_is_fatal_at_once(monkeypatch, code):  # 6f.2 hand run
     assert len(urlopen.requests) == 1 and "k-secret" not in str(e.value)
 
 
+def test_a_refused_key_is_raised_even_after_another_call_answered():  # PR #79 review
+    api = Api({"1": 1.0})
+
+    def call(body):  # the key is revoked between the two calls
+        if not api.choices:
+            raise jev.KeyMissing("TYPESAFE_API_KEY was refused (401)")
+        return api(body)
+
+    c = JevClassifier(TAXONOMY, embedding(), call, k=1, pool=Inline())
+    with pytest.raises(jev.KeyMissing):  # not an answer and a None: the worker must exit 7
+        c.classify([listing("Tee"), listing("Ball")])
+
+
 # --- review fixes (PR #59) -----------------------------------------------------------------
 
 

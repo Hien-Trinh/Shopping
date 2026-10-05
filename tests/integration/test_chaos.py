@@ -34,14 +34,17 @@ def test_a_watched_worker_stops_when_its_supervisor_dies_and_exits_hard_if_stuck
 
 
 def test_the_watch_says_why_it_stopped_and_leaves_a_trace_of_its_hard_exit(tmp_path):  # 3e
-    stop, exits = threading.Event(), []
+    stop, exits, slept = threading.Event(), [], []
+
+    def sleep(seconds):  # the trace is written only once the deadline has passed
+        slept.append((seconds, events.read(tmp_path)))
+
     worker.watch(lambda: False, stop, tmp_path, "worker-2", deadline=30,
-                 sleep=lambda s: None, exit=exits.append)  # fmt: skip
+                 sleep=sleep, exit=exits.append, clock=lambda: 1_000.0)  # fmt: skip
     assert stop.is_set() and stop.reason == "supervisor_gone" and exits == [1]
-    [trace] = events.read(tmp_path)
-    assert {k: v for k, v in trace.items() if k != "ts"} == {
-        "type": "watch_exit", "process": "worker-2", "pid": os.getpid(), "deadline": 30,
-    }  # fmt: skip
+    assert slept == [(30, [])]
+    assert events.read(tmp_path) == [{"type": "watch_exit", "process": "worker-2",
+        "pid": os.getpid(), "deadline": 30, "ts": 1_030_000}]  # the planned exit time  # fmt: skip
 
 
 def test_the_hard_exit_happens_even_when_its_trace_cant_be_written(tmp_path):

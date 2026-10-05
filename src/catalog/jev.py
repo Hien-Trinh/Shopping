@@ -80,7 +80,8 @@ class JevClassifier:
 
     def classify(self, listings) -> list[tuple[str, float] | None]:
         """One answer per Listing; None for those never started, because the budget ran out or a
-        call failed first. If no call answered and one failed, its error is raised instead."""
+        call failed first. If no call answered and one failed, its error is raised instead, as is
+        a refused key (KeyMissing) in any case."""
         deadline, failed = self.clock() + self.budget, threading.Event()
         self.error = None
         calls = []  # (listing, future)
@@ -99,8 +100,9 @@ class JevClassifier:
                 errors.append((x, e))
                 out.append(None)
         if errors:
-            x, e = errors[0]
-            if not any(out):
+            # a refused key first, whatever else answered or failed: no later batch can succeed
+            x, e = next(((x, e) for x, e in errors if isinstance(e, KeyMissing)), errors[0])
+            if isinstance(e, KeyMissing) or not any(out):
                 e.add_note(f"Jev failed on {x.title!r}, ${self.usd:.4f} spent so far")
                 raise e
             self.error = repr(e)[:500]  # for classify_failed: not "budget spent"

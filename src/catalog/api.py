@@ -195,10 +195,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     # flight and stops (step 4e).
     stop = SimpleNamespace(set=lambda: setattr(server, "should_exit", True), reason=None)
     worker.watch_supervisor(supervisor, stop, a.data / "events", "api")
-    server.run()
-    with contextlib.suppress(OSError):  # best effort, as every stop event
-        why = {"reason": stop.reason} if stop.reason else {}
-        EventLog(a.data / "events", "api").emit([{"type": "api_stop"} | why])
+    with event_files.stopping(EventLog(a.data / "events", "api"), stop):  # api_stop
+        server.run()
 
 
 if __name__ == "__main__":

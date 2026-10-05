@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 from datetime import UTC, datetime
 
 import pytest
@@ -118,3 +119,13 @@ def test_a_failed_write_never_leaves_the_next_events_after_a_torn_line(tmp_path,
     monkeypatch.undo()
     log.emit([{"type": "c"}])  # the retry
     assert [e["type"] for e in events.read(tmp_path)] == ["a", "c"]
+
+
+def test_a_stop_event_says_why_the_watch_stopped_the_process(tmp_path):  # step 7c.1
+    stop = threading.Event()
+    stop.reason = "supervisor_gone"  # as worker.watch sets it
+    with events.stopping(EventLog(tmp_path, "export"), stop):
+        pass
+    [stop_event] = events.read(tmp_path)
+    assert (stop_event["type"], stop_event["reason"]) == ("export_stop", "supervisor_gone")
+    assert "error" not in stop_event

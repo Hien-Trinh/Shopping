@@ -9,8 +9,10 @@ is never printed.
 
 import argparse
 import json
+import math
 import multiprocessing
 import os
+import queue
 import random
 import signal
 import sys
@@ -18,7 +20,9 @@ import time
 import urllib.error
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
+from http.client import HTTPException
 from pathlib import Path
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from catalog import entry, envelope
@@ -43,7 +47,9 @@ def change(i: int, *, seed, start_ms: int, keys: int, order: str, texts, currenc
     title, description = texts[i % len(texts)]
     listing = {"title": title, "description": description, "currency": currency}
     listing |= {"price_micros": rng.randint(1, 10**9), "availability": rng.choice(AVAILABILITY)}
-    source_version = start_ms + i  # a later Change of a key is newer, and so is a later run
+    # A later Change of a key is newer. A later run is newer only once it starts after the
+    # earlier run's last version, start_ms + changes ms: overlap and its Changes go stale.
+    source_version = start_ms + i
     return {"op": "upsert", "merchant_product_id": f"p{n}", "source_version": source_version,
             "listing": listing}  # fmt: skip
 
@@ -59,7 +65,11 @@ def send(bodies: Iterable[dict], post: Callable[[dict], tuple[int, dict]], *, ra
          clock=time.monotonic, sleep=time.sleep, stop=lambda: False) -> dict:  # fmt: skip
     """Post each body when due: `t0 + changes sent before it / rate`, at once if late (open
     loop, so a slow API shows as latency, not a lower rate). Counts every answer; raises none.
-    A 401 ends the loop: every later request would get one too."""
+    A 401 ends the loop: every later request would get one too.
+
+    ponytail: a process blocks on each POST, so a slow API caps the rate at processes / latency
+    (4 processes at 156 ms: 25/s, step-7a.md); the summary's late_s shows it. Async sends if
+    one Mac's processes can't keep up."""
     tally = {"sent": 0, "accepted": 0, "errors": 0, "late": 0.0, "latencies": []}
     statuses, t0 = Counter(), clock()
     for body in bodies:
@@ -73,7 +83,9 @@ def send(bodies: Iterable[dict], post: Callable[[dict], tuple[int, dict]], *, ra
         began = clock()
         try:
             status, reply = post(body)
-        except OSError:  # refused, reset or timed out: URLError and TimeoutError are OSErrors
+        # Refused, reset or timed out (URLError and TimeoutError are OSErrors), a cut-off
+        # response (HTTPException) or a body that isn't JSON (ValueError).
+        except OSError, HTTPException, ValueError:
             tally["errors"] += 1
             status, reply = None, {}
         tally["latencies"].append(clock() - began)
@@ -107,31 +119,50 @@ def http(url: str, key: str):
     return post
 
 
-def _init(stopping):
-    signal.signal(signal.SIGINT, signal.SIG_IGN)  # the parent stops us through `stopping`
-    global _stopping
-    _stopping = stopping
-
-
-def _process(j: int, options: dict) -> dict:
+def _process(j: int, options: dict, stop: Callable[[], bool]) -> dict:
     o = dict(options)
     url, rate, processes = o.pop("url"), o.pop("rate"), o.pop("processes")
     bodies = batches(j, processes, texts=texts(), **o)
     post = http(url, os.environ["CATALOG_API_KEY"])
-    return send(bodies, post, rate=rate / processes, stop=_stopping.is_set)
+    return send(bodies, post, rate=rate / processes, stop=stop)
 
 
-def summary(tallies: Sequence[dict], elapsed: float, start_ms: int) -> dict:
+def _child(j: int, options: dict, stopping, results) -> None:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)  # the parent stops us through `stopping`
+    results.put((j, _process(j, options, stopping.is_set)))  # a raise exits 1, traceback shown
+
+
+def collect(procs, results, stopping, poll: float = 0.2) -> tuple[dict[int, dict], list[int]]:
+    """Each process's tally as it arrives, and the processes that ended without one: killed,
+    or raised. A dead child is noticed, never waited on forever. Ctrl-C sets `stopping`, so
+    each process ends after its request in flight."""
+    tallies, pending = {}, set(range(len(procs)))
+    while pending:
+        try:
+            j, tally = results.get(timeout=poll)
+            tallies[j] = tally
+            pending.discard(j)
+        except queue.Empty:
+            # A child puts its tally before it exits, so an empty queue means none is coming.
+            pending -= {j for j in pending if procs[j].exitcode is not None and results.empty()}
+        except KeyboardInterrupt:
+            stopping.set()
+    return tallies, sorted(set(range(len(procs))) - tallies.keys())
+
+
+def summary(tallies: Sequence[dict], elapsed: float, start_ms: int, failed=()) -> dict:
     statuses, latencies = Counter(), sorted(x for t in tallies for x in t["latencies"])
     for t in tallies:
         statuses.update(t["statuses"])
     sent = sum(t["sent"] for t in tallies)
 
     def ms(q):  # nearest rank, in milliseconds
-        return round(1000 * latencies[min(int(q * len(latencies)), len(latencies) - 1)], 1)
+        return round(1000 * latencies[max(math.ceil(q * len(latencies)) - 1, 0)], 1)
 
     return {
         "start_ms": start_ms,
+        "processes": len(tallies) + len(failed),
+        "failed_processes": list(failed),
         "sent": sent,
         "accepted": sum(t["accepted"] for t in tallies),
         "statuses": {str(s): n for s, n in sorted(statuses.items())},
@@ -163,32 +194,29 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.error(f"--batch must be 1 to {envelope.MAX_BATCH}")
     if a.keys < 1 or a.processes < 1 or a.rate < 0:
         args.error("--keys and --processes must be at least 1, and --rate at least 0")
+    if urlsplit(a.url).scheme not in ("http", "https"):  # urllib would also take file: or ftp:
+        args.error("--url must be http:// or https://")
+    a.processes = min(a.processes, -(-a.changes // a.batch))  # an idle one's rate share is lost
     start_ms = time.time_ns() // 1_000_000
     options = vars(a) | {"start_ms": start_ms}
     ctx = multiprocessing.get_context("spawn")
-    stopping, began = ctx.Event(), time.monotonic()
-    tallies, code = [], 0
-    with ctx.Pool(a.processes, _init, (stopping,)) as pool:
-        running = [pool.apply_async(_process, (j, options)) for j in range(a.processes)]
-        for j, result in enumerate(running):
-            while True:
-                try:
-                    tallies.append(result.get(timeout=0.2))
-                    break
-                except multiprocessing.TimeoutError:
-                    continue
-                except KeyboardInterrupt:  # each process ends after its request in flight
-                    stopping.set()
-                    code = 130
-                except Exception as e:
-                    print(f"load: process {j} failed: {e!r}", file=sys.stderr)
-                    code = code or 1
-                    break
-    out = summary(tallies, time.monotonic() - began, start_ms)
+    stopping, results, began = ctx.Event(), ctx.Queue(), time.monotonic()
+    procs = [ctx.Process(target=_child, args=(j, options, stopping, results))
+             for j in range(a.processes)]  # fmt: skip
+    for p in procs:
+        p.start()
+    tallies, failed = collect(procs, results, stopping)
+    for p in procs:
+        p.join()
+    for j in failed:
+        print(
+            f"load: process {j} ended without a tally (exit {procs[j].exitcode})", file=sys.stderr
+        )
+    out = summary(list(tallies.values()), time.monotonic() - began, start_ms, failed)
     print(json.dumps(out))
-    if not code and ("401" in out["statuses"] or "202" not in out["statuses"]):
-        code = 1
-    return code
+    if stopping.is_set():
+        return 130
+    return 0 if not failed and out["accepted"] == out["sent"] else 1  # every Change landed
 
 
 if __name__ == "__main__":

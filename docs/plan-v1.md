@@ -231,7 +231,7 @@ src/catalog/
   export.py       Change Export + gap recovery
   snapshots.py    pinned copy + pruning
   maintenance.py  Landing log compaction, retention, vacuum
-loadgen/          scenarios, multiprocess sender
+  load.py         load generator: deterministic Changes, multiprocess open-loop sender
 eval/             labeled set, classifier experiment
 tests/unit  tests/integration  tests/stress
 ```

@@ -1,5 +1,10 @@
 """The load generator's Changes and one process's send loop (docs/specs/step-7a.md)."""
 
+import queue
+import threading
+from http.client import IncompleteRead
+from types import SimpleNamespace
+
 import pytest
 
 from catalog import envelope, load
@@ -16,6 +21,14 @@ def changes(n, **options):
 def test_the_same_seed_gives_the_same_changes():
     assert changes(20) == changes(20)
     assert changes(20) != changes(20, seed=8)
+
+
+def test_a_change_is_pinned_so_every_process_and_run_agrees():
+    # Not just equal twice in one process: a hash-randomized seed would pass that.
+    got = load.change(0, seed=7, start_ms=1, keys=50, order="random", texts=[("t", "d")],
+                      currency="USD")  # fmt: skip
+    assert got["merchant_product_id"] == "p44"
+    assert got["listing"]["price_micros"] == 775063189
 
 
 def test_every_change_passes_the_envelope():
@@ -87,7 +100,9 @@ def test_sends_are_due_at_t0_plus_changes_over_rate_and_a_late_one_goes_at_once(
 
 
 def test_statuses_and_errors_are_counted_never_raised():
-    answers = iter([(503, {}), OSError("refused"), TimeoutError(), (202, {"accepted": 1})])
+    cut_off, not_json = IncompleteRead(b""), ValueError("Expecting value")
+    answers = iter([(503, {}), OSError("refused"), TimeoutError(), cut_off, not_json,
+                    (202, {"accepted": 1})])  # fmt: skip
 
     def post(_):
         answer = next(answers)
@@ -95,10 +110,10 @@ def test_statuses_and_errors_are_counted_never_raised():
             raise answer
         return answer
 
-    tally = load.send(batches_of(1, 1, 1, 1), post, rate=0)
-    assert (tally["statuses"], tally["errors"]) == ({503: 1, 202: 1}, 2)
-    assert (tally["sent"], tally["accepted"]) == (4, 1)
-    assert len(tally["latencies"]) == 4
+    tally = load.send(batches_of(1, 1, 1, 1, 1, 1), post, rate=0)
+    assert (tally["statuses"], tally["errors"]) == ({503: 1, 202: 1}, 4)
+    assert (tally["sent"], tally["accepted"]) == (6, 1)
+    assert len(tally["latencies"]) == 6
 
 
 def test_a_401_stops_the_loop():
@@ -119,3 +134,56 @@ def test_a_stop_ends_the_loop_before_the_next_send():
     calls = []
     load.send(batches_of(1, 1), lambda b: calls.append(b) or (202, {}), rate=0, stop=lambda: True)
     assert calls == []
+
+
+def tally(*latencies):
+    return {"sent": 1, "accepted": 1, "errors": 0, "late": 0.0, "latencies": list(latencies),
+            "statuses": {202: 1}}  # fmt: skip
+
+
+def test_latency_percentiles_are_nearest_rank():
+    got = load.summary([tally(*(ms / 1000 for ms in range(100, 0, -1)))], 1.0, START_MS)
+    assert got["latency_ms"] == {"p50": 50, "p99": 99, "max": 100}
+    two = load.summary([tally(0.001, 0.002)], 1.0, START_MS)["latency_ms"]
+    assert (two["p50"], two["p99"]) == (1, 2)
+    assert load.summary([], 1.0, START_MS)["latency_ms"] is None
+
+
+class Stopping:
+    def __init__(self):
+        self.stopped = False
+
+    def set(self):
+        self.stopped = True
+
+
+def test_a_child_that_dies_without_a_tally_is_reported_not_waited_on():
+    results = queue.Queue()
+    results.put((0, tally(0.1)))
+    procs = [SimpleNamespace(exitcode=0), SimpleNamespace(exitcode=-9)]  # 1: kill -9ed
+    got = []
+    stopping = Stopping()
+    waiter = threading.Thread(
+        target=lambda: got.append(load.collect(procs, results, stopping, poll=0.01)), daemon=True
+    )
+    waiter.start()
+    waiter.join(timeout=5)
+    assert got, "collect waited forever on the dead child"
+    tallies, failed = got[0]
+    assert (list(tallies), failed) == ([0], [1])
+
+
+def test_ctrl_c_sets_stopping_and_still_collects_every_tally():
+    class Interrupted(queue.Queue):
+        def get(self, timeout=None):
+            if not self.hit:
+                self.hit = True
+                raise KeyboardInterrupt
+            return super().get(timeout=timeout)
+
+    results, stopping = Interrupted(), Stopping()
+    results.hit = False
+    results.put((0, tally(0.1)))
+    tallies, failed = load.collect([SimpleNamespace(exitcode=None)], results, stopping)
+    assert stopping.stopped
+    assert (list(tallies), failed) == ([0], [])

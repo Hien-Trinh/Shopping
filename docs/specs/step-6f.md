@@ -1,6 +1,6 @@
 # Step 6f: Jev in the pipeline (mini PRD)
 
-Status: approved Oct 4, with the split, decisions 1 to 7 and the test points as written; open questions answered below. Plan row: [plan-v1.md, PR steps, 6f](../plan-v1.md) ("Jev in the pipeline", with four open points: the batch budget, the key through the supervisor, cost, and the `Procfile` switch), and B4 (Jev about 250 ms a call, 80 requests/s, 1M Listings about 3.5 h and $62). Design: [Categorization](../design-commerce-ingestion-pipeline.md) (the `classify` contract; "step 6f moves the pipeline onto it") and lifecycle step 5 ("The timeout (200 ms) covers the whole batch"). Builds on [step-6e.md](step-6e.md) (the decision and `taxonomy_version` decision 6), [step-6b.md](step-6b.md) (`EmbeddingClassifier`, `budget`, `top`) and [step-6c.md](step-6c.md) (the Backfill reclassifies rows on another version). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 5 (see Outcome). Approved Oct 4, with the split, decisions 1 to 7 and the test points as written; open questions answered below. Plan row: [plan-v1.md, PR steps, 6f](../plan-v1.md) ("Jev in the pipeline", with four open points: the batch budget, the key through the supervisor, cost, and the `Procfile` switch), and B4 (Jev about 250 ms a call, 80 requests/s, 1M Listings about 3.5 h and $62). Design: [Categorization](../design-commerce-ingestion-pipeline.md) (the `classify` contract; "step 6f moves the pipeline onto it") and lifecycle step 5 ("The timeout (200 ms) covers the whole batch"). Builds on [step-6e.md](step-6e.md) (the decision and `taxonomy_version` decision 6), [step-6b.md](step-6b.md) (`EmbeddingClassifier`, `budget`, `top`) and [step-6c.md](step-6c.md) (the Backfill reclassifies rows on another version). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -96,6 +96,11 @@ The design's 200 ms batch timeout can't hold: one Jev call alone takes about 250
 - Tuning the Backfill's `LIMIT` and `INTERVAL` for a 1M initial load (Phase 7 measures it).
 - Classify latency as a metric (7c, from the 6b review).
 - Prompt tuning, other shortlist sizes, other Jev models.
+
+## Outcome
+
+- **6f.1** ([#63](https://github.com/Hien-Trinh/Shopping/pull/63)): as decided, plus the review's fixes: calls queued in the pool don't start after a failure or past the budget; `JevClassifier.error` gives `classify_failed` the real cause when some Listings were answered; `usd` counts every billed call, and a failed tick's spend shows in the next `batch` event; a probability outside 0..1 is a failed call.
+- **6f.2** ([#66](https://github.com/Hien-Trinh/Shopping/pull/66)): the `Procfile` runs Jev. Hand run (`spikes/run_6f2.py`, kept to repeat it): 12 of 20 exact, $0.001236 (about $62 per 1M Listings), no `classify_failed`. A wrong key isn't fatal yet: plan 7c.
 
 ## Size
 

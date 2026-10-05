@@ -19,7 +19,7 @@ from pathlib import Path
 import httpx2
 from deltalake import DeltaTable
 
-from catalog import events
+from catalog import entry, events
 
 REPO = Path(__file__).parents[1]
 PORT = 8765
@@ -30,10 +30,10 @@ def main():
     args.add_argument("--models", type=Path, default=REPO / "models")
     a = args.parse_args()
     if not os.environ.get("TYPESAFE_API_KEY"):
-        sys.exit("export TYPESAFE_API_KEY first")
+        return fail("export TYPESAFE_API_KEY first")
     if not a.models.is_dir():
-        sys.exit(
-            f"no models in {a.models}: pass --models or run python -m catalog.classify --download"
+        return fail(
+            f"no models in {a.models}: pass --models or python -m catalog.classify --download"
         )
     run = Path(tempfile.mkdtemp(prefix="run6f2-"))
     text = (REPO / "Procfile").read_text()
@@ -99,6 +99,11 @@ def main():
         shutil.rmtree(run)
 
 
+def fail(message):
+    print(message, file=sys.stderr)
+    return 2
+
+
 def ok(http):
     try:
         http.get("/submissions/x")
@@ -111,9 +116,9 @@ def until(check, seconds, what):
     deadline = time.monotonic() + seconds
     while not check():
         if time.monotonic() > deadline:
-            sys.exit(f"timed out waiting for {what}")
+            raise TimeoutError(f"timed out waiting for {what}")
         time.sleep(0.5)
 
 
 if __name__ == "__main__":
-    main()
+    entry.exit_with(main)  # os._exit: Arrow can hang at exit after a Delta scan (spikes/NOTES.md)

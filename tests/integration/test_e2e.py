@@ -101,6 +101,7 @@ class System:
         text, n = re.subn(r"^((?:worker-\d|backfill): .*)--classifier jev$",
                           r"\1--classifier fake", text, flags=re.M)  # fmt: skip
         assert n == 5, "the Procfile's worker or backfill lines changed"
+        assert "jev" not in text, "a Procfile line the rewrite missed would call the paid API"
         (tmp / "Procfile").write_text(text)
         create = [sys.executable, "-m", "catalog.merchants", "create", "--currency", "USD"]
         out = subprocess.run(create, cwd=tmp, capture_output=True, text=True, check=True).stdout

@@ -421,6 +421,64 @@ def test_the_batch_event_holds_the_spend_during_that_batch(env):  # step-6f.md, 
     assert [t.get("usd") for t in ticks] == [0.000025, None]
 
 
+def test_spend_of_a_failed_tick_shows_in_the_next_batch_event(env, monkeypatch):  # PR #63
+    class Paid(FakeClassifier):
+        usd: float = 0.0
+
+        def classify(self, listings):
+            self.usd += 0.5
+            return super().classify(listings)
+
+    real, calls = store.merge, []
+
+    def merge(*args):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("disk full")
+        return real(*args)
+
+    monkeypatch.setattr(store, "merge", merge)
+    env.classifier = Paid()
+    env.land(up(A, 1), up(product_in(5), 1))
+    run(env, Ticks(3), limit=1)  # fails, then one Change per batch
+    ticks = [e for e in events.read(env.events_root) if e["type"] == "batch"]
+    assert [t["usd"] for t in ticks] == [1.0, 0.5]  # the failed tick's spend shows once
+
+
+def test_classify_failed_names_the_classifiers_error(env):  # PR #63
+    class Partial(FakeClassifier):
+        error = "RuntimeError('Jev answered 429')"
+
+        def classify(self, listings):
+            return [None] * len(listings)
+
+    env.classifier = Partial()
+    env.land(up(A, 1))
+    env.run()
+    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
+    assert failed["error"] == Partial.error
+
+
+def test_the_jev_kind_runs_with_the_pipeline_settings(monkeypatch):  # PR #63
+    import math
+
+    import numpy as np
+
+    from catalog import classify, jev
+
+    got = {}
+    monkeypatch.setattr(jev, "http", lambda **kw: got.update(kw) or (lambda body: {}))
+    monkeypatch.setattr(
+        classify, "fastembed", lambda models: lambda texts: np.ones((len(texts), 3))
+    )
+    monkeypatch.setattr(worker, "run", lambda *a, stop: got.update(classifier=a[4]))
+    worker.main(["--index", "0", "--workers", "4", "--classifier", "jev"])
+    c = got["classifier"]
+    assert got["attempts"] == 1  # no retries in a batch: the Backfill retries
+    assert (c.rate, c.budget, c.threshold, c.k, c.description) == (20, 10, 0.40, 50, 200)
+    assert (c.shortlist.description, c.shortlist.budget) == (200, math.inf)
+
+
 def test_a_worker_behind_reads_again_without_waiting(env, monkeypatch):
     monkeypatch.setattr(landing, "read", functools.partial(landing.read, max_versions=1))
     env.land(up(A, 1))

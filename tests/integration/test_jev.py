@@ -320,7 +320,7 @@ def test_below_the_threshold_or_outside_the_options_is_uncategorized():
     api = Api({"1": 0.39}, {"1": 0.40}, {"2": 0.9})
     c, _ = pipeline(api)
     got = c.classify([listing("Tee"), listing("Tee"), listing("Tee")])
-    assert got == [(UNCATEGORIZED, 0.39), ("Apparel > Shirts", 0.40), (UNCATEGORIZED, 0.9)]
+    assert got == [(UNCATEGORIZED, 0.39), ("Apparel > Shirts", 0.40), (UNCATEGORIZED, 0.0)]
 
 
 def test_calls_start_at_most_rate_per_second_across_batches():
@@ -387,3 +387,77 @@ def test_a_missing_or_empty_key_is_key_missing(monkeypatch, key):
         monkeypatch.setenv("TYPESAFE_API_KEY", key)
     with pytest.raises(jev.KeyMissing, match="TYPESAFE_API_KEY"):
         jev.http()
+
+
+# --- review fixes (PR #63) -----------------------------------------------------------------
+
+
+class Later:
+    def __init__(self, fn, args):
+        self.fn, self.args = fn, args
+
+    def result(self):
+        return self.fn(*self.args)
+
+
+class Deferred(Executor):
+    """Runs each call only when its result is asked for, as a pool's queue would."""
+
+    def submit(self, fn, *args):
+        return Later(fn, args)
+
+
+def test_queued_calls_dont_start_after_a_failure():
+    api, made = Api({"1": 1.0}), []
+
+    def call(body):
+        made.append(body)
+        if len(made) > 1:
+            raise RuntimeError("Jev answered 429")
+        return api(body)
+
+    c, _ = pipeline(call, pool=Deferred())
+    assert c.classify([listing("Tee")] * 4) == [("Apparel > Shirts", 1.0)] + [None] * 3
+    assert len(made) == 2  # the 2nd failed; the 3rd and 4th never went out
+
+
+def test_queued_calls_dont_start_past_the_budget():
+    api = Api(*[{"1": 1.0}] * 3)
+    c, clock = pipeline(None, pool=Deferred(), budget=2.5)
+
+    def call(body):
+        clock.now += 5  # a slow call: the queue behind it is past the deadline
+        return api(body)
+
+    c.call = call
+    assert c.classify([listing("Tee")] * 3) == [("Apparel > Shirts", 1.0), None, None]
+
+
+def test_a_failure_after_some_answers_is_kept_for_the_worker():
+    api = Api({"1": 1.0})
+
+    def call(body):
+        if api.bodies:
+            raise RuntimeError("Jev answered 429")
+        return api(body)
+
+    c, _ = pipeline(call)
+    c.classify([listing("Tee")] * 3)
+    assert "429" in c.error
+    c.call = Api({"1": 1.0})
+    c.classify([listing("Tee")])
+    assert c.error is None
+
+
+@pytest.mark.parametrize("p", [float("nan"), 1.5, -0.1])
+def test_a_probability_outside_0_to_1_is_a_failed_call(p):
+    c, _ = pipeline(lambda body: Api({"1": p})(body))
+    with pytest.raises(ValueError, match="unexpected Jev response"):
+        c.classify([listing("Tee")])
+
+
+def test_a_billed_call_with_a_malformed_answer_still_counts():
+    c, _ = pipeline(lambda body: {"usage": {"input_tokens": 1_000_000}, "answers": {}})
+    with pytest.raises(ValueError):
+        c.classify([listing("Tee")])
+    assert c.usd == pytest.approx(0.042)

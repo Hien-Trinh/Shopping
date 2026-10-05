@@ -174,6 +174,7 @@ def run(
             [{"type": "worker_start", "worker": name, "workers": workers, "pid": os.getpid()}]
         )
         failures = busy = 0
+        reported = getattr(classifier, "usd", None)  # spend already in a batch event
         gap = False  # the last read found history cleanup removed: bootstrap instead of reading
         while not stop.is_set():
             started = clock()
@@ -187,7 +188,6 @@ def run(
                     gap = False
                     continue  # never resets `failures`: only a good read does, so a gap that
                     # a bootstrap can't cure still ends the worker after ATTEMPTS
-                spent = getattr(classifier, "usd", None)
                 batch = process_batch(
                     landing_dt, store_dt, classifier, events, state_dir, offsets, limit=limit
                 )
@@ -203,9 +203,11 @@ def run(
                         "head": landing_dt.version(),  # lag of p = head + 1 - next[p][0]
                         "next": moved,
                     }
-                    if spent is not None:  # a paid classifier: its cost, summed over events
-                        tick["usd"] = round(classifier.usd - spent, 6)
+                    spent = getattr(classifier, "usd", None)
+                    if spent is not None:  # a paid classifier: what it spent since the last
+                        tick["usd"] = round(spent - reported, 6)  # event, failed ticks too
                     events.emit([tick])
+                    reported = spent
                 # Only this thread beats, after the batch: a hung MERGE stops the beats (B1).
                 # Before compacting, so a long compaction gets the watchdog's full budget.
                 state.beat(state_dir, name, clock())
@@ -377,7 +379,8 @@ def _classify(writes: Sequence[Write], classifier) -> tuple[list[Write], list[di
         found = [
             None if a is None else _answer(a, version) for _, a in zip(todo, results, strict=True)
         ]
-        error = "budget spent"  # for the Listings it answered None
+        # for the Listings it answered None: a classifier may say why (jev.JevClassifier.error)
+        error = getattr(classifier, "error", None) or "budget spent"
     except Exception as e:  # an outage or a bad answer: never stall the partition
         found, error = [None] * len(todo), repr(e)[:500]  # a provider error may echo listing text
     missed = [w for w, f in zip(todo, found, strict=True) if f is None]

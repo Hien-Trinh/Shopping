@@ -60,6 +60,7 @@ class JevClassifier:
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     usd: float = 0.0
+    error: str | None = None  # the last classify's failure, when it still answered some
     taxonomy_version: str = field(init=False)
 
     def __post_init__(self):
@@ -68,11 +69,13 @@ class JevClassifier:
         )
         self.pool = self.pool or ThreadPoolExecutor(self.threads or math.ceil(self.rate / 2))
         self._next = -math.inf  # when the next call may start
+        self._lock = threading.Lock()  # for usd: calls add to it from the pool's threads
 
     def classify(self, listings) -> list[tuple[str, float] | None]:
         """One answer per Listing; None for those never started, because the budget ran out or a
         call failed first. If no call answered and one failed, its error is raised instead."""
         deadline, failed = self.clock() + self.budget, threading.Event()
+        self.error = None
         calls = []  # (listing, future)
         for x, paths in self._shortlists(listings):
             if (wait := self._next - self.clock()) > 0:
@@ -80,21 +83,20 @@ class JevClassifier:
             if failed.is_set() or self.clock() >= deadline:
                 break
             self._next = max(self._next, self.clock()) + 1 / self.rate
-            calls.append((x, self.pool.submit(self._ask, x, paths, failed)))
+            calls.append((x, self.pool.submit(self._ask, x, paths, failed, deadline)))
         out, errors = [], []
         for x, future in calls:
             try:
-                answer, usd = future.result()
+                out.append(future.result())
             except Exception as e:
                 errors.append((x, e))
                 out.append(None)
-            else:
-                self.usd += usd
-                out.append(answer)
-        if errors and not any(out):
+        if errors:
             x, e = errors[0]
-            e.add_note(f"Jev failed on {x.title!r}, ${self.usd:.4f} spent so far")
-            raise e
+            if not any(out):
+                e.add_note(f"Jev failed on {x.title!r}, ${self.usd:.4f} spent so far")
+                raise e
+            self.error = repr(e)[:500]  # for classify_failed: not "budget spent"
         return out + [None] * (len(listings) - len(out))
 
     def _shortlists(self, listings):
@@ -103,7 +105,9 @@ class JevClassifier:
             part = listings[i : i + n]
             yield from zip(part, self.shortlist.top(part, self.k), strict=True)
 
-    def _ask(self, x, paths, failed: threading.Event) -> tuple[tuple[str, float], float]:
+    def _ask(self, x, paths, failed: threading.Event, deadline: float) -> tuple[str, float] | None:
+        if failed.is_set() or self.clock() >= deadline:  # queued behind slow calls: not started
+            return None
         try:
             options = {str(i): path for i, path in enumerate(paths, 1)}
             question = {"type": "choice", "instructions": QUESTION, "criteria": options}
@@ -111,18 +115,23 @@ class JevClassifier:
             got = self.call(body | {"questions": {"c": question}})
             try:
                 usd = got["usage"]["input_tokens"] * USD_PER_TOKEN
+                with self._lock:  # billed, whether or not the answer parses
+                    self.usd += usd
                 answer = got["answers"]["c"]
                 key = answer["choice"]
                 confidence = float(answer["probabilities"].get(key, 0.0))
+                if not 0.0 <= confidence <= 1.0:  # NaN too
+                    raise ValueError
             except KeyError, TypeError, AttributeError, ValueError:
                 raise ValueError(f"unexpected Jev response: {str(got)[:300]}") from None
         except Exception:
             failed.set()  # no new calls: a 429 means slow down, an outage fails them all
             raise
-        path = options.get(key, None if self.threshold else key)  # the eval counts it invalid
-        if path is None or confidence < self.threshold:
-            path = classify.UNCATEGORIZED
-        return (path, confidence), usd
+        if key not in options:
+            return (key, confidence) if not self.threshold else (classify.UNCATEGORIZED, 0.0)
+        if confidence < self.threshold:
+            return classify.UNCATEGORIZED, confidence
+        return options[key], confidence
 
 
 def version(

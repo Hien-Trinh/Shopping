@@ -107,10 +107,14 @@ def deeper(text: str, tax: Taxonomy) -> dict[str, list[str]]:
     return out
 
 
-def load_deeper(tax: Taxonomy) -> dict[str, list[str]]:
-    """`deeper` over the committed release."""
-    with FULL.open("rb") as f:
-        return deeper(gzip.decompress(f.read()).decode("utf-8"), tax)
+def load_deeper(tax: Taxonomy, path: Path | None = None) -> dict[str, list[str]]:
+    """`deeper` over a gzipped release, by default the committed one."""
+    source = path or FULL
+    try:
+        return deeper(gzip.decompress(source.read_bytes()).decode("utf-8"), tax)
+    except Exception as e:  # a corrupt or truncated file, or one `deeper` refuses
+        e.add_note(f"in {source}")
+        raise
 
 
 def main(argv: Sequence[str] | None = None) -> None:

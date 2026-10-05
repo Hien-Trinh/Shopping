@@ -170,8 +170,8 @@ def test_a_category_scores_its_best_text():
         texts=[
             ("Apparel", "Apparel"),
             ("Apparel > Shirts", "Apparel > Shirts"),
+            ("Shirt", "Toys"),  # the best text first, so a last-write-wins bug shows
             ("Toys", "Toys"),
-            ("Shirt", "Toys"),
         ],
         threshold=0.0,
     )
@@ -226,3 +226,32 @@ def test_the_deeper_recipe_adds_each_descendant_for_its_ancestor():
         ("Apparel > Shirts > Tees", "Apparel > Shirts"),
         ("Apparel > Shirts > Polos", "Apparel > Shirts"),
     ]
+
+
+# --- review fixes (PR #69) -----------------------------------------------------------------
+
+
+def test_several_texts_per_category_answer_as_one_text_does():
+    items = [listing(t) for t in ("Shirt", "Ball", "Jacket", "Anti")]
+    doubled = [(p, p) for p in TAXONOMY.paths] * 2  # the max path, same answers
+    assert classifier(texts=doubled).classify(items) == classifier().classify(items)
+    assert classifier(texts=doubled).top(items, 3) == classifier().top(items, 3)
+
+
+def test_negative_best_scores_still_rank():
+    # Anti is negative to every text; Apparel's only text, Ball, is the most negative
+    pairs = [("Ball", "Apparel"), ("Ball", "Apparel"), ("Apparel > Shirts", "Apparel > Shirts")]
+    c = classifier(texts=pairs + [("Toys", "Toys")])
+    assert c.top([listing("Anti")], 3) == [["Apparel > Shirts", "Toys", "Apparel"]]
+
+
+@pytest.mark.parametrize(
+    "pairs, message",
+    [
+        ([("a", "Apparel"), ("b", "Apparel > Shirts"), ("c", "Toys"), ("d", "Nope")], "'Nope'"),
+        ([("a", "Apparel"), ("b", "Apparel > Shirts")], "no text for 'Toys'"),
+    ],
+)
+def test_texts_must_name_taxonomy_paths_and_cover_them_all(pairs, message):
+    with pytest.raises(ValueError, match=message):
+        classifier(texts=pairs)

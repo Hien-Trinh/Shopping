@@ -1,3 +1,4 @@
+import gzip
 import os
 import subprocess
 import sys
@@ -200,3 +201,13 @@ def test_the_committed_full_release_matches_the_committed_taxonomy():
         "Apparel & Accessories > Clothing > Activewear > Activewear Pants > Leggings"
         in got["Apparel & Accessories > Clothing > Activewear"]
     )
+
+
+def test_load_deeper_reads_a_given_release_and_names_a_corrupt_one(tmp_path):
+    good, bad = tmp_path / "full.txt.gz", tmp_path / "bad.txt.gz"
+    good.write_bytes(gzip.compress(FULL.encode()))
+    assert load_deeper(TAX, good)[BIRDS][0] == f"{BIRDS} > Bird Cages"
+    bad.write_bytes(gzip.compress(FULL.encode())[:40])
+    with pytest.raises(Exception) as e:
+        load_deeper(TAX, bad)
+    assert any("bad.txt.gz" in n for n in getattr(e.value, "__notes__", []))

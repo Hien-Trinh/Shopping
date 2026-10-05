@@ -65,7 +65,12 @@ class EmbeddingClassifier:
         if self.texts is None:
             self.texts = [(p, p) for p in paths]
         index = {p: i for i, p in enumerate(paths)}
+        for _, p in self.texts:
+            if p not in index:
+                raise ValueError(f"a text names {p!r}, which isn't in {self.taxonomy.version}")
         self._owner = np.array([index[p] for _, p in self.texts])  # each text's Category
+        if missing := set(paths) - {p for _, p in self.texts}:  # it would never be shortlisted
+            raise ValueError(f"no text for {min(missing)!r}")
         self._plain = self._owner.tolist() == list(range(len(paths)))  # one text per path
         words = [t for t, _ in self.texts]  # in chunks: one ONNX run over all peaks at 1.2 GB
         self._paths = _unit(

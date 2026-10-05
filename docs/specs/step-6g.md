@@ -14,7 +14,7 @@ The research ranks these fixes differently depending on that split. Measuring it
 ## Solution
 
 1. `evaluate.recall(shortlists, labels, ks) -> dict`, a pure function. For each k it reports the share of Listings whose labelled Category is in the first k paths, at three depths: the exact path, the same first two levels, and the same top level.
-2. `evaluate.misses(result, shortlists, k) -> dict`, a pure function. It splits a stored result's wrong answers, at threshold 0, into "the label was in the first k" (chooser error) and "it wasn't" (retrieval miss).
+2. `evaluate.misses(result, shortlists, sha, description) -> dict`, a pure function. `shortlists` maps each labelled id to its shortlist. `sha` is the labels' hash, and `description` the characters the shortlist read. k comes from the result's own `shortlist`. It refuses a result it can't match (the failure rows below). It splits a stored result's wrong answers, at threshold 0, into "the label was in the first k" (chooser error) and "it wasn't" (retrieval miss).
 3. A `recall` subcommand: `python -m catalog.evaluate recall --description 200 --ks 1 5 10 20 50 100 200 [--split eval/results/jev-shortlist50-d200.json]`.
    - It loads the labels.
    - It builds the shortlist once with `EmbeddingClassifier.top` at the largest k, the same call Jev's shortlist uses, so the measurement matches the pipeline.
@@ -36,7 +36,8 @@ The research ranks these fixes differently depending on that split. Measuring it
 | A `--split` file comes from another label set (its `labels_sha256` differs) | ValueError naming the file; no file written: its ids would be scored against the wrong labels |
 | A `--split` file's `description` differs from `--description` | ValueError naming both values: the shortlist it saw differs from the one rebuilt |
 | A `--split` file has no `shortlist` (an embedding or hierarchical run) | ValueError naming the file: there is no shortlist to split on |
-| A `--split` file's ids differ from the labels' | ValueError naming the first missing id |
+| A `--split` file's ids differ from the labels' | ValueError naming the first missing id, in label order |
+| `--ks` stops below a `--split` file's shortlist size | The shortlist is built to the deeper of the two, so chooser errors are never counted as misses (review fix) |
 | A k is below 1 or above the number of Categories (1,862) | Usage error |
 | The same k given twice, or out of order | Sorted and deduplicated |
 | Two Categories tie in similarity | The stable order `top` already uses, so reruns agree |

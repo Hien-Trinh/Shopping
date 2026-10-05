@@ -8,6 +8,7 @@ history they still needed (step-5e.md); `python -m catalog.worker` starts it.
 
 import argparse
 import contextlib
+import math
 import os
 import signal
 import sys
@@ -21,7 +22,7 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from catalog import classify, delta, entry, landing, state, store, taxonomy
+from catalog import classify, delta, entry, jev, landing, state, store, taxonomy
 from catalog.classify import UNCATEGORIZED
 from catalog.events import EventLog
 from catalog.keys import owned, partition
@@ -140,6 +141,7 @@ FATAL = {
     state.OffsetsMismatch: 4,
     state.CorruptState: 5,
     classify.ModelMissing: 6,
+    jev.KeyMissing: 7,
 }
 SUPERVISOR = "CATALOG_SUPERVISOR"  # set to the supervisor's pid in its children's environment
 
@@ -172,6 +174,7 @@ def run(
             [{"type": "worker_start", "worker": name, "workers": workers, "pid": os.getpid()}]
         )
         failures = busy = 0
+        reported = getattr(classifier, "usd", None)  # spend already in a batch event
         gap = False  # the last read found history cleanup removed: bootstrap instead of reading
         while not stop.is_set():
             started = clock()
@@ -200,7 +203,11 @@ def run(
                         "head": landing_dt.version(),  # lag of p = head + 1 - next[p][0]
                         "next": moved,
                     }
+                    spent = getattr(classifier, "usd", None)
+                    if spent is not None:  # a paid classifier: what it spent since the last
+                        tick["usd"] = round(spent - reported, 6)  # event, failed ticks too
                     events.emit([tick])
+                    reported = spent
                 # Only this thread beats, after the batch: a hung MERGE stops the beats (B1).
                 # Before compacting, so a long compaction gets the watchdog's full budget.
                 state.beat(state_dir, name, clock())
@@ -316,7 +323,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.error(str(e))
     stop = stop_on_signals()
     watch_supervisor(supervisor, stop)  # so a kill -9ed supervisor leaves no worker behind
-    if a.classifier == "embedding":  # fake by default until 6e picks the threshold
+    if a.classifier == "jev":
+        call = jev.http(attempts=1)  # first: a missing key stops it before the model loads
+        tax = taxonomy.load()
+        shortlist = classify.EmbeddingClassifier(
+            tax, classify.fastembed(a.models), description=jev.DESCRIPTION, budget=math.inf
+        )  # JevClassifier owns the budget
+        # ponytail: a static share of Jev's limit; an idle worker's share goes unused
+        classifier = jev.JevClassifier(tax, shortlist, call, rate=jev.LIMIT / a.workers)
+    elif a.classifier == "embedding":
         classifier = classify.EmbeddingClassifier(taxonomy.load(), classify.fastembed(a.models))
     else:
         classifier = classify.FakeClassifier()
@@ -364,7 +379,8 @@ def _classify(writes: Sequence[Write], classifier) -> tuple[list[Write], list[di
         found = [
             None if a is None else _answer(a, version) for _, a in zip(todo, results, strict=True)
         ]
-        error = "budget spent"  # for the Listings it answered None
+        # for the Listings it answered None: a classifier may say why (jev.JevClassifier.error)
+        error = getattr(classifier, "error", None) or "budget spent"
     except Exception as e:  # an outage or a bad answer: never stall the partition
         found, error = [None] * len(todo), repr(e)[:500]  # a provider error may echo listing text
     missed = [w for w, f in zip(todo, found, strict=True) if f is None]

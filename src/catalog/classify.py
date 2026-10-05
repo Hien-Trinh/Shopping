@@ -98,15 +98,17 @@ def text(listing: Content, description: int = DESCRIPTION) -> str:
     return f"{listing.title} {listing.description[:description]}".strip()
 
 
-KINDS = ("fake", "embedding")  # a worker's and the Backfill's --classifier
+KINDS = ("fake", "embedding", "jev")  # a worker's and the Backfill's --classifier
 
 
 def taxonomy_version(kind: str) -> str:
     """The version a `--classifier` kind stamps, without loading the model (step-6c.md)."""
     if kind == "fake":
         return FakeClassifier.taxonomy_version
-    from catalog import taxonomy  # here: taxonomy imports this module
+    from catalog import jev, taxonomy  # here: both import this module
 
+    if kind == "jev":
+        return jev.version(taxonomy.load().version)
     return _version(taxonomy.load().version, MODEL)
 
 

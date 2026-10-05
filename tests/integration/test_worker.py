@@ -403,6 +403,82 @@ def test_run_processes_only_its_own_partitions(env, monkeypatch):
     assert tick["next"] == {str(p): [2, 0] for p in range(16)}
 
 
+def test_the_batch_event_holds_the_spend_during_that_batch(env):  # step-6f.md, test point 5
+    class Paid(FakeClassifier):
+        usd: float = 1.0  # spent before this worker's first batch
+
+        def classify(self, listings):
+            self.usd += 0.0000125 * len(listings)
+            return super().classify(listings)
+
+    env.classifier = Paid()
+    env.land(up(A, 1), up(product_in(5), 1))
+    run(env, Ticks(1))
+    env.classifier = FakeClassifier()  # no usd attribute: no usd field
+    env.land(up(A, 2))
+    run(env, Ticks(1))
+    ticks = [e for e in events.read(env.events_root) if e["type"] == "batch"]
+    assert [t.get("usd") for t in ticks] == [0.000025, None]
+
+
+def test_spend_of_a_failed_tick_shows_in_the_next_batch_event(env, monkeypatch):  # PR #63
+    class Paid(FakeClassifier):
+        usd: float = 0.0
+
+        def classify(self, listings):
+            self.usd += 0.5
+            return super().classify(listings)
+
+    real, calls = store.merge, []
+
+    def merge(*args):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("disk full")
+        return real(*args)
+
+    monkeypatch.setattr(store, "merge", merge)
+    env.classifier = Paid()
+    env.land(up(A, 1), up(product_in(5), 1))
+    run(env, Ticks(3), limit=1)  # fails, then one Change per batch
+    ticks = [e for e in events.read(env.events_root) if e["type"] == "batch"]
+    assert [t["usd"] for t in ticks] == [1.0, 0.5]  # the failed tick's spend shows once
+
+
+def test_classify_failed_names_the_classifiers_error(env):  # PR #63
+    class Partial(FakeClassifier):
+        error = "RuntimeError('Jev answered 429')"
+
+        def classify(self, listings):
+            return [None] * len(listings)
+
+    env.classifier = Partial()
+    env.land(up(A, 1))
+    env.run()
+    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
+    assert failed["error"] == Partial.error
+
+
+def test_the_jev_kind_runs_with_the_pipeline_settings(monkeypatch):  # PR #63
+    import math
+
+    import numpy as np
+
+    from catalog import classify, jev
+
+    got = {}
+    monkeypatch.setattr(jev, "http", lambda **kw: got.update(kw) or (lambda body: {}))
+    monkeypatch.setattr(
+        classify, "fastembed", lambda models: lambda texts: np.ones((len(texts), 3))
+    )
+    monkeypatch.setattr(worker, "run", lambda *a, stop: got.update(classifier=a[4]))
+    worker.main(["--index", "0", "--workers", "4", "--classifier", "jev"])
+    c = got["classifier"]
+    assert got["attempts"] == 1  # no retries in a batch: the Backfill retries
+    assert (c.rate, c.budget, c.threshold, c.k, c.description) == (20, 10, 0.40, 50, 200)
+    assert (c.shortlist.description, c.shortlist.budget) == (200, math.inf)
+
+
 def test_a_worker_behind_reads_again_without_waiting(env, monkeypatch):
     monkeypatch.setattr(landing, "read", functools.partial(landing.read, max_versions=1))
     env.land(up(A, 1))
@@ -592,6 +668,15 @@ def test_the_cli_exits_6_without_the_embedding_model(env):
     missing = cli(*args, "--classifier", "embedding", "--models", str(env.tmp / "models"))
     assert missing.returncode == 6 and "--download" in missing.stderr
     assert 6 in supervisor.FATAL_CODES  # the supervisor stops instead of restarting it
+
+
+def test_the_cli_exits_7_without_the_jev_key(env):  # step-6f.md, test point 4
+    args = ["--index", "0", "--workers", "4", "--data", str(env.tmp), "--state", str(env.state)]
+    no_key = {k: v for k, v in os.environ.items() if k != "TYPESAFE_API_KEY"}
+    missing = cli(*args, "--classifier", "jev", "--models", str(env.tmp / "models"), env=no_key)
+    assert missing.returncode == 7 and "TYPESAFE_API_KEY" in missing.stderr
+    assert not (env.state / "locks").exists()  # stopped before claiming a partition
+    assert 7 in supervisor.FATAL_CODES
 
 
 def test_the_cli_exits_cleanly_with_stdout_closed(tmp_path):

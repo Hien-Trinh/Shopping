@@ -100,6 +100,10 @@ Phase 7's exit is "every scenario ends with the three oracles passing". Today:
 1. **The `classifier-outage` check that no Listing stays flagged** (Solution 5): the oracles ignore the Category on purpose (A4), so without it the outage scenario only shows the store survives. It adds about 10 s of settling (one Backfill tick) and a few lines. Keep it? **Yes.**
 2. **The `down` classifier kind** (Solution 4) puts a failure mode on the shipped command line. The other way is a test-only driver like `tests/integration/chaos_driver.py`, but then `catalog.chaos` would depend on the tests folder. I'd name it `down`. OK? **Yes.**
 
+## Outcome (Oct 5)
+
+All ten scenarios passed at the defaults (60 s at 20/s, `fake`, this Mac), each settling in under 1.5 s, with every fault shown by its effect (for example 1,007 stale for out-of-order, 392 × 503 for disk-full). Review fixes (PR #77): a run fails if nothing landed or an oracle had nothing to check, each scenario must show its fault's effect (`EFFECTS`), and settling has one budget in all and names the pending count. Kept, at review: the summary's `process_exits` and `supervisor_restarts`; 1,000 keys and 8 load processes; out-of-order's shift of half the run's Changes; `alive()` in both `chaos.py` and the test helpers until the end-of-project cleanup.
+
 ## Out of scope
 
 - Metrics, freshness and the runbook: 7c.

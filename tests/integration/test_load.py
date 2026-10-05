@@ -49,6 +49,53 @@ def test_source_versions_grow_with_i():
     assert [c["source_version"] for c in changes(5)] == [START_MS + i for i in range(5)]
 
 
+def test_deletes_come_at_the_asked_fraction_from_the_seed():
+    got = changes(10_000, deletes=0.1)
+    assert got == changes(10_000, deletes=0.1)
+    deletes = [c for c in got if c["op"] == "delete"]
+    assert 900 < len(deletes) < 1100
+    assert all("listing" not in c for c in deletes)
+    assert [c["op"] for c in changes(100)] == ["upsert"] * 100  # default 0: none
+
+
+def test_deletes_pass_the_envelope():
+    checked = envelope.check_batch(
+        {"changes": changes(200, deletes=0.5)}, merchant_id="m_a", currency="USD",
+        now_ms=START_MS,
+    )  # fmt: skip
+    assert checked.rejected == []
+    assert {c.op for _, c in checked.accepted} == {"upsert", "delete"}
+
+
+def test_start_ms_fixes_every_source_version(monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setenv("CATALOG_API_KEY", "k")
+    monkeypatch.setattr(load, "collect", lambda procs, *_: seen.setdefault("procs", procs)
+                        and ({}, []))  # fmt: skip
+    monkeypatch.setattr(load.multiprocessing, "get_context", lambda _: Context(seen))
+    load.main(["--changes", "1", "--start-ms", "123", "--deletes", "0.25"])
+    (options,) = seen["options"]
+    assert (options["start_ms"], options["deletes"]) == (123, 0.25)
+    assert '"start_ms": 123' in capsys.readouterr().out
+
+
+class Context:
+    """multiprocessing's spawn context, recording each Process's options instead of starting it."""
+
+    def __init__(self, seen):
+        self.seen = seen
+
+    def Event(self):  # noqa: N802
+        return threading.Event()
+
+    def Queue(self):  # noqa: N802
+        return queue.Queue()
+
+    def Process(self, target, args):  # noqa: N802
+        self.seen.setdefault("options", []).append(args[1])
+        return SimpleNamespace(start=lambda: None, join=lambda: None, exitcode=0)
+
+
 def test_batches_cover_a_process_share_in_order():
     got = [
         [c["source_version"] - START_MS for c in body["changes"]]

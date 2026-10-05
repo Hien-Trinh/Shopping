@@ -18,7 +18,7 @@ import pytest
 from deltalake import DeltaTable
 from test_supervisor import alive, wait_for
 
-from catalog import events, export, landing, load, snapshots, state, store
+from catalog import chaos, events, export, landing, load, snapshots, state, store
 from catalog.keys import PARTITIONS, partition
 from catalog.landing import START
 from catalog.plan import Outcome
@@ -86,26 +86,8 @@ class System:
 
     def __init__(self, tmp: Path, port: int):
         self.tmp, self.port, self.supervisors = tmp, port, []
-        # --min-free 0: the guard's 5 GiB would refuse every post on a nearly full machine.
-        text, n = re.subn(r"^api: python -m catalog\.api$", rf"\g<0> --port {port} --min-free 0",
-                          PROCFILE.read_text(), flags=re.M)  # fmt: skip
-        assert n == 1, "the Procfile's api line changed"
-        text, n = re.subn(r"^export: python -m catalog\.export$", r"\g<0> --interval 0.2",
-                          text, flags=re.M)  # fmt: skip
-        assert n == 1, "the Procfile's export line changed"
-        # Passes beside the API's appends and the workers (step 5d).
-        text, n = re.subn(r"^maintenance: python -m catalog\.maintenance$",
-                          r"\g<0> --interval 0.2", text, flags=re.M)  # fmt: skip
-        assert n == 1, "the Procfile's maintenance line changed"
-        # Every second at least, so consecutive snapshots never share a second's name.
-        text, n = re.subn(r"^snapshots: python -m catalog\.snapshots$", r"\g<0> --every 1",
-                          text, flags=re.M)  # fmt: skip
-        assert n == 1, "the Procfile's snapshots line changed"
-        # The fake classifier: CI never calls the paid Jev API or needs the model (step-6f.md).
-        text, n = re.subn(r"^((?:worker-\d|backfill): .*)--classifier jev$",
-                          r"\1--classifier fake", text, flags=re.M)  # fmt: skip
-        assert n == 5, "the Procfile's worker or backfill lines changed"
-        assert "jev" not in text, "a Procfile line the rewrite missed would call the paid API"
+        # The fake classifier, --min-free 0 and fast passes, as the chaos runner's systems.
+        text = chaos.procfile(PROCFILE.read_text(), port)
         (tmp / "Procfile").write_text(text)
         create = [sys.executable, "-m", "catalog.merchants", "create", "--currency", "USD"]
         out = subprocess.run(create, cwd=tmp, capture_output=True, text=True, check=True).stdout

@@ -12,4 +12,14 @@ make hooks   # once per clone: runs `make check` before every push, and refreshe
 make check   # ruff + tests + coverage gates, same as CI
 ```
 
+## Run
+
+The workers categorize with an embedding shortlist and TypeSafe's paid Jev API (about $62 per 1M Listings).
+
+```bash
+uv run python -m catalog.classify --download   # once: the embedding model, into models/
+export TYPESAFE_API_KEY=...                     # your TypeSafe key; never logged
+uv run python -m catalog.supervisor             # runs the Procfile
+```
+
 Changes reach `main` only through a PR with a green `check` job.

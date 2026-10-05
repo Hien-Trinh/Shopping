@@ -222,6 +222,7 @@ def test_a_redirect_never_carries_the_key(monkeypatch):
             if self.path == "/v1/systemone":
                 self.send_response(302)
                 self.send_header("Location", "/elsewhere")
+                self.send_header("Content-Length", "0")
                 self.end_headers()
             else:
                 seen.append(self.headers.get("Authorization"))
@@ -258,3 +259,17 @@ def test_the_warm_up_call_is_not_charged_to_the_run(tmp_path):
 
 def labeled_two():
     return [evaluate.Labeled(str(i), listing(f"t{i}"), "Toys") for i in range(2)]
+
+
+def test_an_error_body_that_wont_read_still_gives_the_status(monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "k-test")
+
+    class Reset(io.BytesIO):
+        def read(self, *args):
+            raise ConnectionResetError("reset by peer")
+
+    def urlopen(request, timeout):
+        raise HTTPError(request.full_url, 302, "Found", {}, Reset())
+
+    with pytest.raises(RuntimeError, match="Jev answered 302"):
+        jev.http(urlopen=urlopen)({})

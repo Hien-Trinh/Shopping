@@ -83,7 +83,10 @@ def http(*, urlopen=_urlopen, sleep=time.sleep, attempts: int = 5) -> Callable[[
                     raw = response.read()
             except HTTPError as e:
                 if e.code not in RETRY or attempt == attempts:
-                    detail = e.read()[:300].decode(errors="replace")  # never the headers
+                    try:
+                        detail = e.read()[:300].decode(errors="replace")  # never the headers
+                    except OSError:  # the server may close before the body
+                        detail = ""
                     raise RuntimeError(
                         f"Jev answered {e.code} after {attempt} attempts: {detail}"
                     ) from None

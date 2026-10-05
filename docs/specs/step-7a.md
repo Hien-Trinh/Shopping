@@ -25,7 +25,7 @@ Both give the same answers. 0.40 s is a third of the review's guess, and it isn'
 ## Solution
 
 1. **`python -m catalog.load`**, a new module. It posts generated Changes to a running API and prints one JSON summary line.
-   - Flags: `--url` (default `http://127.0.0.1:8000`), `--rate` (Changes/s, 0 = as fast as the API answers), `--changes` (total), `--batch` (Changes per request, up to 10,000), `--keys` (the key space), `--order {random,sequential}`, `--processes` (default 4), `--seed`.
+   - Flags: `--url` (default `http://127.0.0.1:8000`), `--rate` (Changes/s, 0 = as fast as the API answers), `--changes` (total), `--batch` (Changes per request, up to 10,000), `--keys` (the key space), `--order {random,sequential}`, `--processes` (default 16; 4 at approval, see Outcome), `--seed`.
    - The Merchant's key comes from `CATALOG_API_KEY`, never a flag (a flag shows in `ps`), and is never printed.
    - The three Phase 7 load shapes are flag sets, not code:
      - steady: `--rate 50 --changes 30000 --batch 1`
@@ -99,6 +99,18 @@ Both give the same answers. 0.40 s is a third of the review's guess, and it isn'
 
 1. **Keep `np.maximum.at`** (solution 6), given 0.08 s per batch today? `reduceat` is about 5 lines and 20× faster. I'd switch only when something shortlists whole batches. **Yes: keep it.**
 2. **The hand run uses the `fake` classifier**, so it costs nothing. A `jev` run at 50/s for 60 s would be about 3,000 calls, about $0.19. Want one too, or leave paid runs to 7d? **`fake` only.**
+
+## Outcome (Oct 5)
+
+The hand run, on the `fake` classifier, with 4 workers on this Mac:
+
+| Run | Sent | Got 202 | Changes/s | POST p50 / p99 / max |
+|---|---|---|---|---|
+| Steady, 4 processes | 3,000 | 3,000 | 25.8 | 156 / 233 / 1,327 ms |
+| Steady, 16 processes | 3,000 | 3,000 | 49.7 | 156 / 298 / 343 ms |
+| Bulk, one 10k batch | 10,000 | 10,000 | n/a | 372 ms |
+
+All 16,000 Changes got an Outcome, all `written`. A batch-1 POST waits for the group commit (about 156 ms), so the open loop's ceiling of `processes / latency` held 4 processes to 25/s. `--processes` now defaults to 16. The first steady run took 17 minutes of wall time for 116 s of monotonic time: the Mac slept during it, and `time.monotonic` stops while it sleeps. Run long loads under `caffeinate -i`.
 
 ## Out of scope
 

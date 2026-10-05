@@ -309,6 +309,18 @@ def test_the_cli_serves_on_localhost_only(tmp_path, monkeypatch):
     assert (config.host, config.port) == ("127.0.0.1", 8123)
 
 
+def test_the_cli_takes_the_disk_guard_from_min_free(tmp_path, monkeypatch):
+    db = tmp_path / "data" / "merchants.sqlite"
+    _, key = merchants.create(db, "USD")
+    served = []
+    monkeypatch.setattr(api.uvicorn.Server, "run", lambda server: served.append(server.config))
+    api.main(["--data", str(tmp_path / "data"), "--db", str(db), "--min-free", str(2**62)])
+    with TestClient(served[0].app) as client:
+        r = client.post("/listings:batch", json={"changes": [change("a")]},
+                        headers={"Authorization": f"Bearer {key}"})  # fmt: skip
+    assert r.status_code == 503
+
+
 @pytest.mark.parametrize("pid", ["abc", "0", "-1", " 7", str(2**31)])
 def test_a_malformed_supervisor_pid_is_refused_as_a_bad_flag(tmp_path, monkeypatch, capsys, pid):
     db = tmp_path / "data" / "merchants.sqlite"

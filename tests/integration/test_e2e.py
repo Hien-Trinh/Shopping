@@ -3,6 +3,7 @@ a Merchant posts over a real socket, and the workers' Outcomes come back over HT
 
 import contextlib
 import itertools
+import json
 import os
 import re
 import signal
@@ -17,13 +18,15 @@ import pytest
 from deltalake import DeltaTable
 from test_supervisor import alive, wait_for
 
-from catalog import events, export, landing, snapshots, state, store
+from catalog import events, export, landing, load, snapshots, state, store
 from catalog.keys import PARTITIONS, partition
 from catalog.landing import START
+from catalog.plan import Outcome
 from catalog.replay import diff, expected_store, live, replay_exports
 
 PROCFILE = Path(__file__).parents[2] / "Procfile"
 SUPERVISOR = [sys.executable, "-m", "catalog.supervisor"]
+OUTCOMES = {o.value for o in Outcome} | {"failed"}
 
 
 def free_port() -> int:
@@ -83,7 +86,8 @@ class System:
 
     def __init__(self, tmp: Path, port: int):
         self.tmp, self.port, self.supervisors = tmp, port, []
-        text, n = re.subn(r"^api: python -m catalog\.api$", rf"\g<0> --port {port}",
+        # --min-free 0: the guard's 5 GiB would refuse every post on a nearly full machine.
+        text, n = re.subn(r"^api: python -m catalog\.api$", rf"\g<0> --port {port} --min-free 0",
                           PROCFILE.read_text(), flags=re.M)  # fmt: skip
         assert n == 1, "the Procfile's api line changed"
         text, n = re.subn(r"^export: python -m catalog\.export$", r"\g<0> --interval 0.2",
@@ -227,3 +231,32 @@ def test_killing_the_supervisor_stops_its_api_so_a_new_one_serves_on_its_port(sy
     assert api_pids(system.port) not in ([], [api])
     second.send_signal(signal.SIGTERM)
     assert second.wait(timeout=30) == 0
+
+
+def test_the_load_generator_posts_through_the_real_system(system, monkeypatch, capsys):
+    system.start()
+    monkeypatch.setenv("CATALOG_API_KEY", system.key)
+    url = f"http://127.0.0.1:{system.port}"
+    argv = ["--url", url, "--changes", "200", "--batch", "10", "--keys", "500", "--rate", "0"]
+    assert load.main([*argv, "--processes", "2", "--seed", "3"]) == 0
+    out = capsys.readouterr()
+    summary = json.loads(out.out)
+    assert summary["statuses"] == {"202": 20}
+    assert (summary["sent"], summary["accepted"], summary["errors"]) == (200, 200, 0)
+    assert system.key not in out.out + out.err
+
+    # Every Change gets an Outcome: one per (submission, index) among the workers' events.
+    def outcomes():
+        found = events.read(system.tmp / "data" / "events")
+        done = {(e["submission_id"], e["change_index"]) for e in found if e["type"] in OUTCOMES}
+        return len(done) == 200
+
+    wait_for(outcomes, timeout=60)
+
+
+def test_the_load_generator_needs_a_key(monkeypatch, capsys):
+    monkeypatch.delenv("CATALOG_API_KEY", raising=False)
+    with pytest.raises(SystemExit) as stopped:
+        load.main(["--changes", "1"])
+    assert stopped.value.code == 2
+    assert "CATALOG_API_KEY" in capsys.readouterr().err

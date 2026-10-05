@@ -149,6 +149,9 @@ class EmbeddingClassifier:
         if self._plain:
             return by_text
         best = np.full((len(listings), len(self.taxonomy.paths)), -np.inf)
+        # ponytail: 0.40 s per 1,000 Listings for 14,605 texts (step-7a.md), but Jev only shortlists
+        # about 200 per batch. Sort the texts by Category and use np.maximum.reduceat (0.02 s) if
+        # something ever shortlists whole batches.
         np.maximum.at(best.T, self._owner, by_text.T)
         return best
 

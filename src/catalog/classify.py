@@ -92,9 +92,15 @@ class EmbeddingClassifier:
         or four starting together outlast the 60 s watchdog (step-6f.md, 6f.3)."""
         try:
             vectors = np.load(path, allow_pickle=False)
-        except (OSError, ValueError) as e:
-            raise ModelMissing(f"no text vectors at {path}: {DOWNLOAD}") from e
+        except Exception as e:  # missing, empty (EOFError), truncated, unreadable, not .npy
+            raise ModelMissing(f"no usable text vectors at {path} ({e!r}): {DOWNLOAD}") from e
         width = np.asarray(self.embed(["probe"])).shape[1]
+        if not (
+            isinstance(vectors, np.ndarray)
+            and np.issubdtype(vectors.dtype, np.floating)
+            and np.isfinite(vectors).all()
+        ):
+            raise ModelMissing(f"{path} doesn't hold finite float vectors: {DOWNLOAD}")
         if vectors.shape != (len(self.texts), width):
             raise ModelMissing(
                 f"{path} has shape {vectors.shape}, not ({len(self.texts)}, {width}): {DOWNLOAD}"
@@ -210,9 +216,7 @@ def fastembed(models: Path, model: str = MODEL, *, download: bool = False):
         loaded = TextEmbedding(model, cache_dir=str(models), local_files_only=not download)
         embed(["probe"])  # a model that loads but won't run is as good as missing
     except Exception as e:  # missing or corrupt: fastembed raises ValueError, onnxruntime others
-        raise ModelMissing(
-            f"{model} won't load from {models}: run python -m catalog.classify --download"
-        ) from e
+        raise ModelMissing(f"{model} won't load from {models}: {DOWNLOAD}") from e
     return embed
 
 
@@ -224,7 +228,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     embed = fastembed(models, download=True)
     from catalog import jev, taxonomy  # here: both import this module
 
-    jev.shortlist(taxonomy.load(), embed).save(models / "texts")  # about a minute (6f.3)
+    jev.shortlist(taxonomy.load(), embed).save(models / "texts")  # about 2 minutes (6f.3)
 
 
 if __name__ == "__main__":

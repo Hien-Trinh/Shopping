@@ -317,3 +317,32 @@ def test_a_failed_save_leaves_no_file(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         classifier().save(tmp_path)
     assert list(tmp_path.iterdir()) == []
+
+
+# --- review fixes (PR #71) -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "content",
+    [b"", np.full((3, 3), np.nan), np.ones((3, 3), dtype=np.int8)],
+    ids=["empty", "nan", "integers"],
+)
+def test_an_empty_or_unusable_cache_is_model_missing_naming_the_cause(tmp_path, content):
+    path = tmp_path / f"{cache_key(classifier().model, [(p, p) for p in TAXONOMY.paths])}.npy"
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+    else:
+        np.save(path, content)
+    with pytest.raises(ModelMissing, match="--download") as e:
+        classifier(cache=tmp_path)
+    assert str(path) in str(e.value)
+
+
+def test_download_builds_the_cache_the_worker_loads(tmp_path, monkeypatch):
+    from catalog import classify, jev, taxonomy
+
+    fake = lambda texts: np.ones((len(texts), 3))  # noqa: E731
+    monkeypatch.setattr(classify, "fastembed", lambda models, download=False: fake)
+    classify.main(["--download", "--models", str(tmp_path)])
+    loaded = jev.shortlist(taxonomy.load(), fake, tmp_path / "texts")  # what the worker does
+    assert loaded._paths.shape == (len(loaded.texts), 3)

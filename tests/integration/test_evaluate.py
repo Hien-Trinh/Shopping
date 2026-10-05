@@ -545,3 +545,181 @@ def test_a_shortlist_outside_1_to_255_is_a_usage_error(n):
     with pytest.raises(SystemExit) as e:
         evaluate.main(["run", "--classifier", "fake", "--shortlist", n])
     assert e.value.code == 2
+
+
+# --- recall (step-6g.md) -------------------------------------------------------------------
+
+JEWELRY = "Apparel & Accessories > Jewelry"
+
+
+def test_recall_counts_a_hit_at_its_rank_and_above():
+    got = evaluate.recall([[TOYS, SHIRT]], [SHIRT], [1, 2])
+    assert got[1]["exact"] == 0.0 and got[2]["exact"] == 1.0
+
+
+def test_recall_counts_shallower_matches_at_their_depth_only():
+    got = evaluate.recall([[KIDS], [JEWELRY]], [SHIRT, SHIRT], [1])[1]
+    assert got == {"exact": 0.0, "level2": 0.5, "level1": 1.0}
+
+
+def split_result(*answers, name="jev", sha="a" * 64, description=200, shortlist=2):
+    return full(name, sha) | {
+        "description": description,
+        "shortlist": shortlist,
+        "answers": [
+            {"id": id, "label": label, "category": category, "confidence": 0.9, "valid": True}
+            for id, label, category in answers
+        ],
+    }
+
+
+SHORTLISTS = {"a": [TOYS, SHIRT, KIDS], "b": [TOYS, SHIRT, KIDS], "c": [TOYS, SHIRT, KIDS]}
+
+
+def test_misses_splits_wrong_answers_by_whether_the_label_was_in_the_shortlist():
+    r = split_result(
+        ("a", SHIRT, SHIRT),  # right: neither
+        ("b", SHIRT, TOYS),  # label 2nd of a shortlist of 2: the chooser's error
+        ("c", KIDS, None),  # label 3rd: never shown, a retrieval miss
+    )
+    got = evaluate.misses(r, SHORTLISTS, "a" * 64, 200)
+    assert got == {"k": 2, "wrong": 2, "chooser": 1, "retrieval": 1}
+
+
+@pytest.mark.parametrize(
+    "change, message",
+    [
+        ({"labels_sha256": "b" * 64}, "label set"),
+        ({"description": 500}, "500.*200"),
+        ({"shortlist": None}, "no shortlist"),
+    ],
+)
+def test_misses_refuses_a_result_it_cannot_match_naming_it(change, message):
+    r = split_result(("a", SHIRT, SHIRT)) | change
+    if change == {"shortlist": None}:
+        del r["shortlist"]
+    with pytest.raises(ValueError, match=f"jev.*{message}"):
+        evaluate.misses(r, SHORTLISTS, "a" * 64, 200)
+
+
+def test_misses_refuses_an_id_without_a_shortlist():
+    with pytest.raises(ValueError, match="jev.*'z'"):
+        evaluate.misses(split_result(("z", SHIRT, SHIRT)), SHORTLISTS, "a" * 64, 200)
+
+
+VECTORS = {TOYS: [1.0, 0.0, 0.0], SHIRT: [0.0, 1.0, 0.0], KIDS: [0.0, 0.5, 0.866]}
+VECTORS |= {"Ball": VECTORS[TOYS], "Tee": VECTORS[SHIRT]}  # so KIDS is second for Tee
+
+
+def fake_embed(texts):
+    """Toys and Ball point one way, Activewear and Tee another, the rest a third."""
+    return [VECTORS.get(t, [0.0, 0.0, 1.0]) for t in texts]
+
+
+def test_recall_command_writes_the_table_and_the_split(tmp_path, monkeypatch):
+    monkeypatch.setattr(evaluate.classify, "fastembed", lambda models: fake_embed)
+    path = write(tmp_path, row("a", "Tee", SHIRT), row("b", "Ball", KIDS))
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    split = tmp_path / "jev.json"
+    split.write_text(
+        json.dumps(split_result(("a", SHIRT, SHIRT), ("b", KIDS, TOYS), sha=sha, shortlist=1))
+    )
+    out = tmp_path / "recall.md"
+    evaluate.main(
+        ["recall", "--labels", str(path), "--description", "200", "--ks", "1862", "1", "1"]
+        + ["--split", str(split), "--out", str(out)]
+    )
+    text = out.read_text()
+    assert f"`{sha[:12]}`" in text
+    assert "| 1 | 50.0% | 50.0% | 50.0% |" in text
+    assert "| 1862 | 100.0% | 100.0% | 100.0% |" in text
+    ks = [line.split(" | ")[0] for line in text.splitlines() if line[2:3].isdigit()]
+    assert ks == ["| 1", "| 1862"]  # sorted, the repeated 1 once
+    assert "| jev | 1 | 1 | 0 | 1 |" in text
+
+
+@pytest.mark.parametrize("k", ["0", "1863"])
+def test_a_k_outside_the_taxonomy_is_a_usage_error(k):
+    with pytest.raises(SystemExit) as e:
+        evaluate.main(["recall", "--ks", k])
+    assert e.value.code == 2
+
+
+def test_a_bad_split_leaves_the_old_recall_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(evaluate.classify, "fastembed", lambda models: fake_embed)
+    path = write(tmp_path, row("a", "Tee", SHIRT))
+    split = tmp_path / "jev.json"
+    split.write_text(json.dumps(split_result(("a", SHIRT, SHIRT), sha="0" * 64)))
+    out = tmp_path / "recall.md"
+    out.write_text("old")
+    with pytest.raises(ValueError, match="jev: scored on another label set") as e:
+        evaluate.main(
+            ["recall", "--labels", str(path), "--description", "200", "--split", str(split)]
+            + ["--out", str(out)]
+        )
+    assert out.read_text() == "old"
+    assert any(str(split) in n for n in e.value.__notes__)
+
+
+# --- review fixes (PR #64) -----------------------------------------------------------------
+
+
+def test_a_split_is_scored_on_its_own_shortlist_size_whatever_the_ks(tmp_path, monkeypatch):
+    monkeypatch.setattr(evaluate.classify, "fastembed", lambda models: fake_embed)
+    path = write(tmp_path, row("a", "Tee", KIDS))  # KIDS is second for Tee
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    split = tmp_path / "jev.json"
+    split.write_text(json.dumps(split_result(("a", KIDS, SHIRT), sha=sha, shortlist=2)))
+    out = tmp_path / "recall.md"
+    evaluate.main(
+        ["recall", "--labels", str(path), "--description", "200", "--ks", "1"]
+        + ["--split", str(split), "--out", str(out)]
+    )
+    assert "| jev | 2 | 1 | 1 | 0 |" in out.read_text()  # shown to the chooser: its error
+
+
+def test_misses_refuses_shortlists_shorter_than_its_k():
+    r = split_result(("a", SHIRT, SHIRT), shortlist=4)
+    with pytest.raises(ValueError, match="shorter than its 4"):
+        evaluate.misses(r, {"a": [SHIRT]}, "a" * 64, 200)
+
+
+def test_misses_refuses_a_result_missing_a_labelled_listing():
+    r = split_result(("a", SHIRT, SHIRT))
+    with pytest.raises(ValueError, match="jev: no answer for labelled Listing 'b'"):
+        evaluate.misses(r, {k: [SHIRT, KIDS] for k in "abcdef"}, "a" * 64, 200)
+
+
+def test_render_recall_puts_each_depth_in_its_column():
+    text = evaluate.render_recall({1: {"exact": 0.1, "level2": 0.2, "level1": 0.3}}, [], "h")
+    assert "| k | Exact | L2 | L1 |" in text and "| 1 | 10.0% | 20.0% | 30.0% |" in text
+
+
+def test_a_torn_split_fails_before_the_model_loads(tmp_path, monkeypatch):
+    def no_model(models):
+        raise AssertionError("loaded the model")
+
+    monkeypatch.setattr(evaluate.classify, "fastembed", no_model)
+    split = tmp_path / "jev.json"
+    split.write_text('{"name": "je')
+    labels = str(write(tmp_path, row("a")))
+    with pytest.raises(ValueError, match="jev.json"):
+        evaluate.main(["recall", "--labels", labels, "--split", str(split)])
+
+
+def test_a_failed_write_leaves_the_old_file_and_no_temp_file(tmp_path, monkeypatch):
+    out = tmp_path / "recall.md"
+    out.write_text("old")
+
+    def fail(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(evaluate.os, "replace", fail)
+    with pytest.raises(OSError):
+        evaluate._write(out, "new")
+    assert [p.name for p in tmp_path.iterdir()] == ["recall.md"] and out.read_text() == "old"
+
+
+def test_a_written_report_is_readable_by_others(tmp_path):
+    evaluate._write(tmp_path / "recall.md", "x")
+    assert (tmp_path / "recall.md").stat().st_mode & 0o777 == 0o644

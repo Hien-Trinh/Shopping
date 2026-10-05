@@ -5,6 +5,7 @@ The committed file keeps the release's line format, `{GID} : {Ancestor} > ... > 
 `python -m catalog.taxonomy categories.en.txt > src/catalog/data/shopify-taxonomy.txt`.
 """
 
+import gzip
 import re
 import sys
 from collections.abc import Sequence
@@ -18,6 +19,7 @@ from catalog.entry import exit_with
 DEPTH = 3
 SEP = " > "
 DEFAULT = files("catalog") / "data" / "shopify-taxonomy.txt"
+FULL = files("catalog") / "data" / "shopify-taxonomy-full.txt.gz"  # the release, untrimmed
 _VERSION = re.compile(r"# Shopify Product Taxonomy - Categories: (\S+)$")
 
 
@@ -84,6 +86,35 @@ def parse(text: str, source) -> Taxonomy:
     if not paths:
         raise ValueError(f"{source}: no Categories")
     return Taxonomy(f"shopify-{match[1]}", tuple(paths))
+
+
+def deeper(text: str, tax: Taxonomy) -> dict[str, list[str]]:
+    """Each Category of `tax`, with the full paths below it in the untrimmed release `text`, in
+    file order (step-6h.md). ValueError if `text` is another release or a deeper node's
+    ancestor isn't in `tax`."""
+    lines = text.splitlines()
+    match = _VERSION.match(lines[0]) if lines else None
+    if not match or f"shopify-{match[1]}" != tax.version:
+        raise ValueError(f"release {match[1] if match else '?'} is not {tax.version}")
+    out: dict[str, list[str]] = {p: [] for p in tax.paths}
+    for n, line in enumerate(lines, 1):
+        p = _path(line)
+        if line.startswith("#") or p.count(SEP) < DEPTH:
+            continue
+        if (top := ancestor(p)) not in out:
+            raise ValueError(f"line {n}: {top!r} is not in {tax.version}")
+        out[top].append(p)
+    return out
+
+
+def load_deeper(tax: Taxonomy, path: Path | None = None) -> dict[str, list[str]]:
+    """`deeper` over a gzipped release, by default the committed one."""
+    source = path or FULL
+    try:
+        return deeper(gzip.decompress(source.read_bytes()).decode("utf-8"), tax)
+    except Exception as e:  # a corrupt or truncated file, or one `deeper` refuses
+        e.add_note(f"in {source}")
+        raise
 
 
 def main(argv: Sequence[str] | None = None) -> None:

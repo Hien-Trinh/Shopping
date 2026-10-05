@@ -1,10 +1,11 @@
+import gzip
 import os
 import subprocess
 import sys
 
 import pytest
 
-from catalog.taxonomy import Taxonomy, ancestor, load, main, trim
+from catalog.taxonomy import Taxonomy, ancestor, deeper, load, load_deeper, main, trim
 
 HEADER = (
     "# Shopify Product Taxonomy - Categories: 2026-08\n"
@@ -147,3 +148,66 @@ def test_utf8_names_survive_a_latin_1_locale(tmp_path):
     subprocess.run([sys.executable, "-X", "utf8=0", "-c", check], env=latin, check=True)
     out = taxonomy_main(path, LC_ALL="en_US.ISO8859-1", PYTHONIOENCODING="latin-1")
     assert out.stdout.decode() == text
+
+
+# --- deeper (step-6h.md) -------------------------------------------------------------------
+
+FULL = RAW + (
+    f"{G}ap-2-1-2  : Animals & Pet Supplies > Pet Supplies > Bird Supplies > Bird Food\n"
+    f"{G}ap-2-1-1-1 : Animals & Pet Supplies > Pet Supplies > Bird Supplies > Bird Cages > Large\n"
+)
+TAX = Taxonomy(
+    "shopify-2026-08",
+    (
+        "Animals & Pet Supplies",
+        "Animals & Pet Supplies > Live Animals",
+        "Animals & Pet Supplies > Pet Supplies",
+        "Animals & Pet Supplies > Pet Supplies > Bird Supplies",
+        "Time: Clocks",
+    ),
+)
+BIRDS = "Animals & Pet Supplies > Pet Supplies > Bird Supplies"
+
+
+def test_deeper_groups_descendants_under_their_ancestor_in_file_order():
+    got = deeper(FULL, TAX)
+    assert got[BIRDS] == [
+        f"{BIRDS} > Bird Cages",
+        f"{BIRDS} > Bird Food",
+        f"{BIRDS} > Bird Cages > Large",
+    ]
+    assert got["Time: Clocks"] == [] and list(got) == list(
+        TAX.paths
+    )  # every Category, Uncategorized out
+
+
+def test_deeper_refuses_another_release():
+    with pytest.raises(ValueError, match="2026-05.*shopify-2026-08"):
+        deeper(FULL.replace("2026-08", "2026-05", 1), TAX)
+
+
+def test_deeper_refuses_a_node_whose_ancestor_is_not_in_the_taxonomy():
+    orphan = FULL + f"{G}zz-1-1-1  : Zoo > Cages > Big > Steel\n"
+    with pytest.raises(ValueError, match=r"line \d+.*Zoo > Cages > Big"):
+        deeper(orphan, TAX)
+
+
+def test_the_committed_full_release_matches_the_committed_taxonomy():
+    tax = load()
+    got = load_deeper(tax)
+    assert list(got) == list(tax.paths)
+    assert sum(map(len, got.values())) > 12_000
+    assert (
+        "Apparel & Accessories > Clothing > Activewear > Activewear Pants > Leggings"
+        in got["Apparel & Accessories > Clothing > Activewear"]
+    )
+
+
+def test_load_deeper_reads_a_given_release_and_names_a_corrupt_one(tmp_path):
+    good, bad = tmp_path / "full.txt.gz", tmp_path / "bad.txt.gz"
+    good.write_bytes(gzip.compress(FULL.encode()))
+    assert load_deeper(TAX, good)[BIRDS][0] == f"{BIRDS} > Bird Cages"
+    bad.write_bytes(gzip.compress(FULL.encode())[:40])
+    with pytest.raises(Exception) as e:
+        load_deeper(TAX, bad)
+    assert any("bad.txt.gz" in n for n in getattr(e.value, "__notes__", []))

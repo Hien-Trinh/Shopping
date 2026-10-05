@@ -449,7 +449,7 @@ def test_sample_reports_each_categorys_yield_on_stderr(tmp_path, capsys):
 def test_run_passes_the_description_length_and_records_it(tmp_path, monkeypatch):
     seen = {}
 
-    def candidate(kind, models, *, description, shortlist):
+    def candidate(kind, models, *, description, shortlist, texts):
         seen["description"] = description
         return FakeClassifier()
 
@@ -526,7 +526,7 @@ def test_shortlist_sets_the_jev_and_laya_shortlist_length(monkeypatch):
 def test_run_passes_the_shortlist_and_records_it(tmp_path, monkeypatch):
     seen = {}
 
-    def candidate(kind, models, *, description, shortlist):
+    def candidate(kind, models, *, description, shortlist, texts):
         seen["shortlist"] = shortlist
         return FakeClassifier()
 
@@ -723,3 +723,42 @@ def test_a_failed_write_leaves_the_old_file_and_no_temp_file(tmp_path, monkeypat
 def test_a_written_report_is_readable_by_others(tmp_path):
     evaluate._write(tmp_path / "recall.md", "x")
     assert (tmp_path / "recall.md").stat().st_mode & 0o777 == 0o644
+
+
+# --- texts (step-6h.md) --------------------------------------------------------------------
+
+CARGOS = f"{KIDS} > Baby & Children's Bottoms"
+VECTORS |= {CARGOS: [0.6, 0.0, 0.8], "Cargo": [0.6, 0.0, 0.8]}  # only a deeper text fits Cargo
+
+
+@pytest.mark.parametrize("recipe, exact", [("path", "0.0%"), ("deeper", "100.0%")])
+def test_recall_ranks_by_the_chosen_texts(tmp_path, monkeypatch, recipe, exact):
+    monkeypatch.setattr(evaluate.classify, "fastembed", lambda models: fake_embed)
+    path, out = write(tmp_path, row("a", "Cargo", KIDS)), tmp_path / "recall.md"
+    evaluate.main(
+        ["recall", "--labels", str(path), "--ks", "1", "--texts", recipe, "--out", str(out)]
+    )
+    text = out.read_text()
+    assert f"| 1 | {exact} |" in text and f"texts {recipe}" in text
+
+
+def test_run_records_the_texts_and_the_candidate_uses_them(tmp_path, monkeypatch):
+    path, results = write(tmp_path, row("a")), tmp_path / "results"
+    evaluate.main(
+        ["run", "--classifier", "fake", "--labels", str(path), "--results", str(results)]
+        + ["--texts", "joined"]
+    )
+    assert json.loads((results / "fake.json").read_text())["texts"] == "joined"
+    monkeypatch.setattr(evaluate.classify, "fastembed", lambda models: fake_embed)
+    got = evaluate.candidate("embedding", None, texts="joined")
+    assert (KIDS + ": ", KIDS) not in got.texts and any(
+        t.startswith(KIDS + ": ") for t, _ in got.texts
+    )
+
+
+def test_misses_refuses_a_result_whose_shortlist_used_other_texts():
+    r = split_result(("a", SHIRT, SHIRT))  # recorded before --texts: path
+    with pytest.raises(ValueError, match="jev: its shortlist used texts path, not deeper"):
+        evaluate.misses(r, SHORTLISTS, "a" * 64, 200, "deeper")
+    one = {"a": SHORTLISTS["a"]}
+    assert evaluate.misses(r | {"texts": "deeper"}, one, "a" * 64, 200, "deeper")["k"] == 2

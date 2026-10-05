@@ -56,14 +56,26 @@ class EmbeddingClassifier:
     chunk: int = 16  # about 160 ms with 500-character descriptions, so it overruns `budget` by
     # at most that; the cost per Listing barely depends on it
     clock: Callable[[], float] = time.monotonic
+    texts: Sequence[tuple[str, str]] | None = None  # (text, path) pairs; None: each path itself
     taxonomy_version: str = field(init=False)
 
     def __post_init__(self):
         self.taxonomy_version = _version(self.taxonomy.version, self.model)
-        paths = self.taxonomy.paths  # in chunks: one ONNX run over all of them peaks at 1.2 GB
+        paths = self.taxonomy.paths
+        if self.texts is None:
+            self.texts = [(p, p) for p in paths]
+        index = {p: i for i, p in enumerate(paths)}
+        for _, p in self.texts:
+            if p not in index:
+                raise ValueError(f"a text names {p!r}, which isn't in {self.taxonomy.version}")
+        self._owner = np.array([index[p] for _, p in self.texts])  # each text's Category
+        if missing := set(paths) - {p for _, p in self.texts}:  # it would never be shortlisted
+            raise ValueError(f"no text for {min(missing)!r}")
+        self._plain = self._owner.tolist() == list(range(len(paths)))  # one text per path
+        words = [t for t, _ in self.texts]  # in chunks: one ONNX run over all peaks at 1.2 GB
         self._paths = _unit(
             np.vstack(
-                [self.embed(paths[i : i + self.chunk]) for i in range(0, len(paths), self.chunk)]
+                [self.embed(words[i : i + self.chunk]) for i in range(0, len(words), self.chunk)]
             )
         )
 
@@ -90,12 +102,35 @@ class EmbeddingClassifier:
         return out
 
     def _similarity(self, listings: Sequence[Content]) -> np.ndarray:
-        return _unit(self.embed([text(x, self.description) for x in listings])) @ self._paths.T
+        """Listings x Categories: each Category's best text (step-6h.md)."""
+        by_text = _unit(self.embed([text(x, self.description) for x in listings])) @ self._paths.T
+        if self._plain:
+            return by_text
+        best = np.full((len(listings), len(self.taxonomy.paths)), -np.inf)
+        np.maximum.at(best.T, self._owner, by_text.T)
+        return best
 
 
 def text(listing: Content, description: int = DESCRIPTION) -> str:
     """What a classifier reads: the title, then the description's first characters."""
     return f"{listing.title} {listing.description[:description]}".strip()
+
+
+RECIPES = ("path", "joined", "deeper")  # Category text: step-6h.md
+
+
+def texts(taxonomy, recipe: str, deeper: dict[str, list[str]]) -> list[tuple[str, str]]:
+    """(text, path) pairs for `recipe`: each path; each path then its descendants' last names;
+    or each path and every descendant's full path, scoring for its ancestor."""
+    paths = taxonomy.paths
+    if recipe == "path":
+        return [(p, p) for p in paths]
+    if recipe == "joined":
+        return [
+            (f"{p}: {', '.join(d.rpartition(' > ')[2] for d in deeper[p])}" if deeper[p] else p, p)
+            for p in paths
+        ]
+    return [(p, p) for p in paths] + [(d, p) for p in paths for d in deeper[p]]
 
 
 KINDS = ("fake", "embedding", "jev")  # a worker's and the Backfill's --classifier

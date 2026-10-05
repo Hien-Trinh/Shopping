@@ -120,7 +120,7 @@ All merchant fields are validated in strict mode: `"5"`, `5.0` and `true` are no
 
 - **Taxonomy:** Shopify's open-source product taxonomy, cut to 3 levels. Deeper nodes map to their ancestor.
 - **Interface:** `classify(batch) → [(category, confidence)]`. Below the confidence threshold the result is Uncategorized. The threshold is chosen from the eval.
-- **v1 classifier:** embedding similarity (fastembed) against Category paths, with the batch embedded in one call.
+- **v1 classifier:** embedding similarity (fastembed) against Category paths, with the batch embedded in one call. The eval (step 6e, 198 hand-labeled Listings) chose instead an embedding shortlist of 50 paths followed by one TypeSafe Jev `Choice`, at threshold 0.40, with confidence = the chosen option's probability: 54.0% exact, 57.2% precision, 5.6% Uncategorized, against 23.7% exact for the embedding alone. Step 6f moves the pipeline onto it; until then workers use the embedding.
 - **Reclassification:** only in the cases listed in lifecycle step 5, and only through the Landing log.
 
 ## State on disk
@@ -163,13 +163,13 @@ Local-first on one Mac (ADR-0002), Python 3.14:
 - Delta tables through `deltalake` (delta-rs)
 - FastAPI and uvicorn, in a single process
 - worker processes, run from a `Procfile` by our own supervisor, not `honcho`: it stops everything when one process exits and never restarts
-- fastembed; Laya on MLX for the experiment
+- fastembed for the shortlist, TypeSafe Jev for the choice (step 6f); Laya on MLX was tried in the eval and lost
 
 No Docker, because MLX can't use the GPU inside it. Stress runs go under `caffeinate`. A later move to Databricks keeps the same tables.
 
 ## Future work
 
-- **Classifier experiment.** On a 200-Listing eval set, compare (a) Laya hierarchical choice, (b) an embedding shortlist of 10 followed by a Laya choice, (c) embeddings only, and (d) an embedding shortlist of 10 followed by a TypeSafe Jev `Choice` call, on accuracy, latency and cost. Jev is a paid API at $0.042 per million input tokens (output free), about $17 to classify 1M Listings once. Its 40 requests/s limit sits below the 50 changes/s peak, so overflow takes the timeout → Uncategorized path. If Laya wins, it runs as one shared classifier process, because 16 GB of RAM can't hold one model per worker.
+- **Classifier experiment.** On a 200-Listing eval set, compare (a) Laya hierarchical choice, (b) an embedding shortlist of 10 followed by a Laya choice, (c) embeddings only, and (d) an embedding shortlist of 10 followed by a TypeSafe Jev `Choice` call, on accuracy, latency and cost. Jev is a paid API at $0.042 per million input tokens (output free), about $17 to classify 1M Listings once. Its 40 requests/s limit sits below the 50 changes/s peak, so overflow takes the timeout → Uncategorized path. If Laya wins, it runs as one shared classifier process, because 16 GB of RAM can't hold one model per worker. **Result (step 6e, [eval/report.md](../eval/report.md)):** (d) won and (a) lost to (c): (a) 14.6% exact at 5.7 Listings/s, (b) 17.2%, (c) 23.7% at 116/s, (d) 48.5% at about $24 per 1M Listings, and (d) with a shortlist of 50 54.5% at about $62 per 1M. The shortlist caps (d): the embedding's top 10 holds the right path for 53.5% of Listings, its top 50 for 69.7%. Jev's limit is now 80 requests/s.
 - **Category memberships.** Zero or more extra Categories per Listing for browsing and recommendations. They never drive processing.
 - **Category-specific workers and rules.** Dedicated pools and validation for Categories that need their own code or much more capacity. These sit on top of Listing-key partitioning (ADR-0001), not in place of it.
 - **Product matching.** Group Listings from different Merchants into one canonical Product. This is a separate step after Categorization: use the Primary Category plus GTIN, brand and MPN to narrow candidates, then match. It's the most important next step and the hardest.

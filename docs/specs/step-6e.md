@@ -1,6 +1,6 @@
 # Step 6e: Labeled set and classifier experiment (mini PRD)
 
-Status: approved Oct 4, with the split, decisions 1 to 6 and the test points as written; open questions answered below. Plan row: [plan-v1.md, PR steps, 6e](../plan-v1.md) ("Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK", plus two notes from the 6b review), Phase 6 (label set: "about 200 items from Amazon Reviews '23", an LLM pre-labels, "you verify every label by hand"; exit: "the eval report is committed and the threshold is chosen from it"), B4 (6e measures throughput on this Mac), B5 (memory, one shared process if Laya wins) and Open questions (laya-mlx is reviewed before install). Design: [Categorization](../design-commerce-ingestion-pipeline.md) ("The threshold is chosen from the eval") and Future work (options (a) to (d)). Builds on [step-6d.md](step-6d.md) (the harness, `eval/labels.jsonl`, `eval/results/`, `eval/report.md`) and [step-6b.md](step-6b.md) (`EmbeddingClassifier`, `THRESHOLD`, `DESCRIPTION`). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 4 (see Outcome). Approved Oct 4, with the split, decisions 1 to 6 and the test points as written; open questions answered below. Plan row: [plan-v1.md, PR steps, 6e](../plan-v1.md) ("Labeled set and classifier experiment: you verify the labels, laya-mlx and Jev need your OK", plus two notes from the 6b review), Phase 6 (label set: "about 200 items from Amazon Reviews '23", an LLM pre-labels, "you verify every label by hand"; exit: "the eval report is committed and the threshold is chosen from it"), B4 (6e measures throughput on this Mac), B5 (memory, one shared process if Laya wins) and Open questions (laya-mlx is reviewed before install). Design: [Categorization](../design-commerce-ingestion-pipeline.md) ("The threshold is chosen from the eval") and Future work (options (a) to (d)). Builds on [step-6d.md](step-6d.md) (the harness, `eval/labels.jsonl`, `eval/results/`, `eval/report.md`) and [step-6b.md](step-6b.md) (`EmbeddingClassifier`, `THRESHOLD`, `DESCRIPTION`). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -105,6 +105,12 @@ The harness exists, but nothing feeds it: there is no labeled set, only one of t
 - Prompt tuning for Laya or Jev, other embedding models, bootstrap intervals.
 - Labels beyond about 200, or labels from merchants other than Amazon.
 - The `Procfile` switch (a later step).
+
+## Outcome
+
+- **Labels (6e.1):** 198 Listings, 6 from each of 33 Amazon categories. At your request, Claude checked each label against Shopify's full taxonomy (the depth-3 ancestor) instead of you checking all 198, and you decided the 7 ambiguous ones.
+- **Results** ([eval/report.md](../../eval/report.md), exact match at threshold 0): embedding title only 19.7%, + 200 characters 23.7%, + 500 22.7%; Laya hierarchical 14.6%, Laya shortlist 17.2%; Jev after a shortlist of 10 48.5%, of 50 54.5% (`--shortlist`, added in 6e.3 at your request). 200 description characters beat 500.
+- **Decision (6e.4):** Jev after an embedding shortlist of 50, at threshold 0.40 (54.0% exact, 57.2% precision, 5.6% Uncategorized), with confidence = the chosen option's probability (not Jev's `confidence` field). Moving the pipeline onto it is the new step 6f in the plan, with the `taxonomy_version` encoding from decision 6. The design doc records the choice.
 
 ## Size
 

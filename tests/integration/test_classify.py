@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from support import listing
 
-from catalog.classify import UNCATEGORIZED, EmbeddingClassifier, ModelMissing, fastembed
+from catalog.classify import UNCATEGORIZED, EmbeddingClassifier, ModelMissing, fastembed, texts
 from catalog.taxonomy import Taxonomy
 
 TAXONOMY = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
@@ -159,3 +159,70 @@ def test_top_lists_the_k_most_similar_paths_in_order():
 def test_classify_answers_tops_first_path():
     c, items = classifier(threshold=0.0), [listing(t) for t in ("Shirt", "Ball", "Jacket")]
     assert [category for category, _ in c.classify(items)] == [p[0] for p in c.top(items, 1)]
+
+
+# --- step-6h.md ----------------------------------------------------------------------------
+
+
+def test_a_category_scores_its_best_text():
+    # "Toys" also has the text "Shirt", so a Shirt Listing scores 1.0 for Toys
+    c = classifier(
+        texts=[
+            ("Apparel", "Apparel"),
+            ("Apparel > Shirts", "Apparel > Shirts"),
+            ("Toys", "Toys"),
+            ("Shirt", "Toys"),
+        ],
+        threshold=0.0,
+    )
+    ((category, confidence),) = c.classify([listing("Shirt")])
+    assert category == "Toys" and confidence == pytest.approx(1.0)
+
+
+def test_top_lists_each_category_once_by_its_best_score():
+    c = classifier(
+        texts=[
+            ("Toys", "Toys"),
+            ("Shirt", "Toys"),
+            ("Ball", "Toys"),
+            ("Apparel", "Apparel"),
+            ("Apparel > Shirts", "Apparel > Shirts"),
+        ]
+    )
+    assert c.top([listing("Shirt")], 3) == [["Toys", "Apparel > Shirts", "Apparel"]]
+
+
+def test_no_texts_answers_exactly_as_the_paths_do():
+    items = [listing(t) for t in ("Shirt", "Ball", "Jacket", "Anti")]
+    pairs = [(p, p) for p in TAXONOMY.paths]
+    assert classifier(texts=pairs).classify(items) == classifier().classify(items)
+    assert classifier(texts=pairs).top(items, 3) == classifier().top(items, 3)
+
+
+DEEPER = {
+    "Apparel": [],
+    "Apparel > Shirts": ["Apparel > Shirts > Tees", "Apparel > Shirts > Polos"],
+    "Toys": [],
+}
+
+
+def test_the_path_recipe_is_one_text_per_category():
+    assert texts(TAXONOMY, "path", DEEPER) == [(p, p) for p in TAXONOMY.paths]
+
+
+def test_the_joined_recipe_is_the_path_then_its_descendants_last_names():
+    assert texts(TAXONOMY, "joined", DEEPER) == [
+        ("Apparel", "Apparel"),
+        ("Apparel > Shirts: Tees, Polos", "Apparel > Shirts"),
+        ("Toys", "Toys"),
+    ]
+
+
+def test_the_deeper_recipe_adds_each_descendant_for_its_ancestor():
+    assert texts(TAXONOMY, "deeper", DEEPER) == [
+        ("Apparel", "Apparel"),
+        ("Apparel > Shirts", "Apparel > Shirts"),
+        ("Toys", "Toys"),
+        ("Apparel > Shirts > Tees", "Apparel > Shirts"),
+        ("Apparel > Shirts > Polos", "Apparel > Shirts"),
+    ]

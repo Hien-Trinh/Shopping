@@ -270,7 +270,13 @@ def recall(
     return out
 
 
-def misses(result: dict, shortlists: dict[str, Sequence[str]], sha: str, description: int) -> dict:
+def misses(
+    result: dict,
+    shortlists: dict[str, Sequence[str]],
+    sha: str,
+    description: int,
+    texts: str = "path",
+) -> dict:
     """A result's wrong answers at threshold 0, split by whether the label was in the shortlist
     it chose from (the chooser's error) or not (a retrieval miss)."""
     name = result["name"]
@@ -283,6 +289,8 @@ def misses(result: dict, shortlists: dict[str, Sequence[str]], sha: str, descrip
             f"{name}: its shortlist read {result.get('description')} description characters, "
             f"not {description}"
         )
+    if (used := result.get("texts", "path")) != texts:  # results before step 6h: path
+        raise ValueError(f"{name}: its shortlist used texts {used}, not {texts}")
     k = result.get("shortlist")
     if k is None:
         raise ValueError(f"{name}: no shortlist to split on")
@@ -425,7 +433,12 @@ def _result(path: Path) -> dict:
 
 
 def candidate(
-    kind: str, models: Path, *, description: int = classify.DESCRIPTION, shortlist: int = 10
+    kind: str,
+    models: Path,
+    *,
+    description: int = classify.DESCRIPTION,
+    shortlist: int = 10,
+    texts: str = "path",
 ):
     """The classifier at threshold 0 with no budget: every Listing gets its best path and raw
     confidence, and `score` applies thresholds afterwards (decision 2)."""
@@ -435,7 +448,12 @@ def candidate(
     embedding = None
     if kind in ("embedding", "laya-shortlist", "jev-shortlist"):
         embedding = classify.EmbeddingClassifier(
-            tax, classify.fastembed(models), threshold=0.0, budget=math.inf, description=description
+            tax,
+            classify.fastembed(models),
+            threshold=0.0,
+            budget=math.inf,
+            description=description,
+            texts=classify.texts(tax, texts, taxonomy.load_deeper(tax) if texts != "path" else {}),
         )
     if kind == "embedding":
         return embedding
@@ -465,6 +483,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     r.add_argument("--results", type=Path, default=RESULTS)
     r.add_argument("--models", type=Path, default=classify.MODELS)
     r.add_argument("--description", type=int, default=classify.DESCRIPTION)
+    r.add_argument("--texts", choices=classify.RECIPES, default="path")  # step-6h.md
     r.add_argument("--shortlist", type=int, default=10)  # paths a Laya or Jev choice sees
     s = sub.add_parser("sample")
     s.add_argument("--source", default=AMAZON)
@@ -479,6 +498,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     c.add_argument("--labels", type=Path, default=LABELS)
     c.add_argument("--models", type=Path, default=classify.MODELS)
     c.add_argument("--description", type=int, default=classify.DESCRIPTION)
+    c.add_argument("--texts", choices=classify.RECIPES, default="path")
     c.add_argument("--ks", type=int, nargs="+", default=[1, 5, 10, 20, 50, 100, 200])
     c.add_argument("--split", type=Path, action="append", default=[])  # results to split
     c.add_argument("--out", type=Path, default=RECALL)
@@ -493,12 +513,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         tax = taxonomy.load()
         labeled, sha = load_labels(a.labels, tax)
         classifier = candidate(
-            a.classifier, a.models, description=a.description, shortlist=a.shortlist
+            a.classifier,
+            a.models,
+            description=a.description,
+            shortlist=a.shortlist,
+            texts=a.texts,
         )
         result = run(classifier, labeled, tax, batch=a.batch)
         name = a.name or a.classifier
         result |= {"name": name, "labels_sha256": sha, "description": a.description}
-        result["shortlist"] = a.shortlist
+        result |= {"shortlist": a.shortlist, "texts": a.texts}
         state.save(a.results / f"{name}.json", result)  # whole or not at all
     elif a.command == "sample":  # printed only once every category is read: no half sample
         if a.per_category < 1:
@@ -514,7 +538,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             args.error(f"--ks must be 1 to {len(tax.paths)}")
         labeled, sha = load_labels(a.labels, tax)
         splits = [_result(f) for f in a.split]  # a bad file fails before the model loads
-        embedding = candidate("embedding", a.models, description=a.description)
+        embedding = candidate("embedding", a.models, description=a.description, texts=a.texts)
         deepest = max([ks[-1]] + [r.get("shortlist") or 0 for r in splits])  # each split's k
         shortlists = embedding.top([x.listing for x in labeled], deepest)
         table = recall(shortlists, [x.category for x in labeled], ks)
@@ -522,14 +546,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         split = []
         for f, r in zip(a.split, splits, strict=True):
             try:
-                split.append((r["name"], misses(r, by_id, sha, a.description)))
+                split.append((r["name"], misses(r, by_id, sha, a.description, a.texts)))
             except ValueError as e:
                 e.add_note(f"in {f}")
                 raise
         heading = (
             f"Generated by `python -m catalog.evaluate recall`. Labels `{sha[:12]}`, "
             f"{len(labeled)} Listings, {embedding.taxonomy_version}, "
-            f"{a.description} description characters."
+            f"{a.description} description characters, texts {a.texts}."
         )
         _write(a.out, render_recall(table, split, heading))
     else:

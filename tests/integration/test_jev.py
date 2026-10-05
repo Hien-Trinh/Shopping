@@ -97,10 +97,12 @@ def test_spend_adds_up_from_input_tokens():
 
 def test_the_version_names_every_setting():  # step-6f.md, decision 6
     c = JevClassifier(TAXONOMY, embedding(), Api())
-    assert c.taxonomy_version == "shopify-2026-08+bge-small-en-v1.5+jev-1.13.0+k50+d200+t0.40"
-    others = [{"k": 10}, {"description": 500}, {"threshold": 0.5}]
+    assert (
+        c.taxonomy_version == "shopify-2026-08+bge-small-en-v1.5+deeper+jev-1.13.0+k50+d200+t0.40"
+    )
+    others = [{"k": 10}, {"description": 500}, {"threshold": 0.5}, {"texts": "path"}]
     versions = {JevClassifier(TAXONOMY, embedding(), Api(), **o).taxonomy_version for o in others}
-    assert len(versions) == 3 and c.taxonomy_version not in versions
+    assert len(versions) == 4 and c.taxonomy_version not in versions
 
 
 # --- the HTTP call -------------------------------------------------------------------------

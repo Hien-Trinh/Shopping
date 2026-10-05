@@ -18,6 +18,7 @@ The workers categorize with an embedding shortlist and TypeSafe's paid Jev API (
 
 ```bash
 uv run python -m catalog.classify --download   # once: the embedding model and the shortlist vectors (about 2 min), into models/
+uv run python -m catalog.merchants create --currency USD   # once: the API won't start without a merchant; prints its key once
 export TYPESAFE_API_KEY=...                     # your TypeSafe key; never logged
 uv run python -m catalog.supervisor             # runs the Procfile
 ```

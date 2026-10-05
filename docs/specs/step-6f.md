@@ -1,6 +1,6 @@
 # Step 6f: Jev in the pipeline (mini PRD)
 
-Status: done Oct 5 (see Outcome). Approved Oct 4, with the split, decisions 1 to 7 and the test points as written; open questions answered below. Plan row: [plan-v1.md, PR steps, 6f](../plan-v1.md) ("Jev in the pipeline", with four open points: the batch budget, the key through the supervisor, cost, and the `Procfile` switch), and B4 (Jev about 250 ms a call, 80 requests/s, 1M Listings about 3.5 h and $62). Design: [Categorization](../design-commerce-ingestion-pipeline.md) (the `classify` contract; "step 6f moves the pipeline onto it") and lifecycle step 5 ("The timeout (200 ms) covers the whole batch"). Builds on [step-6e.md](step-6e.md) (the decision and `taxonomy_version` decision 6), [step-6b.md](step-6b.md) (`EmbeddingClassifier`, `budget`, `top`) and [step-6c.md](step-6c.md) (the Backfill reclassifies rows on another version). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: 6f.1 and 6f.2 done Oct 5 (see Outcome). **6f.3 (below) approved Oct 5**, with its test points and the hand run; added Oct 5 when you chose to fold step 6h's `deeper` shortlist into 6f. Approved Oct 4, with the split, decisions 1 to 7 and the test points as written; open questions answered below. Plan row: [plan-v1.md, PR steps, 6f](../plan-v1.md) ("Jev in the pipeline", with four open points: the batch budget, the key through the supervisor, cost, and the `Procfile` switch), and B4 (Jev about 250 ms a call, 80 requests/s, 1M Listings about 3.5 h and $62). Design: [Categorization](../design-commerce-ingestion-pipeline.md) (the `classify` contract; "step 6f moves the pipeline onto it") and lifecycle step 5 ("The timeout (200 ms) covers the whole batch"). Builds on [step-6e.md](step-6e.md) (the decision and `taxonomy_version` decision 6), [step-6b.md](step-6b.md) (`EmbeddingClassifier`, `budget`, `top`) and [step-6c.md](step-6c.md) (the Backfill reclassifies rows on another version). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -96,6 +96,77 @@ The design's 200 ms batch timeout can't hold: one Jev call alone takes about 250
 - Tuning the Backfill's `LIMIT` and `INTERVAL` for a 1M initial load (Phase 7 measures it).
 - Classify latency as a metric (7c, from the 6b review).
 - Prompt tuning, other shortlist sizes, other Jev models.
+
+## 6f.3: the `deeper` shortlist (addendum, Oct 5)
+
+### Problem
+
+Step 6h measured Jev with a shortlist of 50 built from Shopify's deeper Category names (the `deeper` recipe): 66.7% exact at threshold 0.40, against 54.0% for the bare paths the pipeline uses today, at the same cost per call ([step-6h.md](step-6h.md), [eval/report.md](../../eval/report.md)). The pipeline should use it.
+
+Two things stop a one-line switch:
+
+1. **Start time.** `deeper` embeds about 14,600 texts when the classifier is built. One process took about 49 s for the eval, and four workers starting together share the CPU. The supervisor kills a worker after 60 s without a beat, and the start counts as one. So the workers would be killed and restarted forever.
+2. **Stored rows.** Rows classified with the old shortlist must be reclassified, or they keep the weaker answers forever.
+
+### Solution: one PR
+
+1. **`jev.TEXTS = "deeper"`**, a constant beside `SHORTLIST`, `DESCRIPTION` and `THRESHOLD`. `JevClassifier` gains a `texts` field (default `TEXTS`), and `jev.version` names it. The version becomes `{taxonomy}+bge-small-en-v1.5+deeper+jev-1.13.0+k50+d200+t0.40`, so every stored row is on an old version. Plan reclassifies a row when it changes, and the Backfill does the rest (6e decision 6, 6c). `classify.taxonomy_version("jev")` picks this up with no change, so the Backfill targets the new version.
+2. **A disk cache of the text embeddings.** `EmbeddingClassifier` gains `cache: Path | None`.
+   - With a cache directory, it loads the text vectors from `<cache>/<key>.npy`. The key is the SHA-256 of the model name and every (text, path) pair, so a new taxonomy, recipe or model never reads stale vectors.
+   - A missing or unreadable file raises `ModelMissing`, the worker's existing fatal code 6, with a message naming `--download`. The supervisor stops instead of restarting a worker that can't start.
+   - With no cache (the eval and the tests), it embeds as today.
+3. **`python -m catalog.classify --download` also builds the cache** for Jev's recipe, once, after fetching the model. It writes atomically (a unique temp file, then `os.replace`), so a killed download leaves no half file. The README's setup line already runs it; the README says it now takes about a minute.
+4. **The worker** builds Jev's shortlist with `texts=classify.texts(tax, jev.TEXTS, taxonomy.load_deeper(tax))` and `cache=a.models / "texts"`. The `embedding` and `fake` kinds don't change.
+5. **By hand, with your OK:** rerun 6f.2's supervised run (`spikes/run_6f2.py`, 20 Listings, under a cent). The PR states the time to the first beat, the answers and the spend.
+
+### User stories
+
+1. As you, the pipeline classifies with the shortlist that measured 66.7%, not 54.0%.
+2. As you, every stored Listing is reclassified onto the new shortlist, by Plan when it changes and by the Backfill otherwise.
+3. As the operator, four workers start within seconds, not tens of seconds, and a missing cache stops the system with a message naming the command to run.
+
+### Failure scenarios
+
+| Scenario | Expected |
+|---|---|
+| The cache file is missing (`--download` not rerun after this change) | `ModelMissing` naming `--download`; the worker exits 6 and the supervisor stops |
+| The cache was built for another taxonomy, recipe or model | Its key differs, so the file isn't found: the same as missing, never stale vectors |
+| The cache file is truncated or corrupt | `np.load` fails, so `ModelMissing` as above |
+| The cache has the wrong shape (a bug, or a hand-copied file) | `ModelMissing`: the row count must equal the number of texts and the width the model's |
+| `--download` is killed while writing the cache | The temp file is removed or left beside it under a unique name; the real file is absent or whole |
+| Two `--download` runs at once | Each writes its own temp file; the last `os.replace` wins, and both are whole |
+| Workers start before the cache exists | Each exits 6 at start; nothing is classified with the old shortlist |
+| Stored rows on the old version | Reclassified when touched (Plan), else by the Backfill, through Jev. About $62 per 1M stored Listings |
+| The Backfill and workers disagree on the version | Impossible: both build it from `jev.version` with the same constants |
+| Memory | About 22 MB more per worker for the text vectors |
+
+### Implementation decisions
+
+1. **A fatal missing cache, not a fallback to computing it.** Computing it at start is exactly what gets the workers killed. Failing fast with the fix in the message matches how the missing model is already handled (6b decision 4).
+2. **The key hashes the texts, not a version string.** The vectors depend on every text, so any change to the taxonomy file, the release or the recipe changes the key.
+3. **The cache lives in `models/`**, which is gitignored and already holds the model, and is built by the same command.
+4. **No new `--classifier` kind.** `jev` simply moves to the better shortlist; the old one stays reachable only in the eval (`--texts path`).
+
+### Testing decisions
+
+- **Test points (seams), to confirm:**
+  1. **The cache** (new, red first, `tests/integration/test_classify.py`, with the hand-made `embed`). Covers:
+     - a built cache gives the same answers as no cache, and `embed` isn't called for the texts;
+     - a missing, corrupt or wrong-shape file raises `ModelMissing`;
+     - changing one text changes the key;
+     - the write is atomic (a failing `os.replace` leaves no file).
+  2. **The version** (extend the existing `test_the_jev_kind_version_needs_no_model_or_key`): it names `deeper`, and `classify.taxonomy_version("jev")` equals a built `JevClassifier`'s.
+  3. **The worker wiring** (extend the existing `--classifier jev` worker test): the shortlist gets the `deeper` texts and the cache directory, and an empty cache directory exits 6.
+- The real `--download` cache build runs in the `model` CI job, which already downloads the model.
+
+### Out of scope
+
+- A shared embedding process across workers; each worker loads its own vectors.
+- Changing `SHORTLIST`, `THRESHOLD` or the chooser; 6h's split says the chooser is now the bigger lever, which is a later step.
+
+### Size
+
+About 40 lines in `classify.py`, 10 in `jev.py` and `worker.py`, 80 of tests, a README line.
 
 ## Outcome
 

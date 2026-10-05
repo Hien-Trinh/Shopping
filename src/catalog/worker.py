@@ -331,7 +331,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     elif a.classifier == "embedding":
         classifier = classify.EmbeddingClassifier(taxonomy.load(), classify.fastembed(a.models))
     else:
-        classifier = classify.FakeClassifier()
+        classifier = classify.FakeClassifier(fail=a.classifier == "down")
     run(a.data, a.state, a.index, a.workers, classifier, stop=stop)
 
 

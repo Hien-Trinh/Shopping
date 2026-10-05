@@ -40,8 +40,10 @@ def texts(path: Path = LABELS) -> list[tuple[str, str]]:
     return [(r["title"], r["description"][:DESCRIPTION]) for r in rows]
 
 
-def change(i: int, *, seed, start_ms: int, keys: int, order: str, texts, currency: str) -> dict:
-    """Change `i` of a run: the same `(seed, i, start_ms)` always gives the same Change."""
+def change(i: int, *, seed, start_ms: int, keys: int, order: str, texts, currency: str,
+           deletes: float = 0) -> dict:  # fmt: skip
+    """Change `i` of a run: the same `(seed, i, start_ms)` always gives the same Change, a delete
+    with chance `deletes`."""
     rng = random.Random(f"{seed}:{i}")  # a str seed is hashed with SHA-512: stable across runs
     n = i % keys if order == "sequential" else rng.randrange(keys)
     title, description = texts[i % len(texts)]
@@ -50,6 +52,8 @@ def change(i: int, *, seed, start_ms: int, keys: int, order: str, texts, currenc
     # A later Change of a key is newer. A later run is newer only once it starts after the
     # earlier run's last version, start_ms + changes ms: overlap and its Changes go stale.
     source_version = start_ms + i
+    if rng.random() < deletes:  # drawn last, so the other draws match a run without deletes
+        return {"op": "delete", "merchant_product_id": f"p{n}", "source_version": source_version}
     return {"op": "upsert", "merchant_product_id": f"p{n}", "source_version": source_version,
             "listing": listing}  # fmt: skip
 
@@ -185,6 +189,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.add_argument("--processes", type=int, default=16)
     args.add_argument("--seed", type=int, default=0)
     args.add_argument("--currency", default="USD", help="the Merchant's currency")
+    args.add_argument("--deletes", type=float, default=0, help="the fraction of deletes")
+    args.add_argument("--start-ms", type=int, help="the first source_version; default now")
     a = args.parse_args(argv)
     if not os.environ.get("CATALOG_API_KEY"):
         args.error("CATALOG_API_KEY is not set: export the Merchant's key first")
@@ -194,10 +200,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.error(f"--batch must be 1 to {envelope.MAX_BATCH}")
     if a.keys < 1 or a.processes < 1 or a.rate < 0:
         args.error("--keys and --processes must be at least 1, and --rate at least 0")
+    if not 0 <= a.deletes <= 1:
+        args.error("--deletes must be 0 to 1")
     if urlsplit(a.url).scheme not in ("http", "https"):  # urllib would also take file: or ftp:
         args.error("--url must be http:// or https://")
     a.processes = min(a.processes, -(-a.changes // a.batch))  # an idle one's rate share is lost
-    start_ms = time.time_ns() // 1_000_000
+    start_ms = a.start_ms if a.start_ms is not None else time.time_ns() // 1_000_000
     options = vars(a) | {"start_ms": start_ms}
     ctx = multiprocessing.get_context("spawn")
     stopping, results, began = ctx.Event(), ctx.Queue(), time.monotonic()

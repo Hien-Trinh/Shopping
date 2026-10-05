@@ -186,12 +186,13 @@ def texts(taxonomy, recipe: str, deeper: dict[str, list[str]]) -> list[tuple[str
     return [(p, p) for p in paths] + [(d, p) for p in paths for d in deeper[p]]
 
 
-KINDS = ("fake", "embedding", "jev")  # a worker's and the Backfill's --classifier
+KINDS = ("fake", "embedding", "jev", "down")  # a worker's and the Backfill's --classifier
+# down: the fake one in an outage, every call failing (the chaos runner's, step-7b.md)
 
 
 def taxonomy_version(kind: str) -> str:
     """The version a `--classifier` kind stamps, without loading the model (step-6c.md)."""
-    if kind == "fake":
+    if kind in ("fake", "down"):
         return FakeClassifier.taxonomy_version
     from catalog import jev, taxonomy  # here: both import this module
 

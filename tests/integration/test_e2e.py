@@ -97,6 +97,10 @@ class System:
         text, n = re.subn(r"^snapshots: python -m catalog\.snapshots$", r"\g<0> --every 1",
                           text, flags=re.M)  # fmt: skip
         assert n == 1, "the Procfile's snapshots line changed"
+        # The fake classifier: CI never calls the paid Jev API or needs the model (step-6f.md).
+        text, n = re.subn(r"^((?:worker-\d|backfill): .*)--classifier jev$",
+                          r"\1--classifier fake", text, flags=re.M)  # fmt: skip
+        assert n == 5, "the Procfile's worker or backfill lines changed"
         (tmp / "Procfile").write_text(text)
         create = [sys.executable, "-m", "catalog.merchants", "create", "--currency", "USD"]
         out = subprocess.run(create, cwd=tmp, capture_output=True, text=True, check=True).stdout

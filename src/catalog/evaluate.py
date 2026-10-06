@@ -70,7 +70,10 @@ CATEGORIES = [  # Amazon Reviews '23's category files, less Unknown
     "Toys_and_Games",
     "Video_Games",
 ]
-CANDIDATES = (*classify.KINDS, "laya-hierarchical", "laya-shortlist", "jev-shortlist")
+CANDIDATES = (
+    *classify.KINDS, "laya-hierarchical", "laya-shortlist", "jev-shortlist", "student-softmax",
+    "student-knn",
+)  # fmt: skip
 THRESHOLDS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 .. 0.90
 
 
@@ -462,6 +465,13 @@ def candidate(
         return jev.JevClassifier(
             tax, embedding, jev.http(), shortlist, description,
             threshold=0, budget=math.inf, rate=math.inf, threads=1,  # one call at a time
+        )  # fmt: skip
+    if kind.startswith("student-"):
+        from catalog import student
+
+        return student.StudentClassifier.train(
+            tax, classify.fastembed(models), student.load_training(), kind.removeprefix("student-"),
+            cache=models / "student",
         )  # fmt: skip
     from catalog import laya  # here: it loads laya_mlx, an optional Apple Silicon only group
 

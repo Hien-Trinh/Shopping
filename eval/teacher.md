@@ -4,6 +4,8 @@ Run Oct 6. Spec: [docs/specs/step-6j.md](../docs/specs/step-6j.md). Method: [doc
 
 **Decision: Opus 5.5 is the teacher.** It beats Jev by 29 points exact on the 1,020 after adjudication (19 points before), and by 19 points on the 198 after the bias guard. The gate needed 5 and "no worse".
 
+**Correction (Oct 6, step 6l):** the Jev run on the 822 below read 500 description characters, not production's 200. Rerun at 200 it scores 66.9% (not 67.6%), 66.9% on the 1,020 (not 67.5%). The decision is unchanged.
+
 ## Results (exact match to the label, level 3)
 
 | Set | Opus raw | Opus adjudicated | Jev raw | Jev after the bias guard |

@@ -69,7 +69,7 @@ Per [docs/labeling.md](../labeling.md):
 
 ## Testing decisions (test points for your OK)
 
-All in `tests/unit/test_benchmark.py`, with the network replaced by an injected `get`:
+All in `tests/integration/test_benchmark.py`, with the network replaced by an injected `get`:
 
 1. **English filter:** an English title passes; German, Spanish and Japanese titles fail; a part-number-only title passes.
 2. **Mapping:** a path in the release → its level-3 ancestor; a level-2 path → itself; a renamed path → the new path's ancestor; an unknown path → `None`.

@@ -1,6 +1,8 @@
 """Shopify's benchmark as eval and training data (docs/specs/step-6k.md, test points 1-5)."""
 
 import gzip
+import hashlib
+import http.client
 import json
 from urllib.error import HTTPError
 
@@ -285,3 +287,106 @@ def test_fetch_fails_on_an_empty_page_before_the_total():
 def test_build_counts_a_row_without_a_category_as_malformed():
     ev, _, counts = build([row() | {"category": None}, row(title="Toy truck")], [], n=10)
     assert len(ev) == 1 and counts["malformed"] == 1
+
+
+# Review round 1 (PR #90)
+
+
+def test_english_drops_a_nonzero_tie():
+    assert not benchmark.english("the Holzeisenbahn und")
+
+
+def test_level3_prefers_the_rename_when_the_old_level3_node_still_exists():
+    tax = TAX | {"Furniture > Storage > Closets", "Furniture > Storage > Closet Parts"}
+    old = "Furniture > Storage > Closets > Closet Rods"
+    renames = {old: "Furniture > Storage > Closet Parts > Closet Rods"}
+    assert benchmark.level3(old, tax, renames) == "Furniture > Storage > Closet Parts"
+
+
+def test_level3_takes_the_longest_matching_prefix():
+    renames = {
+        "Toys & Games > Old": "Toys & Games > Kites",
+        "Toys & Games > Old > Trains": "Toys & Games > Toys > Play Vehicles",
+    }
+    assert benchmark.level3("Toys & Games > Old > Trains > Big", TAX, renames) == (
+        "Toys & Games > Toys > Play Vehicles"
+    )
+
+
+def test_fetch_backoff_doubles():
+    answers = [http_error(503), http_error(503), http_error(503), page(1, 1)]
+
+    def get(url):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    slept = []
+    list(benchmark.fetch("test", get=get, sleep=slept.append))
+    assert slept == [benchmark.BACKOFF, 2 * benchmark.BACKOFF, 4 * benchmark.BACKOFF]
+
+
+@pytest.mark.parametrize(
+    "error", [http.client.IncompleteRead(b""), json.JSONDecodeError("bad", "<html>", 0)]
+)
+def test_fetch_retries_a_truncated_or_non_json_body(error):
+    answers = [error, page(1, 1)]
+
+    def get(url):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    assert len(list(benchmark.fetch("test", get=get, sleep=lambda s: None))) == 1
+
+
+def test_fetch_names_the_last_error_when_it_gives_up():
+    def get(url):
+        raise http_error(503)
+
+    with pytest.raises(RuntimeError, match="503"):
+        list(benchmark.fetch("test", get=get, sleep=lambda s: None))
+
+
+def test_fetch_yields_nothing_for_an_empty_split():
+    assert list(benchmark.fetch("test", get=lambda url: page(0, 0), sleep=lambda s: None)) == []
+
+
+def test_shape_drops_a_lone_surrogate():
+    assert benchmark.shape(row(title="Toy \ud800 train"), "shopify-test") is None
+
+
+def test_shape_id_is_the_hash_of_the_stored_text():
+    item = benchmark.shape(row(title="word " * 40, description="d" * 6000), "shopify-test")
+    text = f"{item['title']}\n{item['description']}".encode()
+    assert item["id"] == hashlib.sha256(text).hexdigest()[:16]
+
+
+def test_build_drops_a_train_row_with_a_test_title():
+    ev, tr, counts = build([row()], [row(title="WOODEN TOY TRAIN SET", description="x")], n=1)
+    assert tr == [] and counts["leaks"] == 1
+
+
+def test_main_writes_both_files_and_checks_the_revision(tmp_path, monkeypatch, capsys):
+    shas = iter(["abc", "abc"])
+    monkeypatch.setattr(benchmark, "_get", lambda url: {"sha": next(shas)})
+    rows = {"test": [row()], "train": [row(title="Toy truck")]}
+    monkeypatch.setattr(benchmark, "fetch", lambda split: iter(rows[split]))
+    monkeypatch.setattr(benchmark.taxonomy, "load", lambda: taxonomy.Taxonomy("t", tuple(TAX)))
+    ev, tr = tmp_path / "e.jsonl", tmp_path / "t.jsonl.gz"
+    benchmark.main(["--eval", str(ev), "--train", str(tr)])
+    assert json.loads(ev.read_text())["title"] == "Wooden toy train set"
+    assert json.loads(gzip.decompress(tr.read_bytes()))["title"] == "Toy truck"
+    assert '"revision": "abc"' in capsys.readouterr().out
+
+
+def test_main_refuses_when_the_dataset_changes_during_the_fetch(tmp_path, monkeypatch):
+    shas = iter(["abc", "def"])
+    monkeypatch.setattr(benchmark, "_get", lambda url: {"sha": next(shas)})
+    monkeypatch.setattr(benchmark, "fetch", lambda split: iter([row()]))
+    ev = tmp_path / "e.jsonl"
+    with pytest.raises(RuntimeError, match="abc.*def"):
+        benchmark.main(["--eval", str(ev), "--train", str(tmp_path / "t.gz")])
+    assert not ev.exists()

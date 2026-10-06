@@ -218,6 +218,7 @@ src/catalog/
   laya.py         LayaClassifier for the eval (hierarchical or shortlist), laya-mlx chooser
   jev.py          JevClassifier (embedding shortlist, then Jev): the workers' `--classifier jev` and an eval candidate; TypeSafe HTTP call
   evaluate.py     the classifier eval: labeled set, sample, run, score, report
+  benchmark.py    Shopify's product benchmark → eval and training files (fetch, English filter, renames)
   taxonomy.py     load Shopify taxonomy, trim to depth 3, version string
   merchants.py    SQLite registry, key issue/verify, CLI
   landing.py      schema, group-commit appender, read-since per partition
@@ -233,7 +234,8 @@ src/catalog/
   maintenance.py  Landing log compaction, retention, vacuum
   load.py         load generator: deterministic Changes, multiprocess open-loop sender
   metrics.py      saved DuckDB SQL over events and the Listing Store, `python -m catalog.metrics`
-eval/             labeled set, classifier experiment
+eval/             labeled sets, classifier experiment
+train/            training data for the student (step 6k)
 tests/unit  tests/integration  tests/stress
 ```
 

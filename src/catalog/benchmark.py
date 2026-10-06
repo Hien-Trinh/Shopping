@@ -9,9 +9,11 @@ level 3, and writes `eval/labels-shopify.jsonl` (a draw from the test split) and
 import argparse
 import gzip
 import hashlib
+import http.client
 import json
 import random
 import re
+import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
@@ -56,8 +58,8 @@ def fetch(
     split: str, *, get: Callable[[str], dict] = _get, sleep: Callable[[float], None] = time.sleep
 ) -> Iterator[dict]:
     """Every row of `split` as {title, description, category}; nothing else is kept.
-    A 429, a 5xx, a timed-out read or a dropped connection is retried with backoff,
-    `TRIES` tries in all."""
+    A 429, a 5xx, a timed-out or truncated read, a dropped connection or a body that isn't
+    JSON is retried with backoff, `TRIES` tries in all, each retry noted on stderr."""
     offset, total = 0, None
     while total is None or offset < total:
         url = ROWS.format(DATASET, split, offset, PAGE)
@@ -69,15 +71,21 @@ def fetch(
                 if e.code != 429 and e.code < 500:
                     raise
                 error = e
-            except OSError as e:  # URLError, a timed-out or reset read
+            # URLError, a timed-out or reset read; a truncated body; a page that isn't JSON
+            except (OSError, http.client.HTTPException, ValueError) as e:
                 error = e
             if attempt + 1 < TRIES:
+                print(f"{split}: offset {offset}: {error!r}, retrying", file=sys.stderr)
                 sleep(BACKOFF * 2**attempt)
         else:
-            raise RuntimeError(f"{split}: offset {offset}: {TRIES} tries failed") from error
+            raise RuntimeError(
+                f"{split}: offset {offset}: {TRIES} tries, last {error!r}"
+            ) from error
         total, rows = data["num_rows_total"], data["rows"]
         if not rows:
-            raise RuntimeError(f"{split}: offset {offset}: no rows before {total}")
+            if offset < total:
+                raise RuntimeError(f"{split}: offset {offset}: no rows before {total}")
+            break
         for r in rows:
             x = r["row"]
             yield {
@@ -86,27 +94,30 @@ def fetch(
                 "category": x.get("ground_truth_category"),
             }
         offset += len(rows)
+        if offset // PAGE % 50 == 0:
+            print(f"{split}: {offset} of {total} rows", file=sys.stderr)
         if offset < total:
             sleep(PAUSE)
 
 
 def english(text: str) -> bool:
-    """Under 3% non-ASCII letters and at least as many English stopwords as other languages'.
-    Text with no stopwords either way (part numbers, short titles) counts as English."""
+    """Under 3% non-ASCII letters and more English stopwords than other languages'. Text with
+    no stopwords either way (part numbers, short titles) counts as English."""
     letters = [c for c in text if c.isalpha()]
     if letters and sum(not c.isascii() for c in letters) / len(letters) >= 0.03:
         return False
     words = _WORD.findall(text.lower())
-    return sum(w in _EN for w in words) >= sum(w in _OTHER for w in words)
+    en, other = sum(w in _EN for w in words), sum(w in _OTHER for w in words)
+    return en > other or en == other == 0
 
 
 def level3(path: str, tax: set[str], renames: dict[str, str]) -> str | None:
-    """`path` cut to level 3, through the rename table if its first 3 levels aren't a Category.
-    A deeper node the release has since dropped still maps to its level-3 ancestor."""
+    """`path` cut to level 3, through the rename table first if an entry matches. A deeper
+    node the release has since dropped still maps to its level-3 ancestor."""
     candidates = [path]
     for old in sorted(renames, key=len, reverse=True):  # longest prefix first
         if path == old or path.startswith(old + taxonomy.SEP):
-            candidates.append(renames[old] + path[len(old) :])
+            candidates.insert(0, renames[old] + path[len(old) :])
             break
     for p in candidates:
         if (cut := taxonomy.ancestor(p)) in tax:
@@ -119,12 +130,15 @@ def shape(r: dict, source: str) -> dict | None:
     title, description = r.get("title"), r.get("description")
     if not isinstance(title, str) or not isinstance(description, str) or not title.strip():
         return None
-    title, description = title.strip(), description.strip()
-    digest = hashlib.sha256(f"{title}\n{description}".encode()).hexdigest()[:16]
+    title, description = evaluate._cut(title.strip(), 150), description.strip()[:5000]
+    try:  # the id hashes the stored text, so it can be recomputed from the files
+        digest = hashlib.sha256(f"{title}\n{description}".encode()).hexdigest()[:16]
+    except UnicodeEncodeError:  # a lone surrogate, which JSON allows and UTF-8 can't encode
+        return None
     return {
         "id": digest,
-        "title": evaluate._cut(title, 150),
-        "description": description[:5000],
+        "title": title,
+        "description": description,
         "category": r.get("category"),
         "source": source,
     }
@@ -158,14 +172,17 @@ def build(
     n: int,
     seed: int,
 ) -> tuple[list[dict], list[dict], dict]:
-    """The eval draw (`n` usable test rows), every usable train row not also in test, and the
-    counts of what was dropped and why."""
+    """The eval draw (`n` usable test rows), every usable train row whose id and title are both
+    absent from test, and the counts of what was dropped and why."""
     counts = {"read": 0, "malformed": 0, "non_english": 0, "duplicates": 0, "leaks": 0}
     counts["unmapped"] = Counter()
     test_seen, train_seen = set(), set()
     usable_test = _usable(test, "shopify-test", tax, renames, test_seen, counts)
     usable_train = _usable(train, "shopify-train", tax, renames, train_seen, counts)
-    kept_train = [x for x in usable_train if x["id"] not in test_seen]
+    titles = {x["title"].casefold() for x in usable_test}
+    kept_train = [
+        x for x in usable_train if x["id"] not in test_seen and x["title"].casefold() not in titles
+    ]
     counts["leaks"] = len(usable_train) - len(kept_train)
     drawn = random.Random(seed).sample(usable_test, min(n, len(usable_test)))
     return drawn, kept_train, counts
@@ -188,6 +205,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     tax = set(taxonomy.load().paths)
     renames = json.loads(RENAMES.read_text(encoding="utf-8"))
     test, train = list(fetch("test")), list(fetch("train"))
+    if (after := _get(REVISION)["sha"]) != revision:  # the rows API serves only the latest
+        raise RuntimeError(f"{DATASET} changed during the fetch: {revision} -> {after}")
     ev, tr, counts = build(test, train, tax, renames, n=a.n, seed=a.seed)
     evaluate._write(a.eval, "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in ev))
     evaluate._write(a.train, gz(tr))

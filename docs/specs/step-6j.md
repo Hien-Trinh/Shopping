@@ -1,6 +1,6 @@
 # Step 6j: Opus 5.5 against Jev on the 1,020 labeled Listings (mini PRD)
 
-Status: approved Oct 6. Question 1: Jev on the 822 OK. Question 2: about 11 Opus agents OK. Question 3: the third bias guard, yes. Question 4: `docs/labeling.md`, yes. No project code, so no test points. Plan row: new, [plan-v1.md, PR steps, 6j](../plan-v1.md). The first of four steps toward a local classifier distilled from a teacher (6j to 6m, below). Builds on [step-6e.md](step-6e.md) (the 198 and the report), [step-6h.md](step-6h.md) (Jev with the deeper texts) and [step-6i.md](step-6i.md) (the 822 and the in-session labeling method). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 6 (see Outcome); approved Oct 6. Question 1: Jev on the 822 OK. Question 2: about 11 Opus agents OK. Question 3: the third bias guard, yes. Question 4: `docs/labeling.md`, yes. No project code, so no test points. Plan row: new, [plan-v1.md, PR steps, 6j](../plan-v1.md). The first of four steps toward a local classifier distilled from a teacher (6j to 6m, below). Builds on [step-6e.md](step-6e.md) (the 198 and the report), [step-6h.md](step-6h.md) (Jev with the deeper texts) and [step-6i.md](step-6i.md) (the 822 and the in-session labeling method). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -66,6 +66,15 @@ Like 6i, Opus runs as Claude Code agents on your Max plan, not through the API: 
 2. **Usage:** about 11 Opus agents, very roughly 2M tokens of Max plan usage (6i's Sonnet run was about 1.5M). OK?
 3. **A third bias guard:** on the 198, where Opus and Jev disagree and the label sides with Opus, I recheck each against Shopify's full taxonomy and list any where Jev's answer fits equally. Those count as "both fit", not as Jev wrong. OK, or skip it?
 4. **`docs/labeling.md`** at the top of `docs/`, beside the runbook. OK, or somewhere else?
+
+## Outcome (Oct 6)
+
+- **Opus 5.5 is the teacher.** Exact on the 1,020: 96.6% adjudicated (86.7% raw) against Jev's 67.5%. On the 198: 95.5% adjudicated against Jev's 76.8% after the bias guard (66.7% raw). Full table and every adjudicated item: [eval/teacher.md](../../eval/teacher.md).
+- **The run:** 11 Opus agents, 1,020 answered, every answer a taxonomy path, no `none`, no batch redone; 230 unsure. About 1.45M tokens, about 3 minutes in parallel. Jev on the 822: 67.6% exact, $0.053.
+- **Adjudication:** 198: 28 differences (8 Opus wrong, 3 label wrong, 17 both fit). 822: 108 (26, 5, 77). Bias guard on the 198: Jev counted right on 16 of 49.
+- **Opus's errors:** 21 of 34 are stopping above level 3 when a level-3 Category fits; 4 single-kind subscription boxes under Subscription Services. Its `confident` flag separates 94–95% from 52–63% exact. For 6k: recheck unsure answers and every answer above level 3.
+- **Label errors found** (listed in `eval/teacher.md`, not changed): 3 in the 198 (two phone apps that belong under Handheld & PDA Software, a mystery box) and 5 in the 822.
+- [docs/labeling.md](../labeling.md) written, with 6i and 6j as its examples.
 
 ## Out of scope
 

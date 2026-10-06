@@ -1,5 +1,9 @@
 import hashlib
 import json
+import signal
+import socket
+import subprocess
+import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -8,8 +12,9 @@ from itertools import count
 import pytest
 from fastapi.testclient import TestClient
 from support import delete, up
+from test_supervisor import wait_for
 
-from catalog import api, events, landing, merchants
+from catalog import api, chaos, events, landing, merchants
 from catalog.events import EventLog
 from catalog.keys import PARTITIONS
 from catalog.landing import START
@@ -66,6 +71,15 @@ def make_api(tmp_path):
     yield make
     for a in made:
         a.client.__exit__(None, None, None)
+
+
+@pytest.fixture(autouse=True)
+def handlers():
+    """api.main installs SIGTERM and SIGINT handlers: give pytest its own back after each test."""
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    yield
+    for sig, handler in saved.items():
+        signal.signal(sig, handler)
 
 
 @pytest.fixture
@@ -528,3 +542,20 @@ def test_a_failed_read_is_a_500(client, monkeypatch):
 def test_a_404_goes_out_even_if_its_event_cant_be_written(client, monkeypatch):
     monkeypatch.setattr(EventLog, "emit", fail)
     assert client.get(uuid7_at(0)).status_code == 404
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+def test_a_plain_stop_is_logged_and_exits_0_like_the_others(tmp_path, sig):  # after step 7c.3
+    db, port = tmp_path / "data" / "merchants.sqlite", chaos._free_port()
+    merchants.create(db, "USD")
+    argv = [sys.executable, "-m", "catalog.api", "--data", str(tmp_path / "data"), "--db", str(db),
+            "--port", str(port), "--min-free", "0"]  # fmt: skip
+    proc = subprocess.Popen(argv, stderr=subprocess.DEVNULL)
+    try:
+        wait_for(lambda: socket.socket().connect_ex(("127.0.0.1", port)) == 0)
+        proc.send_signal(sig)
+        assert proc.wait(timeout=30) == 0  # uvicorn used to re-raise it and die by it: -15
+    finally:
+        proc.kill()
+    stops = [e for e in events.read(tmp_path / "data" / "events") if e["type"] == "api_stop"]
+    assert len(stops) == 1 and "error" not in stops[0] and "reason" not in stops[0]

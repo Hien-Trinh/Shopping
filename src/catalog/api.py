@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import json
 import shutil
+import signal
 import sqlite3
 import time
 import uuid
@@ -197,6 +198,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     # flight and stops (step 4e).
     stop = SimpleNamespace(set=lambda: setattr(server, "should_exit", True), reason=None)
     worker.watch_supervisor(supervisor, stop, a.data / "events", "api")
+    # uvicorn handles these while it serves, then restores these handlers and re-raises the
+    # signal: with Python's defaults the process would die by it before api_stop is logged.
+    # Stopping the server here also covers a signal that lands before uvicorn's handlers do.
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: stop.set())
     with event_files.stopping(EventLog(a.data / "events", "api"), stop):  # api_stop
         server.run()
 

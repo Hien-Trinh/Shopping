@@ -2,7 +2,7 @@
 
 A learning project: merchants push product Listings through one API, and the pipeline categorizes them and keeps a correct current catalog under out-of-order, duplicate and crash-replayed changes. It runs locally on one Mac (Python 3.14, Delta Lake via delta-rs, DuckDB for queries).
 
-- [Design doc](docs/design-commerce-ingestion-pipeline.md) · [v1 build plan](docs/plan-v1.md) · [Glossary](CONTEXT.md) · [ADRs](docs/adr/)
+- [Design doc](docs/design-commerce-ingestion-pipeline.md) · [v1 build plan](docs/plan-v1.md) · [Runbook](docs/runbook.md) · [Glossary](CONTEXT.md) · [ADRs](docs/adr/)
 
 ## Develop
 
@@ -22,5 +22,7 @@ uv run python -m catalog.merchants create --currency USD   # once: the API won't
 export TYPESAFE_API_KEY=...                     # your TypeSafe key; never logged
 uv run python -m catalog.supervisor             # runs the Procfile
 ```
+
+Stop, rescale, recover, reset and read metrics: see the [runbook](docs/runbook.md).
 
 Changes reach `main` only through a PR with a green `check` job.

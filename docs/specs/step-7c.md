@@ -53,7 +53,7 @@ One step would be about 600 lines, so it splits.
 
 ### 7c.3: the runbook (docs, auto-merge)
 
-`docs/runbook.md`: first run (download, a Merchant, the key), start, stop (Ctrl-C or `kill <supervisor pid>`), rescale (stop, edit the Procfile's `--workers`, start), a `kill -9`ed supervisor (wait until `pgrep -f catalog.worker` is empty, about 30 s at worst, then start: an early start exits 3 by design), a `kill -9`ed chaos runner (`pkill -f catalog.supervisor`), reset (stop, then remove `data/` and `state/`, which keeps the merchants), reading results (`catalog.metrics`, `GET /submissions/{id}`, which event answers which question), every exit code and what to do, and a chaos run. Linked from the README.
+`docs/runbook.md`: first run (download, a Merchant, the key), start, stop (Ctrl-C or `kill <supervisor pid>`), rescale (stop, edit the Procfile's `--workers`, start), a `kill -9`ed supervisor (wait until `pgrep -f catalog.worker` is empty, about 30 s at worst, then start: an early start exits 3 by design), a `kill -9`ed chaos runner (`pkill -f catalog.supervisor`), reset (stop, then remove the tables, events, exports, snapshots and `state/`, keeping `data/merchants.sqlite`), reading results (`catalog.metrics`, `GET /submissions/{id}`, which event answers which question), every exit code and what to do, and a chaos run. Linked from the README.
 
 ## User stories
 
@@ -117,7 +117,8 @@ One step would be about 600 lines, so it splits.
 ## Outcome
 
 - **7c.1** (PR #79, Oct 5): every exit is in the events. Review fixes: a refused Jev key is raised even after another call answered or failed first (the failure row above, approved), a stale kill still dying at shutdown is logged `stale`, and the API runs under `events.stopping`. Kept, at review: `watch_exit`'s `deadline` field and its `ts` as the planned exit time; the watch tests beside the existing one in `test_chaos.py`.
-- **7c.2**: the metric tests went to `tests/integration/test_metrics.py`, not `tests/unit`, since they write event files and a Listing Store. Review fixes (PR #80): a Change counts only if its `accepted` event is in the read range, so a replay of an old Change isn't a new one, and Backfill and rejected Changes drop out with no filter; lag is measured against the newest head any worker read, so a stalled partition shows; the API logs commit retries to a file of its own (the commit runs in a thread); `--since` takes `10m`-style durations; a corrupt Listing Store raises instead of reading as missing. Deferred to 7d: parsing each event three times.
+- **7c.2**: the metric tests went to `tests/integration/test_metrics.py`, not `tests/unit`, since they write event files and a Listing Store. Review fixes (PR #80): a Change counts only if its `accepted` event is in the read range, so a replay of an old Change isn't a new one, and Backfill and rejected Changes drop out with no filter; lag is measured against the newest head any worker read, so a stalled partition shows; the API logs commit retries to a file of its own (the commit runs in a thread); `--since` takes `10m`-style durations; a corrupt Listing Store raises instead of reading as missing. Deferred to 7d: parsing each event three times. Kept, at review: utilization as each worker's share of the window, and the rates over accepted Changes only.
+- **7c.3**: [docs/runbook.md](../runbook.md), each command checked on a scratch system. Found there: on a plain SIGTERM stop the API logs no `api_stop` (uvicorn re-raises the signal), so the runbook says so.
 
 ## Out of scope
 

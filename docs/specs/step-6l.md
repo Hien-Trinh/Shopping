@@ -73,25 +73,27 @@ In `tests/integration/test_student.py`, with a fake `embed` (fixed vectors), as 
 
 ## Outcome (Oct 6)
 
-**The bar is not met on the 1,020.** Full curves: [eval/student.md](../../eval/student.md).
+**The bar is not met** on the 1,020, nor on Shopify's 2,000 (a tie there). Full curves: [eval/student.md](../../eval/student.md).
 
 | On the 1,020 (exact) | Kept local | System |
 |---|---|---|
 | Jev alone (production settings) | 0% | 66.9% |
 | kNN (k=5) alone | 100% | 52.3% |
-| kNN, Jev below τ = 0.25 | 79.0% | 59.6% |
-| kNN, Jev below τ = 0.45 | 46.3% | **68.5%** |
-| kNN, Opus below τ = 0.45 | 46.3% | 81.4% |
-| Softmax alone | 100% | 47.3% |
+| kNN, Jev below τ = 0.25 | 78.7% | 60.3% |
+| kNN, Jev below τ = 0.45 | 45.1% | **68.3%** |
+| kNN, Opus below τ = 0.45 | 45.1% | 81.0% |
+| Softmax alone | 100% | 47.5% |
 | Opus alone (the teacher) | 0% | 86.7% |
 
-- **kNN beats softmax** everywhere (54.4% against 45.3% on the held-out rows). The softmax head first trained to 25%: 300 steps at lr 0.05 is far too little for 1,676 classes. Tuned on the held-out rows (lr 0.5, l2 1e-5) it reached 45%; more steps didn't help.
-- **The cascade beats Jev alone only when about half the traffic or less stays local:** 68.5% at 46% kept, against 66.9%. At 70% or more kept it falls to about 60%.
-- **On Shopify's 2,000 the bar is met:** 62.0% at 77% kept and 64.1% at 67% kept, against Jev's 61.8%. The students learn Shopify's products (31k of the 33k training rows) better than our Amazon-style Listings: a domain gap, which is what the 2k Opus-labeled Amazon rows were meant to close and only partly do.
-- **The threshold rule from the held-out rows** (τ = 0.40 for kNN) keeps 69% local but loses to Jev on the 1,020 (62.8%): the held-out rows are mostly Shopify, so they overstate how right the student is on our Listings.
-- **Speed:** 17–19 ms per Listing in batches of 256, on par with the embedding classifier.
+- **kNN beats softmax** everywhere (53.3% against 43.9% on the held-out rows; top level 72.4% against 66.6% on the 1,020). The softmax head first trained to 25%: 300 steps at lr 0.05 is far too little for 1,676 classes. Tuned on the held-out rows (lr 0.5, l2 1e-5) it reached about 45%; more steps didn't help.
+- **The cascade beats Jev alone only when less than half the traffic stays local:** 68.3% at 45% kept, against 66.9%, 15.6 points under the teacher. At 70% or more kept it falls to about 60%.
+- **On Shopify's 2,000:** 61.8% at 77.5% kept, a tie with Jev's 61.8%; 63.6% at 67.6% kept. The students do better on Shopify's products (31k of the 33k training rows) than on our Amazon-style Listings, a gap the 2k Opus-labeled Amazon rows only partly close.
+- **The threshold rule from the held-out rows** (τ = 0.40 for kNN) keeps 68% local but loses to Jev on the 1,020 (63.9%): the held-out rows are 94% Shopify, whichever way they are split, so they overstate how right the student is on our Listings.
+- **Speed:** p50 about 10 ms and p99 15–22 ms per Listing, one at a time, on par with the embedding classifier.
+- **Leakage:** training rows whose title is an eval title are dropped (5 of the 1,020's titles appeared in `train/`). The `evaluate run --classifier student-*` candidates still train on all of `train/`.
 - **Correction to 6j:** the first Jev run on the 822 read 500 description characters, not production's 200. Rerun at 200: 66.9% (was 67.6%). 6j's conclusion stands; [eval/teacher.md](../../eval/teacher.md) notes it.
 - **Jev on Shopify's 2,000:** 61.8% exact, $0.12.
+- **Review round 1** fixes: per-source held-out split, eval titles dropped from training, the report's top-level, two-level, p50/p99 and unseen-label figures and its bar verdict, an atomic vector cache that recovers from a truncated file, `pick_tau` saying when no τ qualifies, and `classify([])`.
 
 ## Out of scope
 

@@ -60,12 +60,12 @@ def test_knn_confidence_is_the_winners_vote_share():
     assert share == pytest.approx((sims[0] + sims[1]) / sims.sum())
 
 
-def test_knn_a_tied_vote_goes_to_the_higher_similarity():
-    x = student.unit(np.array([[1.0, 0.0], [0.0, 1.0]]))
-    knn = student.Knn(x, ["A", "B"], k=2)
-    query = student.unit(np.array([[1.0, 1.0001]]))  # all but equidistant, a hair nearer B
-    ((label, _),) = knn.predict(query)
-    assert label == "B"
+@pytest.mark.parametrize("order", [("A", "A", "B"), ("B", "A", "A")])
+def test_knn_a_tied_vote_goes_to_the_higher_similarity(order):
+    rows = {"A": [1.0, 0.0], "B": [2.0, 0.0]}  # raw dot products: A 1 + 1, B 2: an exact tie
+    knn = student.Knn(np.array([rows[c] for c in order]), list(order), k=3)
+    ((label, share),) = knn.predict(np.array([[1.0, 0.0]]))
+    assert label == "B" and share == 0.5
 
 
 def test_knn_scores_in_chunks_with_the_same_result():
@@ -144,7 +144,55 @@ def test_evaluate_knows_the_student_candidates():
     assert {"student-softmax", "student-knn"} <= set(evaluate.CANDIDATES)
 
 
-def test_report_scores_each_student_alone_and_in_the_cascade(tmp_path, monkeypatch):
+def test_cascade_keeps_a_confidence_equal_to_tau():
+    answers, kept = student.cascade([("A", 0.5)], ["J"], tau=0.5)
+    assert answers == ["A"] and kept == 1
+
+
+def test_pick_tau_accepts_a_kept_rate_equal_to_the_target():
+    scored = [("A", 0.9, True), ("B", 0.4, False)]
+    assert student.pick_tau(scored, target=0.5, grid=[0.0, 0.5]) == 0.0
+
+
+def test_pick_tau_is_none_when_no_threshold_reaches_the_target():
+    assert student.pick_tau([("A", 0.9, False)], target=0.5, grid=[0.0, 0.5]) is None
+    assert student.pick_tau([], target=0.5, grid=[0.0]) is None
+
+
+def test_a_truncated_cache_file_is_recomputed(tmp_path):
+    def embed(texts):
+        return np.array([[1.0, 2.0] for _ in texts])
+
+    student.vectors(["a"], embed, tmp_path)
+    (path,) = tmp_path.glob("student-*.npy")
+    path.write_bytes(path.read_bytes()[:20])
+    assert np.allclose(
+        student.vectors(["a"], embed, tmp_path), student.unit(np.array([[1.0, 2.0]]))
+    )
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_classify_answers_nothing_for_no_listings(tmp_path):
+    rows = [{"title": "Blue shirt", "description": "", "category": "Apparel > Shirts"}]
+    c = student.StudentClassifier.train(TAX, fake_embed, rows, "knn", cache=tmp_path)
+    assert c.classify([]) == []
+
+
+def test_held_out_takes_ten_percent_of_each_source():
+    a = [{"title": f"a{i}"} for i in range(100)]
+    b = [{"title": f"b{i}"} for i in range(20)]
+    fit, held = student.held_out([a, b], seed=0)
+    assert sum(r["title"][0] == "a" for r in held) == 10
+    assert sum(r["title"][0] == "b" for r in held) == 2
+    assert len(fit) == 108
+
+
+def test_rows_with_an_eval_title_are_dropped():
+    rows = [{"title": "Blue Shirt"}, {"title": "Toy train"}]
+    assert student.without_titles(rows, ["blue shirt"]) == [{"title": "Toy train"}]
+
+
+def write_eval(tmp_path):
     import json
 
     labels = tmp_path / "labels.jsonl"
@@ -163,13 +211,55 @@ def test_report_scores_each_student_alone_and_in_the_cascade(tmp_path, monkeypat
     )
     opus = tmp_path / "opus.jsonl"
     opus.write_text("".join(json.dumps({"id": i, "category": c}) + "\n" for i, _, c in items))
-    monkeypatch.setattr(student, "EVALS", {"1,020": ([labels], [jev])})
-    monkeypatch.setattr(student, "OPUS", opus)
-    rows = [{"title": "Blue shirt", "description": "", "category": "Apparel > Shirts"}] * 10 + [
-        {"title": "Toy train", "description": "", "category": "Toys"}
-    ] * 10
-    body = student.report(TAX, fake_embed, rows, tmp_path / "cache")
+    return {"1,020": ([labels], [jev])}, opus
+
+
+def ticking():
+    t = [0.0]
+
+    def clock():
+        t[0] += 0.001
+        return t[0]
+
+    return clock
+
+
+SOURCES = [  # titles unlike the eval's, which the report drops from training
+    [{"title": "Red shirt", "description": "", "category": "Apparel > Shirts"}] * 10
+    + [{"title": "Wooden train", "description": "", "category": "Toys"}] * 10,
+    [{"title": "Green shirt", "description": "", "category": "Apparel > Shirts"}] * 10,
+]
+
+
+def test_report_scores_each_student_alone_and_in_the_cascade(tmp_path):
+    evals, opus = write_eval(tmp_path)
+    body = student.report(
+        TAX, fake_embed, SOURCES, tmp_path / "cache", evals=evals, opus=opus, clock=ticking()
+    )
     assert "## student-softmax" in body and "## student-knn (k=5)" in body
-    assert "Student alone: exact 100.0%" in body
+    assert "Student alone: exact 100.0%, top level 100.0%, two levels 100.0%" in body
+    assert "p50 1.0 ms, p99 1.0 ms per Listing" in body
+    assert "0 of 2 eval labels never occur in training" in body
     assert "Jev alone: exact 50.0%" in body and "Opus alone: exact 100.0%" in body
-    assert "| 1.00 | 0.0% | 50.0% | 100.0% |" in body  # all to the fallback above every confidence
+    assert "| 0.00 ← τ | 100.0% | 100.0% | 100.0% |" in body
+    assert "Bar (beats Jev alone with 70% or more kept local): met at τ = 0.00" in body
+
+
+def test_report_counts_eval_labels_unseen_in_training(tmp_path):
+    evals, opus = write_eval(tmp_path)
+    shirts_only = [[r for r in SOURCES[0] if r["category"] != "Toys"], SOURCES[1]]
+    body = student.report(
+        TAX, fake_embed, shirts_only, tmp_path / "cache", evals=evals, opus=opus, clock=ticking()
+    )
+    assert "1 of 2 eval labels never occur in training" in body
+
+
+def test_report_refuses_missing_fallback_answers_before_training(tmp_path):
+    evals, opus = write_eval(tmp_path)
+    evals["1,020"][1][0].unlink()
+
+    def embed(texts):
+        raise AssertionError("embedded before checking the files")
+
+    with pytest.raises(FileNotFoundError, match="jev.json"):
+        student.report(TAX, embed, SOURCES, tmp_path / "cache", evals=evals, opus=opus)

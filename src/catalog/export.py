@@ -12,7 +12,6 @@ import os
 import re
 import threading
 import time
-import uuid
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -111,7 +110,9 @@ def tick(
     else:
         kind, out = "export", pa.Table.from_pylist(collapse(feed.to_pylist()), schema=SCHEMA)
     if out.num_rows:  # compaction commits carry no feed rows: pass them without an empty file
-        _write(export_dir / f"{first:012}-{last:012}.parquet", out)
+        # a kill -9 leaves only a hidden temp file, which files() skips
+        with state.atomic(export_dir / f"{first:012}-{last:012}.parquet") as f:
+            pq.write_table(out, f)
         events.emit([_event(kind, first, last, out["op"], started, head)])
     state.save_watermark(state_dir, last, table)
     return last < head
@@ -134,20 +135,6 @@ def _event(kind: str, first: int, last: int, ops, started: float, head: int | No
         "ms": round((time.monotonic() - started) * 1000),
         "head": head,  # None for an adopted file: the head it was cut at is gone
     }
-
-
-def _write(path: Path, rows: pa.Table) -> None:
-    """Atomic, as state.save: a kill -9 leaves only a hidden temp file, which files() skips."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        pq.write_table(rows, tmp)
-        with open(tmp, "rb") as f:
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)  # else every retry on a full disk leaves one more
-        raise
 
 
 def main(argv: Sequence[str] | None = None) -> None:

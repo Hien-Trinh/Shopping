@@ -15,7 +15,6 @@ import platform
 import random
 import resource
 import sys
-import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -555,26 +554,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             f"{len(labeled)} Listings, {embedding.taxonomy_version}, "
             f"{a.description} description characters, texts {a.texts}."
         )
-        _write(a.out, render_recall(table, split, heading))
+        with state.atomic(a.out) as f:  # a killed or concurrent run leaves the old report
+            f.write(render_recall(table, split, heading).encode())
     else:
         results = [_result(f) for f in sorted(a.results.glob("*.json"))]
         if not results:
             args.error(f"no results in {a.results}")
-        _write(a.out, render(results, a.threshold))
-
-
-def _write(path: Path, text: str | bytes) -> None:
-    """`text` to `path` whole or not at all: a killed or concurrent run leaves the old file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(text.encode() if isinstance(text, str) else text)
-        os.chmod(tmp, 0o644)  # mkstemp's 0600 would make the report private
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+        with state.atomic(a.out) as f:
+            f.write(render(results, a.threshold).encode())
 
 
 if __name__ == "__main__":

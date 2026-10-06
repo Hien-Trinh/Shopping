@@ -22,7 +22,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-from catalog import entry, evaluate, taxonomy
+from catalog import entry, evaluate, state, taxonomy
 
 DATASET = "Shopify/product-catalogue"
 ROWS = "https://datasets-server.huggingface.co/rows?dataset={}&config=default&split={}&offset={}&length={}"
@@ -208,8 +208,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     if (after := _get(REVISION)["sha"]) != revision:  # the rows API serves only the latest
         raise RuntimeError(f"{DATASET} changed during the fetch: {revision} -> {after}")
     ev, tr, counts = build(test, train, tax, renames, n=a.n, seed=a.seed)
-    evaluate._write(a.eval, "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in ev))
-    evaluate._write(a.train, gz(tr))
+    with state.atomic(a.eval) as f:
+        f.write("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in ev).encode())
+    with state.atomic(a.train) as f:
+        f.write(gz(tr))
     unmapped = counts.pop("unmapped")
     print(json.dumps({"revision": revision, "eval": len(ev), "train": len(tr)} | counts))
     print(f"unmapped: {sum(unmapped.values())} rows, {len(unmapped)} categories")

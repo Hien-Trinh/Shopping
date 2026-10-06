@@ -6,13 +6,41 @@ on:
     branches: [main]
 
 jobs:
-  # Required on main. stress-smoke arrives in Phase 7 (plan-v1.md, CI).
+  # Required on main.
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
       - run: make check
+
+  # Every chaos scenario for 60 s at the runner's defaults, ending with the three oracles
+  # (step-7d.md, 7d.1). One leg per scenario, all at once; test_chaos_runner checks the list.
+  stress-smoke-leg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [steady, bulk, out-of-order, duplicates, poison, classifier-outage, kill-worker, kill-supervisor, rescale, disk-full]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
+      - run: uv run python -m catalog.chaos ${{ matrix.scenario }} --seconds 60 --dir run
+      - if: failure() || cancelled()  # a timeout cancels the job: keep its events too
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: events-${{ matrix.scenario }}
+          path: run/data/events
+          retention-days: 3
+
+  # The one required name: a matrix's leg names change whenever a scenario is added.
+  stress-smoke:
+    needs: stress-smoke-leg
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.stress-smoke-leg.result }}" = success
 
   # Whether `model` has anything to test. A job skipped by its `if` counts as passed, so `model`
   # can be required; a workflow-level `paths:` filter would leave it "Expected" forever.

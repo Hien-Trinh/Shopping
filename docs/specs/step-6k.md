@@ -84,6 +84,14 @@ All in `tests/unit/test_benchmark.py`, with the network replaced by an injected 
 3. **Opus usage (6k.2):** 22 agents, about 3M tokens of Max plan usage, plus my pass over roughly 600 answers. OK?
 4. **The test points above.** OK?
 
+## Outcome, 6k.1 (Oct 6)
+
+- **Fetched** revision `002ca155` of the dataset: 48,289 rows (9,658 test, 38,631 train). The rows API rate-limits hard (429 with no Retry-After after about 50 pages), so the fetch pauses 1 s between pages and retries up to 6 times with backoff from 15 s, not the 3 tries the spec said; a timed-out read is retried too (the first train run died on one). The two splits took about 40 min and 30 min.
+- **Dropped:** 8,614 non-English (17.8%), 28 duplicates, 12 train rows also in test, 4 labeled `Uncategorized`. Nothing malformed.
+- **Mapping:** 12 rename-table entries (Shopify's "Baby & Toddler" became "Baby & Children's", Uniforms became Uniforms & Workwear, bottles, bibs and sippy cups moved under Feeding Essentials, scrubs moved to Uniforms & Workwear, closets to Closet Parts & Accessories). A label is accepted when its level-3 ancestor is a Category, even if the release has since dropped the deeper node (Raw Candle Wax, Dry Beans): a change from the spec, which also required the full path to be in the release.
+- **Written:** `eval/labels-shopify.jsonl`, 2,000 rows over 689 Categories; `train/shopify.jsonl.gz`, 31,699 rows over 1,676 Categories, 12 MB.
+- **Spot-check of 50 eval labels:** 4 wrong (8%, 95% interval about 2–19%): a cogged V-belt under Climate Control Appliances, translator earbuds under Dictionary & Translation Software, coffee beans under Arts & Crafts, compactor screws under Excavators. Under the 15% line, so the eval stays. A few more are arguable (sweatpants under Sleepwear & Loungewear). The English filter lets a little Italian through and drops a few short English titles.
+
 ## Out of scope
 
 - Images, the candidate lists, brand and second-hand fields.

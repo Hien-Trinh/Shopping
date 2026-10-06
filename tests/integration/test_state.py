@@ -41,6 +41,29 @@ def test_failed_atomic_write_keeps_the_old_file_and_leaves_no_temp(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == ["out.bin"]
 
 
+def test_an_atomic_write_fsyncs_before_the_rename(tmp_path, monkeypatch):
+    calls, fsync, replace = [], os.fsync, os.replace
+    monkeypatch.setattr(os, "fsync", lambda fd: (calls.append("fsync"), fsync(fd))[1])
+    monkeypatch.setattr(os, "replace", lambda a, b: (calls.append("replace"), replace(a, b))[1])
+    with state.atomic(tmp_path / "out.bin") as f:
+        f.write(b"x")
+    assert calls == ["fsync", "replace"]
+
+
+def test_a_failed_rename_keeps_the_old_file_and_leaves_no_temp(tmp_path, monkeypatch):
+    path = tmp_path / "out.bin"
+    path.write_bytes(b"old")
+
+    def crash(*_):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", crash)
+    with pytest.raises(OSError), state.atomic(path) as f:
+        f.write(b"new")
+    assert path.read_bytes() == b"old"
+    assert [p.name for p in tmp_path.iterdir()] == ["out.bin"]
+
+
 def test_an_atomic_write_is_readable_by_others(tmp_path):
     old = os.umask(0o022)
     try:

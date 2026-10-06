@@ -559,3 +559,17 @@ def test_a_plain_stop_is_logged_and_exits_0_like_the_others(tmp_path, sig):  # a
         proc.kill()
     stops = [e for e in events.read(tmp_path / "data" / "events") if e["type"] == "api_stop"]
     assert len(stops) == 1 and "error" not in stops[0] and "reason" not in stops[0]
+
+
+def test_a_second_signal_still_stops_a_stuck_api(tmp_path, monkeypatch):  # PR #82 review
+    db = tmp_path / "data" / "merchants.sqlite"
+    merchants.create(db, "USD")
+    served, raised = [], []
+    monkeypatch.setattr(api.uvicorn.Server, "run", lambda server: served.append(server))
+    monkeypatch.setattr(signal, "raise_signal", raised.append)
+    api.main(["--data", str(tmp_path / "data"), "--db", str(db)])
+    handler = signal.getsignal(signal.SIGTERM)
+    handler(signal.SIGTERM, None)  # uvicorn's re-raise, or a signal before its handlers
+    assert served[0].should_exit and raised == []
+    handler(signal.SIGTERM, None)  # again: say lifespan teardown hangs
+    assert raised == [signal.SIGTERM] and signal.getsignal(signal.SIGTERM) == signal.SIG_DFL

@@ -200,9 +200,19 @@ def main(argv: Sequence[str] | None = None) -> None:
     worker.watch_supervisor(supervisor, stop, a.data / "events", "api")
     # uvicorn handles these while it serves, then restores these handlers and re-raises the
     # signal: with Python's defaults the process would die by it before api_stop is logged.
-    # Stopping the server here also covers a signal that lands before uvicorn's handlers do.
+    # So the first one stops the server (that re-raise, or a signal before uvicorn's handlers
+    # are in), and a second one dies by it, as before: a hung API still stops on a repeat.
+    heard = []
+
+    def on_signal(sig, _):
+        if heard:
+            signal.signal(sig, signal.SIG_DFL)
+            signal.raise_signal(sig)
+        heard.append(sig)
+        stop.set()
+
     for sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(sig, lambda *_: stop.set())
+        signal.signal(sig, on_signal)
     with event_files.stopping(EventLog(a.data / "events", "api"), stop):  # api_stop
         server.run()
 

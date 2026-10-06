@@ -6,7 +6,7 @@ on:
     branches: [main]
 
 jobs:
-  # Required on main, with stress-smoke.
+  # Required on main.
   check:
     runs-on: ubuntu-latest
     steps:
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
       - run: uv run python -m catalog.chaos ${{ matrix.scenario }} --seconds 60 --dir run
-      - if: failure()
+      - if: failure() || cancelled()  # a timeout cancels the job: keep its events too
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: events-${{ matrix.scenario }}

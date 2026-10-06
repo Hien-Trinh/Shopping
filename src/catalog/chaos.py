@@ -27,7 +27,7 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from catalog import entry, events, export, landing, merchants, snapshots, state, store
+from catalog import entry, events, export, landing, merchants, metrics, snapshots, state, store
 from catalog.envelope import Change, Content
 from catalog.keys import PARTITIONS
 from catalog.plan import Outcome
@@ -343,7 +343,7 @@ def run(system: System, scenario: str, *, seconds: float, rate: float, seed: int
     rng, system.changes = random.Random(f"{seed}:{scenario}"), max(1, round(rate * seconds))
     system.start_ms, system.extra = time.time_ns() // 1_000_000, []
     system.flags = ["--rate", rate, "--changes", system.changes, "--seed", seed, "--deletes", 0.1]
-    began = time.monotonic()
+    began, began_at = time.monotonic(), datetime.now(UTC)
     main = system.load(*system.flags, "--start-ms", system.start_ms)
 
     def at(fraction):  # until that fraction of the load time has passed
@@ -393,6 +393,7 @@ def run(system: System, scenario: str, *, seconds: float, rate: float, seed: int
         },  # fmt: skip
         "problems": problems,
         "ok": not any(checks.values()) and not problems,
+        "metrics": metrics.compute(system.data, began_at, datetime.now(UTC)),  # the whole run
     }
 
 

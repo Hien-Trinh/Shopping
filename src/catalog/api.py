@@ -48,7 +48,7 @@ def create_app(
     log = landing.ensure(str(data / "landing_log"))
     events = EventLog(data / "events", "api", clock)
     # Looked up at each commit, not bound here, so a test can make the append fail.
-    appender = landing.Appender(lambda entries: landing.append(log, entries), window)
+    appender = landing.Appender(lambda entries: landing.append(log, entries, events), window)
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):

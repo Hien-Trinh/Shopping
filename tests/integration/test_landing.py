@@ -7,7 +7,8 @@ from deltalake import DeltaTable, write_deltalake
 from deltalake.exceptions import CommitFailedError
 from support import delete, listing, product_in, race, reclassify, up
 
-from catalog import landing
+from catalog import events, landing
+from catalog.events import EventLog
 from catalog.landing import START, Landed
 
 NOW = datetime(2026, 9, 30, 12, tzinfo=UTC)
@@ -116,6 +117,24 @@ def test_a_delete_between_refresh_and_commit_is_retried(log, monkeypatch):
     add(log, up(B, 1))
     assert deletes
     assert [c.change.key for c in landing.read(log, {40: START}, limit=10).changes] == [("m_1", B)]
+
+
+def test_a_retried_commit_race_is_in_the_events(log, monkeypatch, tmp_path):  # step 7c.2
+    refresh, lost = log.update_incremental, []
+
+    def refresh_then_lose_the_race():
+        refresh()
+        if not lost:
+            lost.append(landing.ensure(log.table_uri).delete("true"))
+
+    add(log, up(A, 1))
+    monkeypatch.setattr(log, "update_incremental", refresh_then_lose_the_race)
+    log_events = EventLog(tmp_path / "events", "api")
+    landing.append(log, [("s2", 0, up(B, 1), NOW), ("s2", 1, up(A, 2), NOW)], events=log_events)
+    [retry] = events.read(tmp_path / "events")
+    assert (retry["type"], retry["rows"]) == ("append_retry", 2) and retry["ms"] >= 0
+    landing.append(log, [("s3", 0, up(B, 2), NOW)], events=log_events)  # no race: no event
+    assert len(events.read(tmp_path / "events")) == 1
 
 
 def test_a_second_lost_race_fails_the_append(log, monkeypatch):

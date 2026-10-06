@@ -114,6 +114,11 @@ One step would be about 600 lines, so it splits.
 2. **The Uncategorized rate: the store's share, or per Change?** Outcome events don't carry the Category. The Listing Store's share of live Listings that are Uncategorized is what merchants see, and needs no new field. A per-Change rate would add `category` to every `written` event (about 30 more bytes per event, A13's budget). I'd use the store's share, plus `classify_failed.listings` over `classify.listings` as the outage rate. OK? **Yes, the store's share.**
 3. **`maintenance.py` in 7c.1's exit errors**: the plan names Change Export, Catalog Snapshots and the Backfill; maintenance has the same gap and costs about 5 lines. Include it? **Yes.**
 
+## Outcome
+
+- **7c.1** (PR #79, Oct 5): every exit is in the events. Review fixes: a refused Jev key is raised even after another call answered or failed first (the failure row above, approved), a stale kill still dying at shutdown is logged `stale`, and the API runs under `events.stopping`. Kept, at review: `watch_exit`'s `deadline` field and its `ts` as the planned exit time; the watch tests beside the existing one in `test_chaos.py`.
+- **7c.2**: the metric tests went to `tests/integration/test_metrics.py`, not `tests/unit`, since they write event files and a Listing Store.
+
 ## Out of scope
 
 - A dashboard or a long-running metrics process.

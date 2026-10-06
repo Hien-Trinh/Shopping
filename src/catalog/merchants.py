@@ -16,6 +16,7 @@ import secrets
 import sqlite3
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -51,6 +52,11 @@ def _connect(db: Path):
             "CREATE TABLE IF NOT EXISTS merchants (merchant_id TEXT PRIMARY KEY,"
             " currency TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, status TEXT NOT NULL)"
         )
+        # Who changed which Merchant, when (step 7c.2): never the key or its hash
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS audit (merchant_id TEXT NOT NULL, action TEXT NOT NULL,"
+            " at TEXT NOT NULL)"
+        )
         with c:  # one transaction: commit, or roll back on error
             yield c
 
@@ -72,6 +78,7 @@ def create(db: Path, currency: str) -> tuple[str, str]:
                     "INSERT INTO merchants VALUES (?, ?, ?, 'active')",
                     (merchant_id, currency, _hash(key)),
                 )
+                _audit(c, merchant_id, "create")
                 return merchant_id, key
             except sqlite3.IntegrityError:  # the id is taken: 1 in 2^64 per existing Merchant
                 continue
@@ -80,22 +87,29 @@ def create(db: Path, currency: str) -> tuple[str, str]:
 def rotate(db: Path, merchant_id: str) -> str:
     """Replace the Merchant's key: the old one stops working at once. Status is unchanged."""
     key = secrets.token_urlsafe(32)
-    _update(db, merchant_id, "key_hash = ?", _hash(key))
+    _update(db, merchant_id, "key_hash = ?", _hash(key), "rotate")
     return key
 
 
 def revoke(db: Path, merchant_id: str) -> None:
     """Stop the Merchant's key working; its row, id and currency stay."""
-    _update(db, merchant_id, "status = ?", "revoked")
+    _update(db, merchant_id, "status = ?", "revoked", "revoke")
 
 
-def _update(db: Path, merchant_id: str, assignment: str, value: str) -> None:
+def _update(db: Path, merchant_id: str, assignment: str, value: str, action: str) -> None:
     with _connect(db) as c:
         done = c.execute(
             f"UPDATE merchants SET {assignment} WHERE merchant_id = ?", (value, merchant_id)
         )
         if not done.rowcount:
             raise UnknownMerchant(f"no merchant {merchant_id!r}")
+        _audit(c, merchant_id, action)
+
+
+def _audit(c: sqlite3.Connection, merchant_id: str, action: str) -> None:
+    """In the change's own transaction: no change without its row, and no row without it."""
+    at = datetime.now(UTC).isoformat()
+    c.execute("INSERT INTO audit VALUES (?, ?, ?)", (merchant_id, action, at))
 
 
 def verify(db: Path, key: str) -> Merchant:

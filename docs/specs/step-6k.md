@@ -84,6 +84,14 @@ All in `tests/unit/test_benchmark.py`, with the network replaced by an injected 
 3. **Opus usage (6k.2):** 22 agents, about 3M tokens of Max plan usage, plus my pass over roughly 600 answers. OK?
 4. **The test points above.** OK?
 
+## Outcome, 6k.2 (Oct 6)
+
+- **The draw:** `sample --per-category 95 --seed 2`, less any id in the 1,020, first 61 per Amazon category: 2,013 Listings (33 × 61).
+- **Opus:** 22 agents with 6j's brief plus the level-3 recheck and the subscription-box examples. Every answer a taxonomy path, none `none`, no batch redone; 476 unsure, 118 above level 3 (77 of them leaves with nothing deeper: `Gift Cards`, `Subscription Services`).
+- **The review:** the 476 unsure, the other 41 above level 3 and a random 100 sure ones (594 in all) went to 7 Sonnet agents, blind, with the same brief. They agreed on 384; I adjudicated the 210 where they didn't and changed 62 labels (46 unsure, 27 above level 3, 1 random; some in two sets). Most of the rest were format questions the text can't settle (CD or download, DVD or download), kept as Opus had them.
+- **Error rate:** 1 of the 100 random sure labels was wrong (a game app under Handheld & PDA Software), so about 1% among the sure labels (95% interval about 0–5%).
+- **Committed:** `train/amazon-opus.jsonl`, the sample fields plus `category` and `labeler: "claude-opus-5-5"`.
+
 ## Out of scope
 
 - Images, the candidate lists, brand and second-hand fields.

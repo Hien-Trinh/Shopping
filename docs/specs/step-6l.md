@@ -1,6 +1,6 @@
 # Step 6l: the student prototype, a softmax head and kNN over bge-small vectors (mini PRD)
 
-Status: approved Oct 6. Question 1: the bar switched (below). Question 2: Jev on the 2,000 Shopify Listings OK. Question 3: the Opus line on the curve, yes. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6l](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher), [step-6k.md](step-6k.md) (the training and eval data) and [step-6e.md](step-6e.md) (the eval harness). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 6 (see Outcome); approved Oct 6. Question 1: the bar switched (below). Question 2: Jev on the 2,000 Shopify Listings OK. Question 3: the Opus line on the curve, yes. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6l](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher), [step-6k.md](step-6k.md) (the training and eval data) and [step-6e.md](step-6e.md) (the eval harness). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -70,6 +70,28 @@ In `tests/integration/test_student.py`, with a fake `embed` (fixed vectors), as 
 2. **Jev on the 2,000 Shopify Listings,** so the cascade can be scored there too: 2,000 calls, about 8 minutes, about $0.12. OK?
 3. **The fallback.** A second option the curve may show: falling back to Opus through the API instead of Jev (roughly $0.01 a Listing, about 160× Jev's $0.00006), or to nothing (Uncategorized, Backfill retries). Out of scope for 6l unless you want the Opus line on the curve, estimated from its stored answers on the 1,020 at no cost. Add it?
 4. **The test points above.** OK?
+
+## Outcome (Oct 6)
+
+**The bar is not met on the 1,020.** Full curves: [eval/student.md](../../eval/student.md).
+
+| On the 1,020 (exact) | Kept local | System |
+|---|---|---|
+| Jev alone (production settings) | 0% | 66.9% |
+| kNN (k=5) alone | 100% | 52.3% |
+| kNN, Jev below τ = 0.25 | 79.0% | 59.6% |
+| kNN, Jev below τ = 0.45 | 46.3% | **68.5%** |
+| kNN, Opus below τ = 0.45 | 46.3% | 81.4% |
+| Softmax alone | 100% | 47.3% |
+| Opus alone (the teacher) | 0% | 86.7% |
+
+- **kNN beats softmax** everywhere (54.4% against 45.3% on the held-out rows). The softmax head first trained to 25%: 300 steps at lr 0.05 is far too little for 1,676 classes. Tuned on the held-out rows (lr 0.5, l2 1e-5) it reached 45%; more steps didn't help.
+- **The cascade beats Jev alone only when about half the traffic or less stays local:** 68.5% at 46% kept, against 66.9%. At 70% or more kept it falls to about 60%.
+- **On Shopify's 2,000 the bar is met:** 62.0% at 77% kept and 64.1% at 67% kept, against Jev's 61.8%. The students learn Shopify's products (31k of the 33k training rows) better than our Amazon-style Listings: a domain gap, which is what the 2k Opus-labeled Amazon rows were meant to close and only partly do.
+- **The threshold rule from the held-out rows** (τ = 0.40 for kNN) keeps 69% local but loses to Jev on the 1,020 (62.8%): the held-out rows are mostly Shopify, so they overstate how right the student is on our Listings.
+- **Speed:** 17–19 ms per Listing in batches of 256, on par with the embedding classifier.
+- **Correction to 6j:** the first Jev run on the 822 read 500 description characters, not production's 200. Rerun at 200: 66.9% (was 67.6%). 6j's conclusion stands; [eval/teacher.md](../../eval/teacher.md) notes it.
+- **Jev on Shopify's 2,000:** 61.8% exact, $0.12.
 
 ## Out of scope
 

@@ -6,11 +6,12 @@ line, because events of many shapes would infer a sparse schema. A Change counts
 (submission_id, change_index), with its best Outcome as status.fold ranks them (Phase 7), and
 falls in the window when its first Outcome does.
 
-    python -m catalog.metrics [--since 3600] [--data DIR]
+    python -m catalog.metrics [--since 10m] [--data DIR]
 """
 
 import argparse
 import json
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,27 +19,29 @@ from pathlib import Path
 import duckdb
 import pyarrow as pa
 from deltalake import DeltaTable
+from deltalake.exceptions import TableNotFoundError
 
 from catalog import entry, events, state, status
 from catalog.classify import UNCATEGORIZED
 
-# Each Change's first Outcome (the window and freshness) and best one (the rates). Backfill
-# reclassifies and rejected Changes never landed as a merchant's: they're left out.
+# Each merchant Change the API accepted within the read range: when, its first Outcome (the
+# window and freshness) and its best one (the rates). Only an accepted Change counts, so a
+# Backfill reclassify or a rejected Change never does, nor a replay of a Change accepted before
+# the read range (its first Outcome wasn't read either).
 _CHANGES = """
-    SELECT e->>'submission_id' AS s, (e->>'change_index')::INT AS i,
-           min(ts) AS first, arg_min(type, rank) AS best
-    FROM events JOIN ranks ON type = kind
-    WHERE type <> 'rejected' AND NOT starts_with(e->>'submission_id', 'backfill-')
-    GROUP BY ALL HAVING min(ts) >= $since
+    WITH a AS (SELECT e->>'submission_id' AS s, (e->>'change_index')::INT AS i,
+                      min(ts) AS accepted
+               FROM events WHERE type = 'accepted' GROUP BY ALL),
+    o AS (SELECT e->>'submission_id' AS s, (e->>'change_index')::INT AS i,
+                 min(ts) AS first, arg_min(type, rank) AS best
+          FROM events JOIN ranks ON type = kind GROUP BY ALL)
+    SELECT * FROM o JOIN a USING (s, i) WHERE first >= $since
 """
 QUERIES = {
     "freshness_s": f"""
-        WITH c AS ({_CHANGES}),
-        a AS (SELECT e->>'submission_id' AS s, (e->>'change_index')::INT AS i, min(ts) AS ts
-              FROM events WHERE type = 'accepted' GROUP BY ALL)
-        SELECT count(*) AS changes, quantile_cont((first - a.ts) / 1000, 0.5) AS p50,
-               quantile_cont((first - a.ts) / 1000, 0.99) AS p99
-        FROM c JOIN a USING (s, i)
+        SELECT count(*) AS changes, quantile_cont((first - accepted) / 1000, 0.5) AS p50,
+               quantile_cont((first - accepted) / 1000, 0.99) AS p99
+        FROM ({_CHANGES})
     """,
     "outcomes": f"""
         SELECT count(*) AS changes, avg((best = 'stale')::INT) AS stale,
@@ -58,11 +61,14 @@ QUERIES = {
 }
 # {key: value} metrics: one row per key
 GROUPED = {
-    # each partition's latest batch event: lag = head + 1 - next[p][0] (design doc)
+    # lag = head + 1 - next[p][0] (design doc), with each partition's latest position against
+    # the newest head any worker read: a stalled worker logs no batch, so its own last one
+    # would hide its lag. Over the whole read range, so a partition stalled all window shows.
     "lag_commits": """
         WITH b AS (SELECT ts, e, unnest(json_keys(e->'next')) AS p
-                   FROM events WHERE type = 'batch' AND ts >= $since)
-        SELECT p, arg_max((e->>'head')::BIGINT + 1 - (e->'next'->p->>0)::BIGINT, ts)
+                   FROM events WHERE type = 'batch')
+        SELECT p, (SELECT max((e->>'head')::BIGINT) FROM b) + 1
+                  - arg_max((e->'next'->p->>0)::BIGINT, ts)
         FROM b GROUP BY p ORDER BY p::INT
     """,
     # the share of the window each worker spent in ticks that moved an offset
@@ -110,7 +116,7 @@ def compute(data: Path, since: datetime, now: datetime) -> dict:
             out[name] = {k: _plain(v) for k, v in run(sql).fetchall()}
         try:
             listings = DeltaTable(str(data / "listing_store")).to_pyarrow_dataset()
-        except Exception:  # no Listing Store yet (delta-rs raises its own TableNotFoundError)
+        except TableNotFoundError:  # none yet; a corrupt one raises
             out["uncategorized"] = None
         else:
             db.register("listings", listings)
@@ -123,10 +129,17 @@ def _plain(v):
     return float(v) if hasattr(v, "is_finite") else v  # DuckDB's DECIMAL comes back a Decimal
 
 
+def duration(text: str) -> float:
+    """Seconds in `90`, `90s`, `10m`, `1.5h` or `2d`; more than 0."""
+    if not (m := re.fullmatch(r"(\d+(?:\.\d+)?)([smhd]?)", text)) or not float(m[1]):
+        raise argparse.ArgumentTypeError(f"want a duration like 10m or 1h, got {text!r}")
+    return float(m[1]) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m[2]]
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m catalog.metrics")
     args.add_argument("--data", type=Path, default=state.DATA)
-    args.add_argument("--since", type=float, default=3600.0, help="seconds back from now")
+    args.add_argument("--since", type=duration, default=3600.0, help="how far back, e.g. 10m")
     a = args.parse_args(argv)
     now = datetime.now(UTC)
     print(json.dumps(compute(a.data, now - timedelta(seconds=a.since), now)))

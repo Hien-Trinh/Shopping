@@ -137,6 +137,25 @@ def test_a_retried_commit_race_is_in_the_events(log, monkeypatch, tmp_path):  # 
     assert len(events.read(tmp_path / "events")) == 1
 
 
+def test_a_full_disk_for_events_never_fails_the_retry(log, monkeypatch):  # PR #80 review
+    class FullDisk:
+        def emit(self, events):
+            raise OSError(28, "No space left on device")
+
+    refresh, lost = log.update_incremental, []
+
+    def refresh_then_lose_the_race():
+        refresh()
+        if not lost:
+            lost.append(landing.ensure(log.table_uri).delete("true"))
+
+    add(log, up(A, 1))  # a row for the DELETE to remove, so the race is lost
+    monkeypatch.setattr(log, "update_incremental", refresh_then_lose_the_race)
+    landing.append(log, [("s1", 0, up(B, 1), NOW)], events=FullDisk())
+    assert lost
+    assert [c.change.key for c in landing.read(log, {40: START}, limit=10).changes] == [("m_1", B)]
+
+
 def test_a_second_lost_race_fails_the_append(log, monkeypatch):
     """One retry, not a loop: the API answers 500 and the Merchant resends."""
     refresh, other = log.update_incremental, landing.ensure(log.table_uri)

@@ -2,6 +2,7 @@ import json
 from collections import Counter
 from datetime import UTC, datetime
 
+import pytest
 from support import listing
 
 from catalog import events, metrics, status, store
@@ -23,20 +24,29 @@ def change(kind, submission, index):
 
 def test_freshness_and_rates_count_each_change_once_with_its_best_outcome(tmp_path):
     root = tmp_path / "events"
-    emit(root, 100, change("accepted", "s1", 0), change("accepted", "s1", 1),
-         change("accepted", "s2", 0))  # fmt: skip
+    emit(
+        root,
+        100,
+        change("accepted", "s1", 0),
+        change("accepted", "s1", 1),
+        change("accepted", "s2", 0),
+        change("accepted", "s3", 0),
+        change("rejected", "s4", 0),
+    )  # never landed: not a Change the pipeline handled
     emit(root, 103, change("written", "s1", 0))
     emit(root, 110, change("stale", "s1", 1))
     emit(root, 120, change("failed", "s2", 0))
+    emit(root, 130, change("conflict", "s3", 0), change("reclassified", "backfill-x", 0))
     emit(root, 200, change("already_applied", "s1", 0))  # a crash replay: not a second Change
     got = metrics.compute(tmp_path, SINCE, NOW)
-    assert got["freshness_s"] == {"changes": 3, "p50": 10.0, "p99": 19.8}  # 3, 10 and 20 s
+    assert got["freshness_s"] == {"changes": 4, "p50": 15.0, "p99": 29.7}  # 3, 10, 20 and 30 s
+    assert got["outcomes"] == {"changes": 4, "stale": 0.25, "conflict": 0.25, "failed": 0.25}
     # the same verdicts as GET /submissions folds them
     found = events.read(root)
-    folded = [o for s in ("s1", "s2") for o in status.fold(s, found).outcomes.values()]
-    kinds = Counter(folded)
-    assert got["outcomes"] == {"changes": 3, "stale": kinds["stale"] / 3, "conflict": 0.0,
-                               "failed": kinds["failed"] / 3}  # fmt: skip
+    folded = Counter(o for s in ("s1", "s2", "s3") for o in status.fold(s, found).outcomes.values())
+    assert {k: folded[k] / 4 for k in ("stale", "conflict", "failed")} == {
+        k: got["outcomes"][k] for k in ("stale", "conflict", "failed")
+    }  # fmt: skip
 
 
 def test_a_change_first_seen_before_the_window_is_left_out(tmp_path):
@@ -45,6 +55,15 @@ def test_a_change_first_seen_before_the_window_is_left_out(tmp_path):
     emit(root, 20, change("written", "s1", 0))  # its Outcome came before the window
     emit(root, 100, change("already_applied", "s1", 0))  # only a replay inside it
     assert metrics.compute(tmp_path, SINCE, NOW)["outcomes"]["changes"] == 0
+
+
+def test_a_replay_of_a_change_older_than_the_read_range_is_not_a_new_change(tmp_path):
+    root, later = tmp_path / "events", 4 * 3600  # PR #80 review
+    emit(root, 0, change("accepted", "s1", 0))
+    emit(root, 5, change("written", "s1", 0))  # hours before what the window reads
+    emit(root, later, change("already_applied", "s1", 0))  # a crash replay inside the window
+    since, now = (datetime.fromtimestamp(t, UTC) for t in (later - 60, later + 60))
+    assert metrics.compute(tmp_path, since, now)["outcomes"]["changes"] == 0
 
 
 def test_lag_reads_each_partitions_latest_batch(tmp_path):
@@ -56,6 +75,11 @@ def test_lag_reads_each_partitions_latest_batch(tmp_path):
     got = metrics.compute(tmp_path, SINCE, NOW)
     assert got["lag_commits"] == {"3": 0, "7": 11}  # head + 1 - next[p][0]
     assert got["utilization"] == {"worker-0": 0.0003}  # 90 ms of the 300 s window
+    # worker-0 stalls; worker-1 goes on to head 512 (PR #80 review)
+    emit(root, 160, {"type": "batch", "worker": "worker-1", "changes": 1, "ms": 5, "head": 512,
+                     "next": {"20": [513, 0]}})  # fmt: skip
+    lag = metrics.compute(tmp_path, SINCE, NOW)["lag_commits"]
+    assert lag == {"3": 500, "7": 511, "20": 0}  # behind the newest head any worker read
 
 
 def test_classify_appends_and_refusals(tmp_path):
@@ -103,3 +127,23 @@ def test_the_cli_prints_one_json_object(tmp_path, capsys):
                                                               "ms": 7})  # fmt: skip
     metrics.main(["--data", str(tmp_path), "--since", "60"])
     assert json.loads(capsys.readouterr().out)["classify_ms"]["calls"] == 1
+
+
+def test_since_takes_a_duration_and_must_be_positive(tmp_path, capsys):
+    metrics.main(["--data", str(tmp_path), "--since", "10m"])
+    assert json.loads(capsys.readouterr().out)["since"]
+    for bad in ("0", "-5", "soon"):
+        with pytest.raises(SystemExit) as stopped:
+            metrics.main(["--data", str(tmp_path), "--since", bad])
+        assert stopped.value.code == 2
+    assert (
+        metrics.duration("90s") == metrics.duration("1.5m") == 90 and metrics.duration("2h") == 7200
+    )
+
+
+def test_a_corrupt_listing_store_is_an_error_not_a_missing_one(tmp_path):
+    log = tmp_path / "listing_store" / "_delta_log"
+    log.mkdir(parents=True)
+    (log / "00000000000000000000.json").write_text("garbage")
+    with pytest.raises(Exception, match="(?i)json|parse|invalid|delta"):
+        metrics.compute(tmp_path, SINCE, NOW)

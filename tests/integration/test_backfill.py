@@ -142,6 +142,16 @@ def test_tick_waits_until_every_worker_passed_its_last_commit(tables):
     assert tick(tables) == first + 1  # A is still flagged: the worker hasn't fixed it
 
 
+def test_tick_logs_its_commit_retries_to_its_own_events(tables, monkeypatch):  # PR #80 review
+    landing_dt, dt, _, log = tables
+    put(dt, A, flagged=True)
+    passed, real = [], landing.append
+    monkeypatch.setattr(landing, "append", lambda d, e, events=None: passed.append(events)
+                        or real(d, e, events))  # fmt: skip
+    tick(tables)
+    assert passed == [log]
+
+
 def test_tick_with_nothing_pending_appends_and_saves_nothing(tables):
     landing_dt, dt, state_dir, log = tables
     put(dt, A)

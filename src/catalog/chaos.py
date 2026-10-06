@@ -324,7 +324,7 @@ SCENARIOS = {
 
 # What each fault must leave behind, so a fault that silently did nothing fails the run.
 EFFECTS = {
-    "steady": ("nothing", lambda r: False),  # TEMPORARY: proves the gate goes red (7d.1)
+    "steady": ("nothing", lambda r: True),
     "bulk": ("10,000 more accepted", lambda r: r["loads"][1]["accepted"] == 10_000),
     "out-of-order": ("stale Outcomes", lambda r: r["outcomes"].get("stale", 0) > 0),
     "duplicates": ("already_applied Outcomes", lambda r: r["outcomes"].get("already_applied")),

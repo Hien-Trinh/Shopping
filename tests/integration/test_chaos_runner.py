@@ -1,9 +1,11 @@
 """The chaos runner and the three oracles over a whole system (docs/specs/step-7b.md)."""
 
 import json
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -158,3 +160,11 @@ def test_a_flag_that_is_not_a_finite_positive_number_is_refused(capsys, flag, va
     with pytest.raises(SystemExit) as stopped:
         chaos.main(["steady", flag, value])
     assert stopped.value.code == 2
+
+
+def test_ci_runs_every_scenario_and_nothing_else():
+    """stress-smoke's matrix (step-7d.md, 7d.1) can't drift from SCENARIOS."""
+    ci = (Path(__file__).parents[2] / ".github/workflows/ci.yml").read_text()
+    listed = re.search(r"^\s+scenario: \[(.*)\]$", ci, re.M)
+    assert listed, "no stress-smoke matrix in ci.yml"
+    assert [s.strip() for s in listed[1].split(",")] == list(chaos.SCENARIOS)

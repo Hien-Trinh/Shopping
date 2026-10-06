@@ -74,7 +74,7 @@ until ! pgrep -f 'catalog\.(worker|api|export|maintenance|snapshots|backfill)' >
 caffeinate -dims uv run python -m catalog.supervisor
 ```
 
-Starting sooner is safe but fails: the new workers find their partitions still locked and exit 3, so the new supervisor stops with 3.
+A chaos run's processes match the pattern too, so let any chaos run finish first. Starting sooner is safe but fails: the new workers find their partitions still locked and exit 3, so the new supervisor stops with 3.
 
 **A chaos runner was `kill -9`ed.** Its supervisor runs in its own session and keeps going. Stop it with `pkill -f catalog.supervisor`. Its scratch dir stays in the temp folder.
 

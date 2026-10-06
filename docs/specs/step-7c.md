@@ -78,7 +78,7 @@ One step would be about 600 lines, so it splits.
 | `append_retry`'s second attempt fails too | The error propagates as today; the event is still logged first |
 | The audit insert fails (disk full) | The transaction rolls back; the key change didn't happen and the CLI says so |
 | `catalog.metrics` while the system writes events | `events.read` trusts only complete lines; numbers cover what's complete |
-| A window with no events | Every metric `null`, exit 0 |
+| A window with no events | Counts are 0 and every other metric `null` (or `{}` for the per-key ones), exit 0 |
 | An Outcome from a crash replay or a bootstrap | Counted once per Change, best Outcome (Phase 7's rule) |
 | A Change accepted before `--since` with its Outcome inside it | No `accepted` event in the window, so it's left out of freshness; `--since` is read an hour wider for `accepted` events |
 | A `kill -9`ed supervisor's workers still running when a new one starts | The new workers exit 3 and the new supervisor stops (3e, by design); the runbook says to wait |
@@ -113,6 +113,11 @@ One step would be about 600 lines, so it splits.
 1. **The merchant audit: SQLite table or events?** The plan says "audit event". Events are kept 3 days (A13), so an audit there is gone in 3 days, and the CLI would write an event file under `data/`. A table in the merchants SQLite file is kept as long as the Merchants, and commits with the change. I'd use the table. OK? **Yes, the table.**
 2. **The Uncategorized rate: the store's share, or per Change?** Outcome events don't carry the Category. The Listing Store's share of live Listings that are Uncategorized is what merchants see, and needs no new field. A per-Change rate would add `category` to every `written` event (about 30 more bytes per event, A13's budget). I'd use the store's share, plus `classify_failed.listings` over `classify.listings` as the outage rate. OK? **Yes, the store's share.**
 3. **`maintenance.py` in 7c.1's exit errors**: the plan names Change Export, Catalog Snapshots and the Backfill; maintenance has the same gap and costs about 5 lines. Include it? **Yes.**
+
+## Outcome
+
+- **7c.1** (PR #79, Oct 5): every exit is in the events. Review fixes: a refused Jev key is raised even after another call answered or failed first (the failure row above, approved), a stale kill still dying at shutdown is logged `stale`, and the API runs under `events.stopping`. Kept, at review: `watch_exit`'s `deadline` field and its `ts` as the planned exit time; the watch tests beside the existing one in `test_chaos.py`.
+- **7c.2**: the metric tests went to `tests/integration/test_metrics.py`, not `tests/unit`, since they write event files and a Listing Store. Review fixes (PR #80): a Change counts only if its `accepted` event is in the read range, so a replay of an old Change isn't a new one, and Backfill and rejected Changes drop out with no filter; lag is measured against the newest head any worker read, so a stalled partition shows; the API logs commit retries to a file of its own (the commit runs in a thread); `--since` takes `10m`-style durations; a corrupt Listing Store raises instead of reading as missing. Deferred to 7d: parsing each event three times.
 
 ## Out of scope
 

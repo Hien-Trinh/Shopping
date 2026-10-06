@@ -265,6 +265,21 @@ def test_a_failed_append_is_a_500_with_no_events(client, monkeypatch):
     assert client.events() == []  # never an accepted event for a Change that didn't land
 
 
+def test_commit_retries_are_logged_to_a_file_of_their_own(client, tmp_path, monkeypatch):
+    real = landing.append  # PR #80 review: the commit runs in a thread, beside the request's emits
+
+    def racing(dt, entries, events=None):
+        events.emit([{"type": "append_retry", "rows": len(entries), "ms": 1}])
+        return real(dt, entries, events)
+
+    monkeypatch.setattr(landing, "append", racing)
+    assert client.post({"changes": [change("a")]}).status_code == 202
+    files = {kind: {f for f in tmp_path.rglob("*.jsonl") if kind in f.read_text()}
+             for kind in ("append_retry", "accepted")}  # fmt: skip
+    assert files["append_retry"] and files["accepted"]
+    assert not files["append_retry"] & files["accepted"]
+
+
 def test_a_failed_shared_commit_is_a_500_for_every_request_in_it(make_api, monkeypatch):
     client = make_api(window=1)
     monkeypatch.setattr(landing, "append", fail)

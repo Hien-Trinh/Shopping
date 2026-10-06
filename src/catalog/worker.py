@@ -18,6 +18,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic  # its own name: a test can time _classify alone
 
 from deltalake import DeltaTable
 
@@ -381,32 +382,38 @@ def _classify(writes: Sequence[Write], classifier) -> tuple[list[Write], list[di
     """Classify the Writes that need it in one call; on any failure, or for those the classifier
     didn't reach (answered None), they become Uncategorized.
 
-    Returns the Writes and a classify_failed event if any went unanswered.
+    Returns the Writes, a classify event (its size and time, for classify latency) and a
+    classify_failed one if any went unanswered.
     """
     todo = [w for w in writes if w.needs_classify]
     if not todo:
         return list(writes), []
     version = classifier.taxonomy_version
+    started = monotonic()
     try:
         results = classifier.classify([w.listing for w in todo])
         found = [
             None if a is None else _answer(a, version) for _, a in zip(todo, results, strict=True)
         ]
         # for the Listings it answered None: a classifier may say why (jev.JevClassifier.error)
-        error = getattr(classifier, "error", None) or "budget spent"
+        error = getattr(classifier, "error", None)
+        reason, error = ("error", error) if error else ("budget", "budget spent")
     except jev.KeyMissing:  # a refused key: no batch can succeed, so stop (exit 7)
         raise
     except Exception as e:  # an outage or a bad answer: never stall the partition
-        found, error = [None] * len(todo), repr(e)[:500]  # a provider error may echo listing text
-    missed = [w for w, f in zip(todo, found, strict=True) if f is None]
-    notes = [
-        {
+        found, reason = [None] * len(todo), "error"
+        error = repr(e)[:500]  # a provider error may echo listing text
+    ms = round((monotonic() - started) * 1000)
+    notes = [{"type": "classify", "listings": len(todo), "ms": ms}]
+    if missed := [w for w, f in zip(todo, found, strict=True) if f is None]:
+        notes.append({
             "type": "classify_failed",
             "listings": len(missed),
             "partitions": sorted({partition(*w.key) for w in missed}),
+            "reason": reason,  # budget spent or an error: no matching on the error's text
+            "batch": len(todo),
             "error": error,
-        }
-    ] if missed else []  # fmt: skip
+        })  # fmt: skip
     # Keep an answer whose inputs haven't changed, else Uncategorized; either way flagged so
     # the Backfill reclassifies it (design doc, lifecycle step 5).
     found = [

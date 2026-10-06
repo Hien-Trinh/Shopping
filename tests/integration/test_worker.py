@@ -108,7 +108,9 @@ def test_classifier_failure_marks_uncategorized_then_backfill_fixes_it(tmp_path)
     env.run()
     cls = store.read(env.store, [("m_1", A)])[("m_1", A)].classification
     assert (cls.category, cls.needs_reclassify) == (UNCATEGORIZED, True)
-    assert [e["listings"] for e in events.read(env.events_root) if "listings" in e] == [1]
+    assert [
+        e["listings"] for e in events.read(env.events_root) if e["type"] == "classify_failed"
+    ] == [1]
     env.classifier.fail = False
     env.land(reclassify(A), submission="backfill")
     env.run()
@@ -141,6 +143,18 @@ def test_a_bad_answer_counts_as_a_failure(env, monkeypatch, answer):
     assert (failed["listings"], failed["partitions"]) == (1, [3])
 
 
+def test_each_classifier_call_logs_its_size_and_time(env, monkeypatch):  # step 7c.2
+    ticks = iter([10.0, 10.25])
+    monkeypatch.setattr(worker, "monotonic", lambda: next(ticks))
+    env.land(up(A, 1, listing("Shirt")), up(B, 1, listing("Hat")))
+    env.run()
+    (call,) = [e for e in events.read(env.events_root) if e["type"] == "classify"]
+    assert (call["listings"], call["ms"]) == (2, 250)
+    env.land(up(A, 1, listing("Shirt")), submission="s2")  # already applied: nothing to classify
+    env.run()
+    assert sum(e["type"] == "classify" for e in events.read(env.events_root)) == 1
+
+
 def test_an_outage_keeps_a_good_answer_whose_inputs_are_unchanged(env):
     env.land(up(A, 1, listing("Shirt")), up(B, 1, listing("Hat")))
     env.run()
@@ -160,6 +174,7 @@ def test_a_huge_classifier_error_is_truncated(env, monkeypatch):
     env.run()
     (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
     assert len(failed["error"]) == 500
+    assert (failed["reason"], failed["batch"]) == ("error", 1)  # step 7c.2: no text matching
 
 
 def test_listings_the_classifier_did_not_reach_take_the_failure_path(env, monkeypatch):
@@ -176,6 +191,7 @@ def test_listings_the_classifier_did_not_reach_take_the_failure_path(env, monkey
     (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
     assert (failed["listings"], failed["partitions"]) == (2, [3, 5])
     assert failed["error"] == "budget spent"
+    assert (failed["reason"], failed["batch"]) == ("budget", 3)  # step 7c.2
 
 
 def test_only_moved_offsets_are_saved(env, monkeypatch):
@@ -457,6 +473,7 @@ def test_classify_failed_names_the_classifiers_error(env):  # PR #63
     env.run()
     (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
     assert failed["error"] == Partial.error
+    assert failed["reason"] == "error"  # it said why: not the budget (step 7c.2)
 
 
 def test_the_jev_kind_runs_with_the_pipeline_settings(monkeypatch, tmp_path):  # PR #63
@@ -649,7 +666,8 @@ def test_a_retried_batch_reports_a_classifier_outage_once(env, monkeypatch):
         env.run()
     monkeypatch.setattr(store, "merge", real)
     env.run()  # the retry
-    assert [e["type"] for e in events.read(env.events_root)] == ["classify_failed", "written"]
+    got = [e["type"] for e in events.read(env.events_root)]
+    assert got == ["classify", "classify_failed", "written"]
 
 
 def test_a_second_signal_does_not_start_a_second_stopper(tmp_path, monkeypatch):

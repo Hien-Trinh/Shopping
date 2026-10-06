@@ -178,3 +178,41 @@ def test_cli_errors_exit_2_without_printing_a_key(db, capsys, argv, error):
     out, err = capsys.readouterr()
     assert "key:" not in out
     assert error in err
+
+
+def audit(db):
+    with contextlib.closing(sqlite3.connect(db)) as c:
+        return c.execute("SELECT merchant_id, action, at FROM audit ORDER BY rowid").fetchall()
+
+
+def test_every_create_rotate_and_revoke_is_audited(db):  # step 7c.2, from the 4a review
+    merchant_id, key = merchants.create(db, "USD")
+    new_key = merchants.rotate(db, merchant_id)
+    merchants.revoke(db, merchant_id)
+    with pytest.raises(merchants.UnknownMerchant):
+        merchants.rotate(db, "m_nobody")  # changed nothing, so audited nothing
+    logged = audit(db)
+    assert [(m, action) for m, action, _ in logged] == [
+        (merchant_id, "create"), (merchant_id, "rotate"), (merchant_id, "revoke"),
+    ]  # fmt: skip
+    assert all(
+        re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?\+00:00", at) for *_, at in logged
+    )
+    with open(db, "rb") as f:  # nor anywhere else in the file
+        raw = f.read()
+    for secret in (key, new_key, hashlib.sha256(new_key.encode()).hexdigest()):
+        assert secret.encode() not in b"".join(map(str.encode, map(str, logged)))
+    assert key.encode() not in raw and new_key.encode() not in raw
+
+
+def test_a_change_whose_audit_row_fails_is_rolled_back(db, monkeypatch):
+    merchant_id, key = merchants.create(db, "USD")
+
+    def full(c, merchant_id, action):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(merchants, "_audit", full)
+    with pytest.raises(sqlite3.OperationalError):
+        merchants.rotate(db, merchant_id)
+    assert merchants.verify(db, key) == Merchant(merchant_id, "USD")  # the old key still works
+    assert [action for _, action, _ in audit(db)] == ["create"]

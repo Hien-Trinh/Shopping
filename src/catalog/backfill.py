@@ -105,7 +105,7 @@ def tick(
     ]
     # ponytail: a crash between the append and the save appends the same rows once more next
     # round, which only costs classifying them again.
-    appended = landing.append(landing_dt, entries)
+    appended = landing.append(landing_dt, entries, events)
     state.save_backfill(state_dir, appended, table)
     event = {
         "type": "backfill",

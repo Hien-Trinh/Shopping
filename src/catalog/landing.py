@@ -5,6 +5,7 @@ the next row to read: everything before it has been processed.
 """
 
 import asyncio
+import contextlib
 import json
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -18,6 +19,7 @@ from deltalake.exceptions import CommitFailedError
 
 from catalog import delta
 from catalog.envelope import Change, Content
+from catalog.events import EventLog
 from catalog.keys import PARTITIONS, partition
 
 Position = tuple[int, int]  # (commit version, seq) of the next row to read
@@ -74,11 +76,12 @@ def table_id(dt: DeltaTable) -> str:
 Entry = tuple[str, int, Change, datetime]  # submission_id, change_index, Change, received_at
 
 
-def append(dt: DeltaTable, entries: Sequence[Entry]) -> int:
+def append(dt: DeltaTable, entries: Sequence[Entry], events: EventLog | None = None) -> int:
     """Append (submission_id, change_index, Change, received_at) rows in one commit.
 
     Returns the commit's version. With no entries nothing is committed, and the current version is
-    returned. One commit can hold several requests, so each row carries its own received_at.
+    returned. One commit can hold several requests, so each row carries its own received_at. A
+    lost commit race, retried once, is logged to `events` as `append_retry`.
     """
     if any(received_at.utcoffset() is None for *_, received_at in entries):
         raise ValueError("received_at must be timezone-aware")
@@ -103,9 +106,14 @@ def append(dt: DeltaTable, entries: Sequence[Entry]) -> int:
     # Refreshed first: on a snapshot older than retention's DELETE, every append would fail. A
     # DELETE landing between the refresh and the commit costs one retry.
     dt.update_incremental()
+    started = time.monotonic()
     try:
         write_deltalake(dt, table, mode="append")
     except CommitFailedError:
+        if events:  # the conflict rate, and the time the lost attempt cost (5d.1 review)
+            ms = round((time.monotonic() - started) * 1000)
+            with contextlib.suppress(OSError):  # best effort; logged even if the retry fails
+                events.emit([{"type": "append_retry", "rows": len(entries), "ms": ms}])
         dt.update_incremental()
         write_deltalake(dt, table, mode="append")
     return dt.version()

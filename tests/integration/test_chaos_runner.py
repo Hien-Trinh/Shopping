@@ -61,6 +61,8 @@ def test_a_scenario_runs_in_process_and_its_oracles_hold(tmp_path, capsys):
     # the three killed workers, each restarted; not the nine stopped at the end (PR #79 review)
     assert summary["process_exits"] == 3
     assert summary["oracles"] == {"store": "ok", "export": "ok", "snapshot": "ok"}
+    landed = summary["metrics"]["freshness_s"]  # step 7c.2: the run's numbers come with it
+    assert landed["changes"] > 0 and 0 <= landed["p50"] <= landed["p99"]
 
 
 def test_a_used_dir_is_refused(tmp_path, capsys):

@@ -13,7 +13,7 @@ REJECTED = "rejected"  # the Ingestion API refused the Change
 # A crash replay re-reports Changes, and for merchant Changes a replay can only look worse (a
 # written Change replays as already_applied or stale). So the best Outcome a Change ever got is its
 # Outcome. (An internal reclassify can replay as reclassified after skipped; that is harmless.)
-_RANK = {
+RANK = {
     o: r
     for r, o in enumerate(
         [
@@ -55,8 +55,8 @@ def fold(submission_id: str, events: Iterable[Mapping]) -> SubmissionStatus | No
         merchant_id, i, kind = e["merchant_id"], e["change_index"], e["type"]
         if kind == "accepted":
             outcomes.setdefault(i, PENDING)
-        elif kind in _RANK and (
-            outcomes.get(i, PENDING) == PENDING or _RANK[kind] < _RANK[outcomes[i]]
+        elif kind in RANK and (
+            outcomes.get(i, PENDING) == PENDING or RANK[kind] < RANK[outcomes[i]]
         ):
             outcomes[i] = kind
     if merchant_id is None:

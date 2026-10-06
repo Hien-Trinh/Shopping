@@ -1,11 +1,12 @@
 # Labeling Listings with Claude agents
 
-How to label Listings with Shopify Categories using Claude Code agents on the Max plan: no API key, no spend, no project code. Used twice so far:
+How to label Listings with Shopify Categories using Claude Code agents on the Max plan: no API key, no spend, no project code. Used three times so far:
 
 | Run | Labeler | Listings | Usage | Wall time | Result |
 |---|---|---|---|---|---|
 | [6i](specs/step-6i.md) | Sonnet 5.5, 9 agents | 825 | about 1.5M tokens | about 1 h | `eval/labels-sonnet.jsonl`; 7% errors among sure labels on the first audit, 1–2% after the level-3 fix |
 | [6j](specs/step-6j.md) | Opus 5.5, 11 agents | 1,020 | about 1.45M tokens | about 3 min (parallel) | `eval/results/opus-agents.jsonl`; 96.6% after adjudication ([eval/teacher.md](../eval/teacher.md)) |
+| [6k.2](specs/step-6k.md) | Opus 5.5, 22 agents, then 7 Sonnet 5.5 agents for a second opinion | 2,013 | about 2.8M + 0.8M tokens | about 35 min | `train/amazon-opus.jsonl`; 62 labels changed in review; 1 of 100 random sure labels wrong |
 
 ## 1. Draw the Listings
 
@@ -73,6 +74,10 @@ Only items you can't sort go to the user, each with a default.
 
 **Bias guard:** the reference labels are Claude-made too (6e drafted by Claude and checked by the user, 6i by Sonnet), so when comparing Claude with another classifier, also recheck the items where the label agrees with Claude and the other classifier differs, and give it the same "both fit" credit.
 
+## 7b. Review with a second opinion (6k.2)
+
+For a training set, where there is no reference label: give the items to review (every `confident: false`, every answer above level 3 that isn't a leaf such as `Gift Cards`, and a random 100 of the rest) to a second labeler, blind, with the same brief: Sonnet if Opus labeled. Where both agree, keep the label; adjudicate only where they differ (6k.2: 210 of 594). The random 100's disagreements measure the error among the sure labels.
+
 ## 8. Audit a sample (when the labels become a label file)
 
 From 6i: research every `confident: false`, every `none`, and a random 50–100 of the rest against the full taxonomy. Report the error rate among the sure labels with its 95% interval (6i: 7 of 100, about 3–14%).
@@ -85,6 +90,8 @@ From 6i: research every `confident: false`, every `none`, and a random 50–100 
 4. **`confident` is informative:** in 6j, confident answers were 94–95% exact, unsure ones 52–63%. Spend review time on the unsure ones.
 
 ## Gotchas
+
+- At most 20 agents run at once in one session; start the rest as the first ones finish.
 
 - In a worktree, `models/` is empty: pass `--models /path/to/main/checkout/models` to `evaluate run` rather than downloading again.
 - The eval name of the Jev candidate is `jev-shortlist`; plain `jev` (the worker's name) falls through to Laya and fails with "Laya won't load".

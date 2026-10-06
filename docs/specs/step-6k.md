@@ -1,6 +1,6 @@
 # Step 6k: Shopify's benchmark as eval and training data, plus 2k Amazon Listings labeled by Opus (mini PRD)
 
-Status: approved Oct 6. Question 1: the fetch OK. Question 2: commit `train/shopify.jsonl.gz`, credited in the README. Question 3: 22 Opus agents OK. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6k](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher; [eval/teacher.md](../../eval/teacher.md)), [step-6e.md](step-6e.md) (`evaluate sample`, the label format) and [docs/labeling.md](../labeling.md) (the labeling method). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 6 (see the two Outcomes); approved Oct 6. Question 1: the fetch OK. Question 2: commit `train/shopify.jsonl.gz`, credited in the README. Question 3: 22 Opus agents OK. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6k](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher; [eval/teacher.md](../../eval/teacher.md)), [step-6e.md](step-6e.md) (`evaluate sample`, the label format) and [docs/labeling.md](../labeling.md) (the labeling method). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -92,6 +92,13 @@ All in `tests/unit/test_benchmark.py`, with the network replaced by an injected 
 - **Ids** hash the stored (cut) title and description, so they can be recomputed from the files.
 - **Written:** `eval/labels-shopify.jsonl`, 2,000 rows over 641 Categories; `train/shopify.jsonl.gz`, 31,431 rows over 1,676 Categories, 12 MB. The two files are written one after the other: a run killed between the two leaves a new eval beside an old train, so rerun after any failed run (the build is deterministic).
 - **Spot-check of 50 eval labels** (seed 11, from the final file): 2 wrong and 1 arguable (4–6%): an exhaust spring puller under Nail Pullers, a Danish hand sanitizer under Cosmetics (the English filter let it through), a balayage board under Cosmetics rather than Hair Care. An earlier check of 50 from a draft draw found 4 wrong (8%). Under the 15% line, so the eval stays. The English filter lets a little Danish and Italian through and drops a few short English titles.
+## Outcome, 6k.2 (Oct 6)
+
+- **The draw:** `sample --per-category 95 --seed 2`, less any id in the 1,020, first 61 per Amazon category: 2,013 Listings (33 × 61).
+- **Opus:** 22 agents with 6j's brief plus the level-3 recheck and the subscription-box examples. Every answer a taxonomy path, none `none`, no batch redone; 476 unsure, 118 above level 3 (77 of them leaves with nothing deeper: `Gift Cards`, `Subscription Services`).
+- **The review:** the 476 unsure, the other 41 above level 3 and a random 100 sure ones (594 in all) went to 7 Sonnet agents, blind, with the same brief. They agreed on 384; I adjudicated the 210 where they didn't and changed 62 labels (46 unsure, 27 above level 3, 1 random; some in two sets). Most of the rest were format questions the text can't settle (CD or download, DVD or download), kept as Opus had them.
+- **Error rate:** 1 of the 100 random sure labels was wrong (a game app under Handheld & PDA Software), so about 1% among the sure labels (95% interval about 0–5%).
+- **Committed:** `train/amazon-opus.jsonl`, the sample fields plus `category` and `labeler: "claude-opus-5-5"`.
 
 ## Out of scope
 

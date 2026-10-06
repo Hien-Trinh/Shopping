@@ -1,6 +1,6 @@
 # Step 6k: Shopify's benchmark as eval and training data, plus 2k Amazon Listings labeled by Opus (mini PRD)
 
-Status: approved Oct 6. Question 1: the fetch OK. Question 2: commit `train/shopify.jsonl.gz`, credited in the README. Question 3: 22 Opus agents OK. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6k](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher; [eval/teacher.md](../../eval/teacher.md)), [step-6e.md](step-6e.md) (`evaluate sample`, the label format) and [docs/labeling.md](../labeling.md) (the labeling method). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 6 (see the two Outcomes); approved Oct 6. Question 1: the fetch OK. Question 2: commit `train/shopify.jsonl.gz`, credited in the README. Question 3: 22 Opus agents OK. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6k](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher; [eval/teacher.md](../../eval/teacher.md)), [step-6e.md](step-6e.md) (`evaluate sample`, the label format) and [docs/labeling.md](../labeling.md) (the labeling method). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -69,7 +69,7 @@ Per [docs/labeling.md](../labeling.md):
 
 ## Testing decisions (test points for your OK)
 
-All in `tests/unit/test_benchmark.py`, with the network replaced by an injected `get`:
+All in `tests/integration/test_benchmark.py`, with the network replaced by an injected `get`:
 
 1. **English filter:** an English title passes; German, Spanish and Japanese titles fail; a part-number-only title passes.
 2. **Mapping:** a path in the release → its level-3 ancestor; a level-2 path → itself; a renamed path → the new path's ancestor; an unknown path → `None`.
@@ -84,6 +84,14 @@ All in `tests/unit/test_benchmark.py`, with the network replaced by an injected 
 3. **Opus usage (6k.2):** 22 agents, about 3M tokens of Max plan usage, plus my pass over roughly 600 answers. OK?
 4. **The test points above.** OK?
 
+## Outcome, 6k.1 (Oct 6)
+
+- **Fetched** revision `002ca155` of the dataset: 48,289 rows (9,658 test, 38,631 train). The rows API rate-limits hard (429 with no Retry-After after about 50 pages), so the fetch pauses 1 s between pages and retries up to 6 times with backoff from 15 s, not the 3 tries the spec said; timed-out, reset and truncated reads and non-JSON pages are retried too (the first train run died on a timed-out read). The two splits took about 40 min and 30 min. The rows API serves only the latest revision, so `main` reads the revision before and after the fetch and refuses to write if it changed.
+- **Dropped:** 8,907 non-English (18.4%), 29 duplicates, 52 train rows whose id or title (case-folded) is also in test, 4 labeled `Uncategorized`. Nothing malformed.
+- **Mapping:** 13 rename-table entries (Shopify's "Baby & Toddler" became "Baby & Children's", Uniforms became Uniforms & Workwear, bottles, bibs and sippy cups moved under Feeding Essentials, scrubs moved to Uniforms & Workwear, closet rods and shelves to Closet Parts & Accessories). A matching rename is tried before the path as is. A label is accepted when its level-3 ancestor is a Category, even if the release has since dropped the deeper node (Raw Candle Wax, Dry Beans): a change from the spec, which also required the full path to be in the release.
+- **Ids** hash the stored (cut) title and description, so they can be recomputed from the files.
+- **Written:** `eval/labels-shopify.jsonl`, 2,000 rows over 641 Categories; `train/shopify.jsonl.gz`, 31,431 rows over 1,676 Categories, 12 MB. The two files are written one after the other: a run killed between the two leaves a new eval beside an old train, so rerun after any failed run (the build is deterministic).
+- **Spot-check of 50 eval labels** (seed 11, from the final file): 2 wrong and 1 arguable (4–6%): an exhaust spring puller under Nail Pullers, a Danish hand sanitizer under Cosmetics (the English filter let it through), a balayage board under Cosmetics rather than Hair Care. An earlier check of 50 from a draft draw found 4 wrong (8%). Under the 15% line, so the eval stays. The English filter lets a little Danish and Italian through and drops a few short English titles.
 ## Outcome, 6k.2 (Oct 6)
 
 - **The draw:** `sample --per-category 95 --seed 2`, less any id in the 1,020, first 61 per Amazon category: 2,013 Listings (33 × 61).

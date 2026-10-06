@@ -58,7 +58,8 @@ def test_each_oracle_catches_its_kind_of_wrong(system):
 def test_a_scenario_runs_in_process_and_its_oracles_hold(tmp_path, capsys):
     assert chaos.main(["kill-worker", "--seconds", "5", "--dir", str(tmp_path / "run")]) == 0
     summary = json.loads(capsys.readouterr().out)
-    assert summary["process_exits"] >= 1  # the killed workers, each restarted
+    # the three killed workers, each restarted; not the nine stopped at the end (PR #79 review)
+    assert summary["process_exits"] == 3
     assert summary["oracles"] == {"store": "ok", "export": "ok", "snapshot": "ok"}
 
 

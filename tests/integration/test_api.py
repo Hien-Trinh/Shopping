@@ -309,6 +309,20 @@ def test_the_cli_serves_on_localhost_only(tmp_path, monkeypatch):
     assert (config.host, config.port) == ("127.0.0.1", 8123)
 
 
+def test_an_error_that_stops_the_server_is_in_the_events(tmp_path, monkeypatch):  # PR #79 review
+    db = tmp_path / "data" / "merchants.sqlite"
+    merchants.create(db, "USD")
+
+    def crash(server):
+        raise OSError(48, "Address already in use")
+
+    monkeypatch.setattr(api.uvicorn.Server, "run", crash)
+    with pytest.raises(OSError):
+        api.main(["--data", str(tmp_path / "data"), "--db", str(db)])
+    [stop] = [e for e in events.read(tmp_path / "data" / "events") if e["type"] == "api_stop"]
+    assert stop["error"] == "OSError(48, 'Address already in use')"
+
+
 def test_the_cli_takes_the_disk_guard_from_min_free(tmp_path, monkeypatch):
     db = tmp_path / "data" / "merchants.sqlite"
     _, key = merchants.create(db, "USD")

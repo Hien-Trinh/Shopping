@@ -197,3 +197,14 @@ def test_stray_entries_in_the_snapshot_folder_are_ignored(env):
 def test_an_interval_under_a_second_is_refused():
     with pytest.raises(SystemExit):
         snapshots.main(["--every", "0.5"])
+
+
+def test_an_error_that_ends_the_run_is_in_the_events_too(env, monkeypatch):  # 5c review
+    def broken(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(snapshots, "tick", broken)
+    with pytest.raises(OSError):
+        snapshots.run(env.tmp / "data", env.tmp / "state", stop=threading.Event())
+    [stop] = [e for e in events.read(env.tmp / "data" / "events") if e["type"] == "snapshots_stop"]
+    assert stop["error"] == "OSError(28, 'No space left on device')"

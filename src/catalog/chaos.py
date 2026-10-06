@@ -330,7 +330,7 @@ EFFECTS = {
     "duplicates": ("already_applied Outcomes", lambda r: r["outcomes"].get("already_applied")),
     "poison": ("10 failed Outcomes", lambda r: r["outcomes"].get("failed", 0) >= 10),
     "classifier-outage": ("classify_failed events", lambda r: r["events"]["classify_failed"]),
-    "kill-worker": ("3 process exits", lambda r: r["events"]["process_exit"] >= 3),
+    "kill-worker": ("3 process exits", lambda r: r["exits"] >= 3),
     "kill-supervisor": ("a second supervisor", lambda r: r["events"]["supervisor_start"] == 2),
     "rescale": ("a 3-worker start", lambda r: r["rescaled"]),
     "disk-full": ("503s", lambda r: any("503" in load["statuses"] for load in r["loads"])),
@@ -368,6 +368,8 @@ def run(system: System, scenario: str, *, seconds: float, rate: float, seed: int
     system.stop()
     found = events.read(system.data / "events")
     kinds = Counter(e["type"] for e in found)
+    # those the supervisor saw, not the ones it stopped at the end
+    exits = sum(e["type"] == "process_exit" and e["reason"] != "shutdown" for e in found)
     checks = oracles(system.data, system.root / "state")
     seen = {
         "landed": len(_landed(landing.ensure(str(system.data / "landing_log")))),
@@ -377,13 +379,13 @@ def run(system: System, scenario: str, *, seconds: float, rate: float, seed: int
     rescaled = any(e["type"] == "worker_start" and e["workers"] == 3 for e in found)
     effect, happened = EFFECTS[scenario]
     record = {"loads": loads, "outcomes": {k: kinds[k] for k in sorted(OUTCOMES & kinds.keys())},
-              "events": kinds, "rescaled": rescaled}  # fmt: skip
+              "events": kinds, "exits": exits, "rescaled": rescaled}  # fmt: skip
     problems = [f"no {k}" for k, n in seen.items() if not n]  # an oracle that checked nothing
     problems += [] if happened(record) else [f"the fault left no {effect}"]
     return out | {
         "loads": loads,
         "outcomes": record["outcomes"],
-        "process_exits": kinds["process_exit"],
+        "process_exits": exits,
         "supervisor_restarts": system.restarts,
         "checked": seen,
         "oracles": {

@@ -300,3 +300,16 @@ def test_export_files_past_the_retention_go_once_the_watermark_passed_them(env):
     assert exported not in names
     assert names == [f"{0:012}-{2:012}.parquet", f"{5:012}-{9:012}.parquet", stray.name]
     assert env.reports()[-1]["export_files"] == 1
+
+
+def test_an_error_that_ends_the_run_is_in_the_events_too(env, monkeypatch):  # 5c review
+    def broken(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(maintenance, "tick", broken)
+    with pytest.raises(OSError):
+        maintenance.run(env.tmp / "data", env.state, stop=threading.Event())
+    [stop] = [
+        e for e in events.read(env.tmp / "data" / "events") if e["type"] == "maintenance_stop"
+    ]
+    assert stop["error"] == "OSError(28, 'No space left on device')"

@@ -4,6 +4,7 @@ Writers never share a file, so any number of processes log without locks, and a 
 process never appends after the torn last line its predecessor may have left.
 """
 
+import contextlib
 import json
 import os
 import shutil
@@ -42,6 +43,46 @@ class EventLog:
         except OSError:  # e.g. a full disk mid-write: the next emit starts a new file
             self._new_file()
             raise
+
+
+@contextlib.contextmanager
+def stopping(log: EventLog, stop):
+    """Log `<process>_stop` as the block ends: with the error that ended it (re-raised), and why
+    the watch stopped it (worker.watch sets `stop.reason`). Best effort: the error matters more."""
+    event = {"type": f"{log.process}_stop"}
+    try:
+        yield
+    except Exception as e:
+        event["error"] = repr(e)[:500]  # as worker_stop's
+        raise
+    finally:
+        if reason := getattr(stop, "reason", None):
+            event["reason"] = reason
+        with contextlib.suppress(OSError):
+            log.emit([event])
+
+
+def prepared(root: Path, process: str, event: Mapping, at: float) -> Callable[[], None]:
+    """A write of one event stamped `at`, built now, for a hard exit to run later: raw os calls on
+    its own file, every OSError swallowed. An EventLog or a print could block there on a lock or
+    a full pipe that the stuck thread holds."""
+    hour = root / datetime.fromtimestamp(at, UTC).strftime(_HOUR)
+    path = hour / f"{process}-{os.getpid()}-{uuid.uuid4().hex[:8]}.jsonl"
+    line = json.dumps(dict(event) | {"ts": int(at * 1000)}, separators=(",", ":")) + "\n"
+    data = line.encode()
+
+    def write() -> None:
+        try:
+            os.makedirs(hour, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK, 0o644)
+            try:
+                os.write(fd, data)
+            finally:
+                os.close(fd)
+        except OSError:
+            pass
+
+    return write
 
 
 def prune(root: Path, now: datetime) -> int:

@@ -72,7 +72,7 @@ One step would be about 600 lines, so it splits.
 | A worker stuck in a native call that doesn't release the GIL | The watch can't run at all (6b's rule); unchanged, and no trace. Documented in the runbook |
 | Two exits in the pass that hit a fatal one, the fatal one second | Both logged; the supervisor's exit code is the fatal one's |
 | Two fatal exits in one pass | Both logged `fatal`; the supervisor exits with the first one's code |
-| Jev 401 mid-batch after some calls answered | Those answers stand for this batch (`error` set, the rest None); the next batch's first call raises `KeyMissing` |
+| Jev 401 mid-batch after some calls answered, or after another call failed | `KeyMissing` is raised anyway, so the worker exits 7 with nothing merged and the batch reruns once the key is fixed (changed at PR #79's review: letting the answers stand stored the rest Uncategorized for one batch) |
 | Jev 401 during the Backfill | The Backfill doesn't call Jev, so the workers find it |
 | Jev 429 or 5xx | Unchanged: retried, then Uncategorized and flagged |
 | `append_retry`'s second attempt fails too | The error propagates as today; the event is still logged first |

@@ -35,7 +35,7 @@ BUDGET = 10.0  # seconds per batch: one call takes about 250 ms (step-6f.md, dec
 
 
 class KeyMissing(RuntimeError):
-    """TYPESAFE_API_KEY is unset or empty."""
+    """TYPESAFE_API_KEY is unset or empty, or Jev refused it."""
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -80,7 +80,8 @@ class JevClassifier:
 
     def classify(self, listings) -> list[tuple[str, float] | None]:
         """One answer per Listing; None for those never started, because the budget ran out or a
-        call failed first. If no call answered and one failed, its error is raised instead."""
+        call failed first. If no call answered and one failed, its error is raised instead, as is
+        a refused key (KeyMissing) in any case."""
         deadline, failed = self.clock() + self.budget, threading.Event()
         self.error = None
         calls = []  # (listing, future)
@@ -99,8 +100,9 @@ class JevClassifier:
                 errors.append((x, e))
                 out.append(None)
         if errors:
-            x, e = errors[0]
-            if not any(out):
+            # a refused key first, whatever else answered or failed: no later batch can succeed
+            x, e = next(((x, e) for x, e in errors if isinstance(e, KeyMissing)), errors[0])
+            if isinstance(e, KeyMissing) or not any(out):
                 e.add_note(f"Jev failed on {x.title!r}, ${self.usd:.4f} spent so far")
                 raise e
             self.error = repr(e)[:500]  # for classify_failed: not "budget spent"
@@ -165,8 +167,9 @@ def shortlist(tax: taxonomy.Taxonomy, embed, cache=None) -> classify.EmbeddingCl
 
 def http(*, urlopen=_urlopen, sleep=time.sleep, attempts: int = 5) -> Callable[[dict], dict]:
     """POST to Jev with the key from TYPESAFE_API_KEY, retrying 429, 529 and network errors
-    with backoff. Redirects are refused, so the key only ever goes to URL. The pipeline passes
-    attempts=1: the Backfill is its retry (step-6f.md, decision 3)."""
+    with backoff; a refused key (401, 403) raises KeyMissing at once. Redirects are refused, so
+    the key only ever goes to URL. The pipeline passes attempts=1: the Backfill is its retry
+    (step-6f.md, decision 3)."""
     key = os.environ.get("TYPESAFE_API_KEY")
     if not key:
         raise KeyMissing("TYPESAFE_API_KEY is not set: export your TypeSafe key first")
@@ -181,6 +184,8 @@ def http(*, urlopen=_urlopen, sleep=time.sleep, attempts: int = 5) -> Callable[[
                 with urlopen(request, timeout=TIMEOUT) as response:
                     raw = response.read()
             except HTTPError as e:
+                if e.code in (401, 403):  # a wrong or revoked key: fatal, as a missing one
+                    raise KeyMissing(f"TYPESAFE_API_KEY was refused ({e.code})") from None
                 if e.code not in RETRY or attempt == attempts:
                     try:
                         detail = e.read()[:300].decode(errors="replace")  # never the headers

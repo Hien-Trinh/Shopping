@@ -563,13 +563,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         _write(a.out, render(results, a.threshold))
 
 
-def _write(path: Path, text: str) -> None:
+def _write(path: Path, text: str | bytes) -> None:
     """`text` to `path` whole or not at all: a killed or concurrent run leaves the old file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
+        with os.fdopen(fd, "wb") as f:
+            f.write(text.encode() if isinstance(text, str) else text)
         os.chmod(tmp, 0o644)  # mkstemp's 0600 would make the report private
         os.replace(tmp, path)
     except BaseException:

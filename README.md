@@ -25,4 +25,9 @@ uv run python -m catalog.supervisor             # runs the Procfile
 
 Stop, rescale, recover, reset and read metrics: see the [runbook](docs/runbook.md).
 
+## Data
+
+- `eval/labels-shopify.jsonl` and `train/shopify.jsonl.gz` are built from [Shopify/product-catalogue](https://huggingface.co/datasets/Shopify/product-catalogue) (Apache-2.0, © Shopify) by `python -m catalog.benchmark`: text and Category only, English rows, Categories mapped to our taxonomy.
+- Amazon Listings in `eval/` and `train/` come from [Amazon Reviews '23](https://amazon-reviews-2023.github.io/) (McAuley Lab).
+
 Changes reach `main` only through a PR with a green `check` job.

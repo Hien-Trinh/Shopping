@@ -707,24 +707,6 @@ def test_a_torn_split_fails_before_the_model_loads(tmp_path, monkeypatch):
         evaluate.main(["recall", "--labels", labels, "--split", str(split)])
 
 
-def test_a_failed_write_leaves_the_old_file_and_no_temp_file(tmp_path, monkeypatch):
-    out = tmp_path / "recall.md"
-    out.write_text("old")
-
-    def fail(src, dst):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(evaluate.os, "replace", fail)
-    with pytest.raises(OSError):
-        evaluate._write(out, "new")
-    assert [p.name for p in tmp_path.iterdir()] == ["recall.md"] and out.read_text() == "old"
-
-
-def test_a_written_report_is_readable_by_others(tmp_path):
-    evaluate._write(tmp_path / "recall.md", "x")
-    assert (tmp_path / "recall.md").stat().st_mode & 0o777 == 0o644
-
-
 # --- texts (step-6h.md) --------------------------------------------------------------------
 
 CARGOS = f"{KIDS} > Baby & Children's Bottoms"

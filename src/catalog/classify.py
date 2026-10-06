@@ -10,8 +10,6 @@ below it). `python -m catalog.classify --download` fetches the embedding model (
 import argparse
 import hashlib
 import json
-import os
-import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -19,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from catalog import entry
+from catalog import entry, state
 from catalog.envelope import Content
 
 UNCATEGORIZED = "Uncategorized"
@@ -109,16 +107,9 @@ class EmbeddingClassifier:
 
     def save(self, directory: Path) -> Path:
         """Write the text vectors where `cache=directory` finds them, whole or not at all."""
-        directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{cache_key(self.model, self.texts)}.npy"
-        fd, tmp = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                np.save(f, self._paths)
-            os.replace(tmp, path)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
+        with state.atomic(path) as f:
+            np.save(f, self._paths)
         return path
 
     def classify(self, listings: Sequence[Content]) -> list[tuple[str, float] | None]:

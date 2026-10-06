@@ -310,12 +310,10 @@ def test_any_text_change_changes_the_key():
 
 
 def test_a_failed_save_leaves_no_file(tmp_path, monkeypatch):
-    from catalog import classify
-
     def fail(src, dst):
         raise OSError("disk full")
 
-    monkeypatch.setattr(classify.os, "replace", fail)
+    monkeypatch.setattr("os.replace", fail)
     with pytest.raises(OSError):
         classifier().save(tmp_path)
     assert list(tmp_path.iterdir()) == []

@@ -1,9 +1,11 @@
 """The chaos runner and the three oracles over a whole system (docs/specs/step-7b.md)."""
 
 import json
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -158,3 +160,28 @@ def test_a_flag_that_is_not_a_finite_positive_number_is_refused(capsys, flag, va
     with pytest.raises(SystemExit) as stopped:
         chaos.main(["steady", flag, value])
     assert stopped.value.code == 2
+
+
+def _ci_jobs() -> dict[str, str]:
+    """ci.yml's jobs by name, each as its block of text."""
+    ci = (Path(__file__).parents[2] / ".github/workflows/ci.yml").read_text()
+    parts = re.split(r"^  ([\w-]+):$", ci, flags=re.M)
+    return dict(zip(parts[1::2], parts[2::2], strict=True))
+
+
+def test_ci_runs_every_scenario_and_nothing_else():
+    """stress-smoke's matrix (step-7d.md, 7d.1) can't drift from SCENARIOS."""
+    leg = _ci_jobs()["stress-smoke-leg"]
+    listed = re.search(r"^\s+scenario: \[(.*)\]$", leg, re.M)
+    assert listed, "no scenario matrix in stress-smoke-leg"
+    assert [s.strip() for s in listed[1].split(",")] == list(chaos.SCENARIOS)
+    assert "catalog.chaos ${{ matrix.scenario }} " in leg  # each leg runs its own scenario
+    assert "if: failure() || cancelled()" in leg  # a timed-out leg still uploads its events
+
+
+def test_the_stress_smoke_gate_fails_unless_every_leg_passed():
+    """A skipped required check counts as passed, so the gate must run and compare."""
+    gate = _ci_jobs()["stress-smoke"]
+    assert "needs: stress-smoke-leg" in gate
+    assert "if: always()" in gate
+    assert 'test "${{ needs.stress-smoke-leg.result }}" = success' in gate

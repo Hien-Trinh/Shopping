@@ -42,7 +42,7 @@ SHOWN = 20  # differing keys per oracle in the summary
 
 def procfile(text: str, port: int, *, workers=4, classifier="fake", min_free=0) -> str:
     """The repo's Procfile for a scratch system: its API on `port`, the passes fast, the
-    `fake` classifier (CI never calls the paid Jev API). Raises if a line it rewrites changed."""
+    `fake` classifier (CI never loads the student). Raises if a line it rewrites changed."""
 
     def sub(pattern, replace, expected):
         nonlocal text
@@ -55,11 +55,11 @@ def procfile(text: str, port: int, *, workers=4, classifier="fake", min_free=0) 
     sub(r"^maintenance: python -m catalog\.maintenance$", r"\g<0> --interval 0.2", 1)
     # Every second at least, so consecutive snapshots never share a second's name.
     sub(r"^snapshots: python -m catalog\.snapshots$", r"\g<0> --every 1", 1)
-    sub(r"^((?:worker-\d|backfill): .*)--classifier jev$", rf"\1--classifier {classifier}", 5)
+    sub(r"^((?:worker-\d|backfill): .*)--classifier student$", rf"\1--classifier {classifier}", 5)
     sub(r" --workers 4 ", f" --workers {workers} ", 4)
     sub(rf"^worker-[{workers}-9]: .*\n", "", 4 - workers)  # a rescale down drops the last ones
-    if "jev" in text:
-        raise ValueError("a Procfile line the rewrite missed would call the paid API")
+    if "student" in text:
+        raise ValueError("a Procfile line the rewrite missed would load the student")
     return text
 
 

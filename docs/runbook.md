@@ -18,8 +18,8 @@ How to run the pipeline on one Mac: start, stop, rescale, recover, reset and rea
 
 ```bash
 uv sync
-uv run python -m catalog.classify --download             # once: about 2 min, into models/
-uv run python -m catalog.student --download              # the fine-tuned student (step 6l.3), for the eval
+uv run python -m catalog.student --download              # once: the workers' classifier (step 6m), the encoder and its index, about 10 min the first time, into models/
+uv run python -m catalog.classify --download             # only for `--classifier jev` or `embedding` and the eval: bge-small and the shortlist, about 2 min
 uv run python -m catalog.merchants create --currency USD # prints merchant_id and key, once
 ```
 
@@ -32,9 +32,10 @@ sqlite3 data/merchants.sqlite "SELECT * FROM audit ORDER BY rowid DESC LIMIT 10"
 ## Start
 
 ```bash
-export TYPESAFE_API_KEY=...          # the workers' classifier; never logged
 caffeinate -dims uv run python -m catalog.supervisor
 ```
+
+No key: the workers classify with the student, locally. Only `--classifier jev` in the Procfile needs `TYPESAFE_API_KEY` exported (never logged).
 
 `caffeinate` keeps the Mac awake: sleep pauses every process and skews freshness (plan-v1 B7). The API listens on `127.0.0.1:8000` only. The supervisor restarts any process that exits, and a worker that stops beating for 60 s. A worker's fatal exit (see Exit codes) stops everything instead.
 
@@ -103,7 +104,7 @@ One JSON object, over the Changes whose first Outcome falls in the window. Each 
 |---|---|---|
 | `freshness_s` | seconds from `accepted` to the first Outcome, p50 and p99 | the SLO: p99 under 300 s at 50/s |
 | `lag_commits` | per partition, Landing log commits not yet read | a partition that keeps growing: its worker is stuck |
-| `classify_ms` | time per classifier call, p50 and p99 | Jev is about 250 ms a call |
+| `classify_ms` | time per classifier call, p50 and p99 | the student takes a few ms a Listing; Jev was about 250 ms a call |
 | `outcomes` | stale, conflict and failed rates | failed above 0: poison data, see `failed` events |
 | `uncategorized` | share of live Listings that are Uncategorized | a jump: a classifier outage; the Backfill fixes it |
 | `utilization` | per worker, the share of the window spent in ticks | near 1: add workers |
@@ -137,8 +138,8 @@ cat data/events/*/supervisor-*.jsonl | grep process_exit | tail
 | worker | 3 | its partitions are locked by another worker | wait for the old workers (see Recover) |
 | worker | 4 | its offsets belong to another Landing log | reset both `state/` and the tables |
 | worker | 5 | a state file is corrupt | read the error; restore or reset |
-| worker | 6 | the embedding model or vectors are missing | `catalog.classify --download` |
-| worker | 7 | `TYPESAFE_API_KEY` is unset, or Jev refused it (401 or 403) | export a working key |
+| worker | 6 | a model, its vectors or the student's index is missing or stale | the download the message names: `catalog.student --download` for the student, `catalog.classify --download` for bge-small and the shortlist |
+| worker | 7 | `--classifier jev` only: `TYPESAFE_API_KEY` is unset, or Jev refused it (401 or 403) | export a working key |
 | others | 1 | any error; restarted by the supervisor | read its `<process>_stop` event |
 
 ## Chaos runs

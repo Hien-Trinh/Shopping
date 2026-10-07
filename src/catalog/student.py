@@ -213,10 +213,17 @@ def vectors(
         return np.load(path)
     except OSError, ValueError, EOFError:  # missing, or cut short by a killed run
         pass
-    x = unit(np.vstack([embed(texts[i : i + CHUNK]) for i in range(0, len(texts), CHUNK)]))
+    x = embed_chunks(embed, texts)
     with state.atomic(path) as f:
         np.save(f, x)
     return x
+
+
+def embed_chunks(embed: Callable, texts: Sequence[str]) -> np.ndarray:
+    """Unit vectors of `texts`, CHUNK per embed call: one ONNX run each, releasing the GIL."""
+    return unit(
+        np.vstack([np.asarray(embed(texts[i : i + CHUNK])) for i in range(0, len(texts), CHUNK)])
+    )
 
 
 def _text(title: str, description: str) -> str:
@@ -225,7 +232,11 @@ def _text(title: str, description: str) -> str:
 
 @dataclass
 class StudentClassifier:
-    """A trained student under the worker's `classify` contract, for the eval."""
+    """A trained student under the worker's `classify` contract: the eval's candidates, and the
+    pipeline's `--classifier student` (`pipeline()`)."""
+
+    # ponytail: no batch budget; 1,000 Listings take a few seconds against the 60 s heartbeat
+    # (7d.2b measures it). A budget like EmbeddingClassifier's if a batch ever nears it.
 
     embed: Callable
     model: Softmax | Knn
@@ -260,13 +271,9 @@ class StudentClassifier:
         threshold, step-6m.md). Embedded in chunks, each one ONNX run that releases the GIL."""
         if not listings:
             return []
-        texts = [_text(x.title, x.description) for x in listings]
-        x = unit(
-            np.vstack(
-                [np.asarray(self.embed(texts[i : i + CHUNK])) for i in range(0, len(texts), CHUNK)]
-            )
+        return self.model.predict(
+            embed_chunks(self.embed, [_text(x.title, x.description) for x in listings])
         )
-        return self.model.predict(x)
 
 
 def embedder(models: Path, *, download: bool = False) -> tuple[Callable, str]:
@@ -285,9 +292,11 @@ def embedder(models: Path, *, download: bool = False) -> tuple[Callable, str]:
             dim=384,
             model_file=ONNX,
         )
-    for name in (*FILES, ONNX):
-        path = _hub_file(models, name, revision=FT_REVISION, download=download)
-    snapshot = Path(path).parents[1]  # .../snapshots/<revision>/onnx/<file>
+    files = {
+        name: _hub_file(models, name, revision=FT_REVISION, download=download)
+        for name in (*FILES, ONNX)
+    }
+    snapshot = Path(files[ONNX]).parents[1]  # .../snapshots/<revision>/onnx/<file>
     try:
         embed = classify.fastembed(models, FT_MODEL, specific_model_path=str(snapshot))
     except (
@@ -339,7 +348,8 @@ def tag() -> str:
 
 
 def index_path(models: Path, rev: str) -> Path:
-    return models / "student" / f"index-{rev[:12]}-{tag()}.npz"
+    """Named by everything that went into it, so a stale one is missing, never served."""
+    return models / "student" / f"index-{rev[:12]}-{tag()}-{train_hash()}.npz"
 
 
 def build_index(tax, embed: Callable, rev: str, models: Path) -> Path:
@@ -361,27 +371,34 @@ def build_index(tax, embed: Callable, rev: str, models: Path) -> Path:
 
 
 def load_index(path: Path, tax, *, width: int) -> tuple[np.ndarray, list[str]]:
-    """The index, or ModelMissing naming the download; a label the taxonomy lacks is a
-    ValueError naming it (the taxonomy changed under the student: retrain)."""
+    """The index, or ModelMissing naming the download: missing (a stale one too, since the
+    name carries the training files' hash), truncated, mis-shaped, not finite, or holding a
+    label the taxonomy lacks (the taxonomy changed under the student: retrain)."""
     try:
         with np.load(path) as f:
-            x, y = f["x"], [str(c) for c in f["y"]]
+            x, labels = f["x"], f["y"]
     except Exception as e:  # missing, truncated, not an npz, a field missing
         raise classify.ModelMissing(f"no usable student index at {path} ({e!r}): {DOWNLOAD}") from e
     if not (
         isinstance(x, np.ndarray)
         and x.ndim == 2
         and np.issubdtype(x.dtype, np.floating)
-        and x.shape == (len(y), width)
+        and labels.ndim == 1
+        and len(labels) > 0  # an empty index would fail every batch, not the start
+        and x.shape == (len(labels), width)
     ):
-        shape = getattr(x, "shape", None)
         raise classify.ModelMissing(
-            f"{path} doesn't hold {len(y)} vectors of width {width} (shape {shape}): {DOWNLOAD}"
+            f"{path} doesn't hold one finite vector of width {width} per label "
+            f"(x {getattr(x, 'shape', None)}, y {labels.shape}): {DOWNLOAD}"
         )
     if not np.isfinite(x).all():
         raise classify.ModelMissing(f"{path} holds vectors that aren't finite: {DOWNLOAD}")
-    if bad := sorted(set(y) - set(tax.paths)):
-        raise ValueError(f"the student index holds labels not in {tax.version}: {bad[:5]}")
+    y = [str(c) for c in labels]
+    if bad := sorted(set(y) - set(tax.paths)):  # the taxonomy changed under the student
+        raise classify.ModelMissing(
+            f"{path} holds labels not in {tax.version}: {bad[:5]}; retrain (step-6m.md), "
+            f"then {DOWNLOAD}"
+        )
     return x, y
 
 
@@ -389,7 +406,13 @@ def train_hash(paths: Sequence[Path] | None = None) -> str:
     """Names the training files' bytes, the index's input, in the version."""
     h = hashlib.sha256()
     for path in TRAIN if paths is None else paths:
-        h.update(path.read_bytes())
+        try:
+            h.update(path.read_bytes())
+        except OSError as e:  # a checkout without train/, or the wrong cwd: fatal (exit 6)
+            raise classify.ModelMissing(
+                f"{path} is missing ({e!r}): the training files name the student's version, "
+                "so run from the repo root with train/ checked out"
+            ) from e
     return h.hexdigest()[:8]
 
 
@@ -402,7 +425,8 @@ def version(taxonomy_version: str, rev: str = FT_REVISION) -> str:
 def pipeline(tax, models: Path) -> StudentClassifier:
     """The workers' `--classifier student`: kNN (K) over the index, the encoder at FT_REVISION,
     nothing embedded at start (step-6f.md, 6f.3)."""
-    embed, rev = embedder(models)
+    embed, rev = embedder(models)  # ponytail: fastembed's default threads; `threads` per
+    # worker if 7d.2b shows four workers embedding at once contend for the cores
     width = np.asarray(embed(["probe"])).shape[1]
     x, y = load_index(index_path(models, rev), tax, width=width)
     return StudentClassifier(embed, Knn(x, y, K), version(tax.version, rev))

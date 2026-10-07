@@ -12,7 +12,7 @@ from catalog.taxonomy import Taxonomy
 TAX = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def tiny_support(monkeypatch):
     """The report's τ needs MIN_KEPT held-out rows behind it (step-6m.md); toy sets have 3."""
     monkeypatch.setattr(student, "MIN_KEPT", 1)
@@ -205,6 +205,7 @@ def test_training_reads_the_second_amazon_file():
     assert len(rows) > 8000 and all("amazon_category" in r for r in rows)
 
 
+@pytest.mark.usefixtures("tiny_support")
 def test_tau_is_picked_on_the_amazon_rows_only():
     # docs/specs/step-6l.2.md, test point 2: Shopify rows right where Amazon rows are wrong
     held = [{"source": "shopify-train"}] * 4 + [{"amazon_category": "Toys"}] * 2
@@ -266,6 +267,7 @@ SOURCES = [  # titles unlike the eval's, which the report drops from training
 ]
 
 
+@pytest.mark.usefixtures("tiny_support")
 def test_report_scores_each_student_alone_and_in_the_cascade(tmp_path):
     evals, opus = write_eval(tmp_path)
     body = student.report(
@@ -280,6 +282,7 @@ def test_report_scores_each_student_alone_and_in_the_cascade(tmp_path):
     assert "Bar (beats Jev alone with 70% or more kept local): met at τ = 0.00" in body
 
 
+@pytest.mark.usefixtures("tiny_support")
 def test_report_picks_tau_on_the_amazon_rows_and_marks_both(tmp_path, monkeypatch):
     # step-6l.2.md, 6l.2b point 2 (review round 1): τ from the Amazon rows; the table shows both
     evals, opus = write_eval(tmp_path)
@@ -307,6 +310,7 @@ def test_report_refuses_a_held_out_set_without_amazon_rows(tmp_path):
         student.report(TAX, fake_embed, shopify_only, tmp_path / "cache", evals=evals, opus=opus)
 
 
+@pytest.mark.usefixtures("tiny_support")
 def test_report_counts_eval_labels_unseen_in_training(tmp_path):
     evals, opus = write_eval(tmp_path)
     shirts_only = [[r for r in SOURCES[0] if r["category"] != "Toys"], SOURCES[1]]
@@ -327,6 +331,7 @@ def test_report_refuses_missing_fallback_answers_before_training(tmp_path):
         student.report(TAX, embed, SOURCES, tmp_path / "cache", evals=evals, opus=opus)
 
 
+@pytest.mark.usefixtures("tiny_support")
 def test_main_writes_the_report(tmp_path, monkeypatch):
     monkeypatch.setattr(student.classify, "fastembed", lambda models, model=None, **_: None)
     monkeypatch.setattr(student, "load_training", lambda paths: [])
@@ -433,6 +438,7 @@ def swapped_head():
     return student.Softmax.fit(x, [swap[r["category"]] for r in FT_ROWS])
 
 
+@pytest.mark.usefixtures("tiny_support")
 def test_report_lists_the_finetuned_students_when_given(tmp_path):
     # 6l.3 test point 4: the same sections as the frozen students, scored with the given head,
     # plus 6l.3's bar against kNN; a note when there is none
@@ -545,10 +551,84 @@ def test_the_index_round_trips_and_is_unit_vectors(tmp_path, monkeypatch):
     # 6m test point 1
     monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
     path = student.build_index(TAX, fake_embed, REV, tmp_path)
-    assert path == tmp_path / "student" / f"index-{REV[:12]}-{student.tag()}.npz"
+    assert (
+        path
+        == tmp_path / "student" / f"index-{REV[:12]}-{student.tag()}-{student.train_hash()}.npz"
+    )
     x, y = student.load_index(path, TAX, width=2)
     assert x.shape == (6, 2) and x.dtype == np.float32 and np.allclose(np.linalg.norm(x, axis=1), 1)
     assert y == [r["category"] for r in FT_ROWS]
+
+
+def test_the_index_is_named_by_the_training_data_too(tmp_path, monkeypatch):
+    # review round 1: a stale index must not serve under a new train- version (exit 6 instead)
+    monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
+    monkeypatch.setattr(student, "embedder", lambda models: (fake_embed, REV))
+    path = student.build_index(TAX, fake_embed, REV, tmp_path)
+    assert path.name.endswith(f"-{student.train_hash()}.npz")
+    student.pipeline(TAX, tmp_path)
+    other = tmp_path / "rows.jsonl"
+    other.write_text("{}\n")
+    monkeypatch.setattr(student, "TRAIN", (other,))
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+        student.pipeline(TAX, tmp_path)
+
+
+def test_a_missing_training_file_is_a_fatal_start(tmp_path, monkeypatch):
+    # review round 1: not a bare FileNotFoundError, which the supervisor would restart forever
+    monkeypatch.setattr(student, "TRAIN", (tmp_path / "gone.jsonl",))
+    with pytest.raises(classify.ModelMissing, match="gone.jsonl"):
+        student.version("shopify-2026-08", REV)
+
+
+def test_the_index_rejects_empty_non_float_and_misshapen_labels(tmp_path):
+    # review round 1: an empty index would fail every batch; a bad y is a corrupt file (exit 6)
+    path = tmp_path / "index.npz"
+    np.savez(path, x=np.ones((0, 2), np.float32), y=np.array([], dtype=str))
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+        student.load_index(path, TAX, width=2)
+    np.savez(path, x=np.ones((1, 2), np.int32), y=np.array(["Toys"]))
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+        student.load_index(path, TAX, width=2)
+    np.savez(path, x=np.ones((1, 2), np.float32), y=np.array([["Toys"]]))
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+        student.load_index(path, TAX, width=2)
+
+
+def test_build_index_refuses_a_training_label_outside_the_taxonomy(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        student, "load_training", lambda: [{"title": "x", "description": "", "category": "Kites"}]
+    )
+    with pytest.raises(ValueError, match="Kites"):
+        student.build_index(TAX, fake_embed, REV, tmp_path)
+    assert not list(tmp_path.rglob("*.npz"))
+
+
+def test_embedder_fetches_every_file_at_the_pinned_revision_and_loads_the_snapshot(
+    tmp_path, monkeypatch
+):
+    # review round 1: the 6m.1 contract, through the seams (no Hub, no model)
+    fetched, loaded = [], {}
+    snapshot = tmp_path / "snapshots" / REV
+
+    def hub_file(models, name, *, revision=None, download=False):
+        fetched.append((name, revision, download))
+        return str(snapshot / name)
+
+    def fastembed(models, model=None, **kwargs):
+        loaded.update(models=models, model=model, **kwargs)
+        return fake_embed
+
+    monkeypatch.setattr(student, "_hub_file", hub_file)
+    monkeypatch.setattr(classify, "fastembed", fastembed)
+    embed, rev = student.embedder(tmp_path, download=True)
+    assert embed is fake_embed and rev == REV
+    assert fetched == [(name, REV, True) for name in (*student.FILES, student.ONNX)]
+    assert loaded == {
+        "models": tmp_path,
+        "model": student.FT_MODEL,
+        "specific_model_path": str(snapshot),
+    }
 
 
 def test_a_bad_index_names_the_download(tmp_path):
@@ -573,7 +653,7 @@ def test_a_bad_index_names_the_download(tmp_path):
 def test_an_index_label_outside_the_taxonomy_is_refused_by_name(tmp_path):
     path = tmp_path / "index.npz"
     np.savez(path, x=np.ones((1, 2), np.float32), y=np.array(["Kites"]))
-    with pytest.raises(ValueError, match="Kites"):
+    with pytest.raises(classify.ModelMissing, match="Kites"):  # exit 6, not a restart loop
         student.load_index(path, TAX, width=2)
 
 
@@ -596,7 +676,7 @@ def test_the_pipeline_classifier_answers_every_listing_from_the_index(tmp_path, 
     calls.clear()
     batch = [listing(title="shirt" if i % 2 else "train") for i in range(600)]
     got = c.classify(batch)
-    assert len(got) == 600 and max(calls) <= student.CHUNK and sum(calls) == 600
+    assert len(got) == 600 and max(calls) <= 256 and len(calls) >= 3 and sum(calls) == 600
     assert [a[0] for a in got[:2]] == ["Toys", "Apparel > Shirts"]
     assert all(a is not None and a[0] != classify.UNCATEGORIZED for a in got)
     assert c.taxonomy_version == student.version(TAX.version, REV)
@@ -636,6 +716,7 @@ def test_pick_tau_needs_min_kept_rows_behind_it():
     assert student.pick_tau(scored, target=0.6, grid=grid, min_kept=4) is None
 
 
+@pytest.mark.usefixtures("tiny_support")
 def test_report_prints_the_held_out_bands(tmp_path):
     # 6m test point 5: the accuracy of the band just above each τ, so the knee is visible
     evals, opus = write_eval(tmp_path)
@@ -643,6 +724,17 @@ def test_report_prints_the_held_out_bands(tmp_path):
         TAX, fake_embed, SOURCES, tmp_path / "cache", evals=evals, opus=opus, clock=ticking()
     )
     assert "Bands on the Amazon held-out rows (τ: right/rows): 1.00: 1/1" in body
+
+
+def test_the_report_applies_the_tau_support_by_default(tmp_path):
+    # review round 1: MIN_KEPT ships at 200 and the report uses it (one Amazon held-out row here)
+    assert student.MIN_KEPT == 200
+    evals, opus = write_eval(tmp_path)
+    body = student.report(
+        TAX, fake_embed, SOURCES, tmp_path / "cache", evals=evals, opus=opus, clock=ticking()
+    )
+    assert "no τ reaches the target on the Amazon held-out rows" in body
+    assert "a τ needing 200 kept rows behind it" in body and "← τ |" not in body
 
 
 def test_bands_count_each_row_once():

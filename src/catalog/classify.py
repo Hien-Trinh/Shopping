@@ -177,13 +177,7 @@ def texts(taxonomy, recipe: str, deeper: dict[str, list[str]]) -> list[tuple[str
     return [(p, p) for p in paths] + [(d, p) for p in paths for d in deeper[p]]
 
 
-KINDS = (
-    "fake",
-    "embedding",
-    "jev",
-    "student",
-    "down",
-)  # a worker's and the Backfill's --classifier
+KINDS = ("fake", "embedding", "jev", "student", "down")  # a worker's and the Backfill's kinds
 # down: the fake one in an outage, every call failing (the chaos runner's, step-7b.md)
 
 

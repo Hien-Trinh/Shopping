@@ -38,7 +38,7 @@ OUT = Path("eval/student.md")
 FT_MODEL = "student-ft"  # bge-small fine-tuned end-to-end by train/finetune.py (step-6l.3.md)
 FT_REPO = "Hien-Trinh/listing-student-ft"  # the public Hub repo the script pushes to
 HEAD = "head.npz"  # the linear head beside the ONNX encoder in that repo
-ONNX = "onnx/model_quantized.onnx"  # the encoder file served; step-6m.md point 8 picks int8 or fp32
+ONNX = "onnx/model.onnx"  # fp32: more exact and faster here than int8 (step-6m.md, Outcome)
 FT_REVISION = "1970ef96152e2390c0ae7e08d2ad1db7fd25fb91"  # the Hub commit the pipeline is pinned to
 # (the 6l.3 run); a retrain is a new constant, which is a new version
 FILES = ("config.json", "tokenizer.json", "tokenizer_config.json")  # fetched beside ONNX and HEAD

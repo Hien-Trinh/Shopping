@@ -101,6 +101,21 @@ Not in CI: the real student in a worker (no download in CI; 6m.2's hand run cove
 4. **The design doc** gets the step 6m sentence in Categorization and the student's seconds in lifecycle step 5's timeout sentence, as 6f added Jev's. **Agreed (Oct 7), plus the Runtime list line:** "fastembed for the shortlist, TypeSafe Jev for the choice (step 6f)" becomes "fastembed running the fine-tuned student (step 6m); Jev, the shortlist and Laya were the earlier choices".
 5. **The test points above.** **OK (Oct 7).**
 
+## Outcome, 6m.1 (Oct 7)
+
+- **The code**: `student.pipeline` (kNN, k = 5, over the index), `build_index` / `load_index` (`models/student/index-<revision12>-<int8|fp32>.npz`, written whole or not at all by `--download`, checked on load), `version` from constants and the training files' hash, the encoder fetched at `FT_REVISION` and loaded through fastembed's `specific_model_path` (so the eval and the pipeline score one Hub commit), `--classifier student` for the worker and the Backfill, the classifier embedding in chunks of 256, the report's τ needing 200 held-out rows behind it and printing the accuracy of each band above it, the vector cache keyed by the encoder file too.
+- **int8 against fp32** (point 8), the report rerun once per file on this Mac, one Listing at a time:
+
+| `student-ft-knn` (k = 5) | int8 (32 MB) | fp32 (133 MB) |
+|---|---|---|
+| Exact on the 1,020 | 72.5% | 73.4% |
+| Exact on Shopify's 2,000 | 60.9% | 62.9% |
+| Held-out exact | 63.4% | 64.7% |
+| p50 / p99 per Listing | 6.7 / 27.3 ms | 5.8 / 12.5 ms |
+
+  **fp32 ships.** The rule asked for a full point on the 1,020 before paying latency for fp32; it gains 0.9 there and 2.0 on the independent set, and costs no latency: on this Mac the fp32 file is faster than int8's dynamic quantization. The price is 133 MB per worker instead of 32, well inside the memory row above. [eval/student.md](../../eval/student.md) is the fp32 run.
+- **The report's τ rule** still picks τ = 0 on the Amazon held-out rows with the 200-row support, as the Oct 7 decision expects; the bands line shows the knee (the 0.35 to 0.60 bands are right 22 to 68% of the time) for a later cascade step.
+
 ## Out of scope
 
 - The cascade (Jev behind a τ), a shortlist for Jev from the student's top 10, retiring `jev.py`, a retrain, the head alone as a lighter student, a fastembed `threads` setting, a Databricks or Azure port, the Opus fallback (labeling only).

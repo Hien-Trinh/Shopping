@@ -474,7 +474,7 @@ def hub_cache(models: Path, rev: str, head: student.Softmax | None = None) -> Pa
     repo = models / f"models--{student.FT_REPO.replace('/', '--')}"
     snapshot = repo / "snapshots" / rev
     (snapshot / "onnx").mkdir(parents=True)
-    (snapshot / "onnx" / "model_quantized.onnx").write_bytes(b"onnx")
+    (snapshot / student.ONNX).write_bytes(b"onnx")
     for name in student.FILES:
         (snapshot / name).write_text("{}")
     if head:
@@ -492,7 +492,7 @@ def test_the_head_is_loaded_from_the_encoders_revision(tmp_path):
     with pytest.raises(classify.ModelMissing, match="catalog.student --download") as e:
         student.load_head(tmp_path, revision=old)
     assert e.value.__cause__ is not None and "(" in str(e.value)  # the cause is in the message
-    assert student._name(new) == "student-ft@bbbbbbbbbbbb-int8"
+    assert student._name(new) == "student-ft@bbbbbbbbbbbb-fp32"
 
 
 def test_a_missing_finetuned_encoder_names_the_students_download(tmp_path, monkeypatch):
@@ -531,7 +531,7 @@ def test_finetuned_wires_the_head_into_the_ft_candidate_only(tmp_path, monkeypat
     monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
     ft = student.finetuned(TAX, tmp_path, "ft")
     assert ft.model is head
-    assert ft.taxonomy_version.endswith("+student-ft@cccccccccccc-int8+student-ft")
+    assert ft.taxonomy_version.endswith("+student-ft@cccccccccccc-fp32+student-ft")
     knn = student.finetuned(TAX, tmp_path, "ft-knn")
     assert isinstance(knn.model, student.Knn)
 
@@ -545,7 +545,7 @@ def test_the_index_round_trips_and_is_unit_vectors(tmp_path, monkeypatch):
     # 6m test point 1
     monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
     path = student.build_index(TAX, fake_embed, REV, tmp_path)
-    assert path == tmp_path / "student" / f"index-{REV[:12]}-int8.npz"
+    assert path == tmp_path / "student" / f"index-{REV[:12]}-{student.tag()}.npz"
     x, y = student.load_index(path, TAX, width=2)
     assert x.shape == (6, 2) and x.dtype == np.float32 and np.allclose(np.linalg.norm(x, axis=1), 1)
     assert y == [r["category"] for r in FT_ROWS]
@@ -612,12 +612,12 @@ def test_the_pipeline_needs_the_index(tmp_path, monkeypatch):
 def test_the_version_names_every_setting(tmp_path, monkeypatch):
     # 6m test point 3
     v = student.version("shopify-2026-08", "a" * 40)
-    assert v.startswith("shopify-2026-08+student-ft-knn@aaaaaaaaaaaa+int8+k5+train-")
+    assert v.startswith("shopify-2026-08+student-ft-knn@aaaaaaaaaaaa+fp32+k5+train-")
     assert len(v.rpartition("-")[2]) == 8
     assert student.version("shopify-2026-08", "b" * 40) != v
-    monkeypatch.setattr(student, "ONNX", "onnx/model.onnx")
-    assert "+fp32+" in student.version("shopify-2026-08", "a" * 40)
     monkeypatch.setattr(student, "ONNX", "onnx/model_quantized.onnx")
+    assert "+int8+" in student.version("shopify-2026-08", "a" * 40)
+    monkeypatch.setattr(student, "ONNX", "onnx/model.onnx")
     monkeypatch.setattr(student, "K", 7)
     assert "+k7+" in student.version("shopify-2026-08", "a" * 40)
     monkeypatch.setattr(student, "K", 5)

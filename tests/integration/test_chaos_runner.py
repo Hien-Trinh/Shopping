@@ -94,8 +94,10 @@ def test_the_shipped_procfile_runs_the_student_and_the_rewrite_never_loads_it():
     lines = [line for line in shipped.splitlines() if line.startswith(("worker-", "backfill:"))]
     assert len(lines) == 5 and all(line.endswith("--classifier student") for line in lines)
     assert "student" not in chaos.procfile(shipped, 9)  # the e2e test needs no model
-    with pytest.raises(ValueError, match="the Procfile changed"):
+    with pytest.raises(ValueError, match="matched 0 lines, not 5"):
         chaos.procfile(shipped.replace("--classifier student", "--classifier jev"), 9)
+    with pytest.raises(ValueError, match="would load the student"):  # a line the rewrite misses
+        chaos.procfile(shipped + "extra: python -m catalog.x --classifier student\n", 9)
 
 
 def fake_load(stdout):

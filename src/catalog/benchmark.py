@@ -11,6 +11,7 @@ import gzip
 import hashlib
 import http.client
 import json
+import os
 import random
 import re
 import sys
@@ -208,10 +209,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     if (after := _get(REVISION)["sha"]) != revision:  # the rows API serves only the latest
         raise RuntimeError(f"{DATASET} changed during the fetch: {revision} -> {after}")
     ev, tr, counts = build(test, train, tax, renames, n=a.n, seed=a.seed)
-    with state.atomic(a.eval) as f:
-        f.write("".join(json.dumps(x, ensure_ascii=False) + "\n" for x in ev).encode())
-    with state.atomic(a.train) as f:
-        f.write(gz(tr))
+    eval_bytes = "".join(json.dumps(x, ensure_ascii=False) + "\n" for x in ev).encode()
+    train_bytes = gz(tr)
+    # Both files fsynced before either rename (train's exit renames first), so a failed write or
+    # fsync keeps the old pair.
+    # ponytail: two renames, not one transaction: a crash or a failed eval rename between them
+    # mismatches the pair until a re-run. Upgrade path: one directory for both, one rename.
+    with state.atomic(a.eval) as fe, state.atomic(a.train) as ft:
+        for f, data in ((fe, eval_bytes), (ft, train_bytes)):
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
     unmapped = counts.pop("unmapped")
     print(json.dumps({"revision": revision, "eval": len(ev), "train": len(tr)} | counts))
     print(f"unmapped: {sum(unmapped.values())} rows, {len(unmapped)} categories")

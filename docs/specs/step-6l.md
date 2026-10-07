@@ -1,6 +1,6 @@
 # Step 6l: the student prototype, a softmax head and kNN over bge-small vectors (mini PRD)
 
-Status: approved Oct 6. Question 1: the bar switched (below). Question 2: Jev on the 2,000 Shopify Listings OK. Question 3: the Opus line on the curve, yes. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6l](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher), [step-6k.md](step-6k.md) (the training and eval data) and [step-6e.md](step-6e.md) (the eval harness). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 6 (see Outcome); approved Oct 6. Question 1: the bar switched (below). Question 2: Jev on the 2,000 Shopify Listings OK. Question 3: the Opus line on the curve, yes. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6l](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher), [step-6k.md](step-6k.md) (the training and eval data) and [step-6e.md](step-6e.md) (the eval harness). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -70,6 +70,30 @@ In `tests/integration/test_student.py`, with a fake `embed` (fixed vectors), as 
 2. **Jev on the 2,000 Shopify Listings,** so the cascade can be scored there too: 2,000 calls, about 8 minutes, about $0.12. OK?
 3. **The fallback.** A second option the curve may show: falling back to Opus through the API instead of Jev (roughly $0.01 a Listing, about 160× Jev's $0.00006), or to nothing (Uncategorized, Backfill retries). Out of scope for 6l unless you want the Opus line on the curve, estimated from its stored answers on the 1,020 at no cost. Add it?
 4. **The test points above.** OK?
+
+## Outcome (Oct 6)
+
+**The bar is not met** on the 1,020, nor on Shopify's 2,000 (a tie there). Full curves: [eval/student.md](../../eval/student.md).
+
+| On the 1,020 (exact) | Kept local | System |
+|---|---|---|
+| Jev alone (production settings) | 0% | 66.9% |
+| kNN (k=5) alone | 100% | 52.3% |
+| kNN, Jev below τ = 0.25 | 78.7% | 60.3% |
+| kNN, Jev below τ = 0.45 | 45.1% | **68.3%** |
+| kNN, Opus below τ = 0.45 | 45.1% | 81.0% |
+| Softmax alone | 100% | 47.5% |
+| Opus alone (the teacher) | 0% | 86.7% |
+
+- **kNN beats softmax** everywhere (53.3% against 43.9% on the held-out rows; top level 72.4% against 66.6% on the 1,020). The softmax head first trained to 25%: 300 steps at lr 0.05 is far too little for 1,676 classes. Tuned on the held-out rows (lr 0.5, l2 1e-5) it reached about 45%; more steps didn't help.
+- **The cascade beats Jev alone only when less than half the traffic stays local:** 68.3% at 45% kept, against 66.9%, 15.6 points under the teacher. At 70% or more kept it falls to about 60%.
+- **On Shopify's 2,000:** 61.8% at 77.5% kept, a tie with Jev's 61.8%; 63.6% at 67.6% kept. The students do better on Shopify's products (31k of the 33k training rows) than on our Amazon-style Listings, a gap the 2k Opus-labeled Amazon rows only partly close.
+- **The threshold rule from the held-out rows** (τ = 0.40 for kNN) keeps 68% local but loses to Jev on the 1,020 (63.9%): the held-out rows are 94% Shopify, whichever way they are split, so they overstate how right the student is on our Listings.
+- **Speed:** p50 about 10 ms and p99 15–22 ms per Listing, one at a time, on par with the embedding classifier.
+- **Leakage:** training rows whose title is an eval title are dropped (5 of the 1,020's titles appeared in `train/`). The `evaluate run --classifier student-*` candidates still train on all of `train/`.
+- **Correction to 6j:** the first Jev run on the 822 read 500 description characters, not production's 200. Rerun at 200: 66.9% (was 67.6%). 6j's conclusion stands; [eval/teacher.md](../../eval/teacher.md) notes it.
+- **Jev on Shopify's 2,000:** 61.8% exact, $0.12.
+- **Review round 1** fixes: per-source held-out split, eval titles dropped from training, the report's top-level, two-level, p50/p99 and unseen-label figures and its bar verdict, an atomic vector cache that recovers from a truncated file, `pick_tau` saying when no τ qualifies, and `classify([])`.
 
 ## Out of scope
 

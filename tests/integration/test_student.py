@@ -187,6 +187,15 @@ def test_held_out_takes_ten_percent_of_each_source():
     assert len(fit) == 108
 
 
+def test_tau_is_picked_on_the_amazon_rows_only():
+    # docs/specs/step-6l.2.md, test point 2: Shopify rows right where Amazon rows are wrong
+    held = [{"source": "shopify-train"}] * 4 + [{"amazon_category": "Toys"}] * 2
+    scored = [("A", 0.3, True)] * 4 + [("A", 0.3, False), ("A", 0.6, True)]
+    grid = [0.0, 0.3, 0.6]
+    assert student.pick_tau(scored, target=0.6, grid=grid) == 0.0
+    assert student.pick_tau(student.amazon(scored, held), target=0.6, grid=grid) == 0.6
+
+
 def test_rows_with_an_eval_title_are_dropped():
     rows = [{"title": "Blue Shirt"}, {"title": "Toy train"}]
     assert student.without_titles(rows, ["blue shirt"]) == [{"title": "Toy train"}]
@@ -227,7 +236,15 @@ def ticking():
 SOURCES = [  # titles unlike the eval's, which the report drops from training
     [{"title": "Red shirt", "description": "", "category": "Apparel > Shirts"}] * 10
     + [{"title": "Wooden train", "description": "", "category": "Toys"}] * 10,
-    [{"title": "Green shirt", "description": "", "category": "Apparel > Shirts"}] * 10,
+    [
+        {
+            "title": "Green shirt",
+            "description": "",
+            "category": "Apparel > Shirts",
+            "amazon_category": "x",
+        }
+    ]
+    * 10,
 ]
 
 

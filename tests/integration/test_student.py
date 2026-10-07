@@ -263,3 +263,12 @@ def test_report_refuses_missing_fallback_answers_before_training(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="jev.json"):
         student.report(TAX, embed, SOURCES, tmp_path / "cache", evals=evals, opus=opus)
+
+
+def test_main_writes_the_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(student.classify, "fastembed", lambda models: None)
+    monkeypatch.setattr(student, "load_training", lambda paths: [])
+    monkeypatch.setattr(student, "report", lambda *_: "# report\n")
+    out = tmp_path / "r" / "student.md"
+    student.main(["--models", str(tmp_path), "--out", str(out)])
+    assert out.read_text() == "# report\n"

@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import http.client
 import json
+import os
 from urllib.error import HTTPError
 
 import pytest
@@ -380,6 +381,44 @@ def test_main_writes_both_files_and_checks_the_revision(tmp_path, monkeypatch, c
     assert json.loads(ev.read_text())["title"] == "Wooden toy train set"
     assert json.loads(gzip.decompress(tr.read_bytes()))["title"] == "Toy truck"
     assert '"revision": "abc"' in capsys.readouterr().out
+
+
+def main_with_old_pair(tmp_path, monkeypatch):
+    """Runs benchmark.main over an existing pair; returns (eval, train) paths."""
+    monkeypatch.setattr(benchmark, "_get", lambda url: {"sha": "abc"})
+    rows = {"test": [row()], "train": [row(title="Toy truck")]}
+    monkeypatch.setattr(benchmark, "fetch", lambda split: iter(rows[split]))
+    monkeypatch.setattr(benchmark.taxonomy, "load", lambda: taxonomy.Taxonomy("t", tuple(TAX)))
+    ev, tr = tmp_path / "e.jsonl", tmp_path / "t.jsonl.gz"
+    ev.write_text("old eval"), tr.write_bytes(b"old train")
+    with pytest.raises(OSError):
+        benchmark.main(["--eval", str(ev), "--train", str(tr)])
+    assert ev.read_text() == "old eval" and tr.read_bytes() == b"old train"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["e.jsonl", "t.jsonl.gz"]
+
+
+def test_main_keeps_the_old_pair_when_the_train_rename_fails(tmp_path, monkeypatch):
+    replace = os.replace
+
+    def full_disk(src, dst):
+        if dst.name == "t.jsonl.gz":
+            raise OSError("disk full")
+        replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", full_disk)
+    main_with_old_pair(tmp_path, monkeypatch)
+
+
+def test_main_keeps_the_old_pair_when_the_eval_fsync_fails(tmp_path, monkeypatch):
+    fsync = os.fsync
+
+    def failing(fd):
+        if any(os.fstat(fd).st_ino == t.stat().st_ino for t in tmp_path.glob(".e.jsonl.*.tmp")):
+            raise OSError("I/O error")
+        fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", failing)
+    main_with_old_pair(tmp_path, monkeypatch)
 
 
 def test_main_refuses_when_the_dataset_changes_during_the_fetch(tmp_path, monkeypatch):

@@ -21,7 +21,7 @@ import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from catalog.landing import START, Position
 
@@ -55,13 +55,27 @@ def save(path: Path, value: Any) -> None:
     fsync, no F_FULLFSYNC on macOS), as it can delta-rs commits, which are not fsynced either.
     Upgrade path: fsync new Delta log and data files after each commit, then F_FULLFSYNC here.
     """
+    with atomic(path) as f:
+        f.write(json.dumps(value).encode())
+
+
+@contextmanager
+def atomic(path: Path) -> Iterator[BinaryIO]:
+    """A binary file that replaces `path` whole on a clean exit, durable as save() is.
+
+    On any exception the temp file is removed, else every retry on a full disk leaves one more.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")  # unique per call, not per pid
-    with open(tmp, "w") as f:
-        json.dump(value, f)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "wb") as f:
+            yield f
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _offset_file(state: Path, p: int) -> Path:

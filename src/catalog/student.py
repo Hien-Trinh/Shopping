@@ -9,9 +9,7 @@ import argparse
 import gzip
 import hashlib
 import json
-import os
 import random
-import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -19,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from catalog import classify, entry, evaluate, taxonomy
+from catalog import classify, entry, evaluate, state, taxonomy
 from catalog.envelope import Content
 
 TRAIN = (Path("train/shopify.jsonl.gz"), Path("train/amazon-opus.jsonl"))
@@ -154,15 +152,8 @@ def vectors(texts: Sequence[str], embed: Callable, cache: Path) -> np.ndarray:
     except OSError, ValueError, EOFError:  # missing, or cut short by a killed run
         pass
     x = unit(np.vstack([embed(texts[i : i + CHUNK]) for i in range(0, len(texts), CHUNK)]))
-    cache.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=cache, prefix=".student-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            np.save(f, x)
-        os.replace(tmp, path)  # whole or not at all, like evaluate._write
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    with state.atomic(path) as f:
+        np.save(f, x)
     return x
 
 
@@ -376,7 +367,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     a = p.parse_args(argv)
     embed = classify.fastembed(a.models)
     body = report(taxonomy.load(), embed, [load_training([p]) for p in TRAIN], a.models / "student")
-    evaluate._write(a.out, body)
+    with state.atomic(a.out) as f:
+        f.write(body.encode())
 
 
 if __name__ == "__main__":

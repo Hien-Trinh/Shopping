@@ -272,6 +272,33 @@ def test_report_scores_each_student_alone_and_in_the_cascade(tmp_path):
     assert "Bar (beats Jev alone with 70% or more kept local): met at τ = 0.00" in body
 
 
+def test_report_picks_tau_on_the_amazon_rows_and_marks_both(tmp_path, monkeypatch):
+    # step-6l.2.md, 6l.2b point 2 (review round 1): τ from the Amazon rows; the table shows both
+    evals, opus = write_eval(tmp_path)
+    calls = []
+
+    def pick(scored, *, target):
+        calls.append(len(scored))
+        return 0.05 if len(calls) % 2 else 0.5
+
+    monkeypatch.setattr(student, "pick_tau", pick)
+    body = student.report(
+        TAX, fake_embed, SOURCES, tmp_path / "cache", evals=evals, opus=opus, clock=ticking()
+    )
+    assert calls[:2] == [1, 3]  # 1 of the 3 held-out rows is an Amazon row
+    assert "τ = 0.05 on the Amazon held-out rows (τ = 0.50 on all of them)" in body
+    assert "| 0.05 ← τ |" in body and "| 0.50 ← τ (all rows) |" in body
+
+
+def test_report_refuses_a_held_out_set_without_amazon_rows(tmp_path):
+    evals, opus = write_eval(tmp_path)
+    shopify_only = [
+        [{k: v for k, v in r.items() if k != "amazon_category"} for r in s] for s in SOURCES
+    ]
+    with pytest.raises(ValueError, match="no Amazon rows held out"):
+        student.report(TAX, fake_embed, shopify_only, tmp_path / "cache", evals=evals, opus=opus)
+
+
 def test_report_counts_eval_labels_unseen_in_training(tmp_path):
     evals, opus = write_eval(tmp_path)
     shirts_only = [[r for r in SOURCES[0] if r["category"] != "Toys"], SOURCES[1]]

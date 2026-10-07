@@ -8,7 +8,7 @@ Held-out exact 46.4%; τ = 0.15 on the Amazon held-out rows (τ = 0.25 on all of
 
 ### 1,020
 
-Student alone: exact 57.2%, top level 75.9%, two levels 68.8%; p50 13.8 ms, p99 266.8 ms per Listing, one at a time. 2 of 1020 eval labels never occur in training.
+Student alone: exact 57.2%, top level 75.9%, two levels 68.8%; p50 13.6 ms, p99 38.4 ms per Listing, one at a time. 2 of 1020 eval labels never occur in training.
 
 | τ | Kept local | Exact, Jev below τ | Exact, Opus below τ |
 |---|---|---|---|
@@ -17,7 +17,7 @@ Student alone: exact 57.2%, top level 75.9%, two levels 68.8%; p50 13.8 ms, p99 
 | 0.10 | 87.5% | 63.1% | 65.6% |
 | 0.15 ← τ | 78.2% | 65.8% | 70.4% |
 | 0.20 | 69.1% | 68.1% | 75.1% |
-| 0.25 | 61.7% | 69.5% | 77.3% |
+| 0.25 ← τ (all rows) | 61.7% | 69.5% | 77.3% |
 | 0.30 | 55.9% | 69.6% | 78.9% |
 | 0.35 | 50.6% | 70.7% | 81.1% |
 | 0.40 | 44.2% | 71.9% | 83.2% |
@@ -41,7 +41,7 @@ Bar (beats Jev alone with 70% or more kept local): not met.
 
 ### Shopify 2,000
 
-Student alone: exact 45.4%, top level 62.7%, two levels 56.0%; p50 18.5 ms, p99 67.1 ms per Listing, one at a time. 4 of 2000 eval labels never occur in training.
+Student alone: exact 45.4%, top level 62.7%, two levels 56.0%; p50 18.2 ms, p99 32.7 ms per Listing, one at a time. 4 of 2000 eval labels never occur in training.
 
 | τ | Kept local | Exact, Jev below τ |
 |---|---|---|
@@ -50,7 +50,7 @@ Student alone: exact 45.4%, top level 62.7%, two levels 56.0%; p50 18.5 ms, p99 
 | 0.10 | 74.1% | 54.9% |
 | 0.15 ← τ | 60.1% | 58.1% |
 | 0.20 | 50.5% | 60.0% |
-| 0.25 | 42.6% | 61.1% |
+| 0.25 ← τ (all rows) | 42.6% | 61.1% |
 | 0.30 | 36.8% | 62.0% |
 | 0.35 | 31.6% | 62.2% |
 | 0.40 | 27.4% | 62.3% |
@@ -77,7 +77,7 @@ Held-out exact 55.5%; τ = 0.25 on the Amazon held-out rows (τ = 0.25 on all of
 
 ### 1,020
 
-Student alone: exact 65.7%, top level 83.6%, two levels 77.8%; p50 12.5 ms, p99 18.2 ms per Listing, one at a time. 2 of 1020 eval labels never occur in training.
+Student alone: exact 65.7%, top level 83.6%, two levels 77.8%; p50 15.6 ms, p99 46.8 ms per Listing, one at a time. 2 of 1020 eval labels never occur in training.
 
 | τ | Kept local | Exact, Jev below τ | Exact, Opus below τ |
 |---|---|---|---|
@@ -110,7 +110,7 @@ Bar (beats Jev alone with 70% or more kept local): met at τ = 0.20.
 
 ### Shopify 2,000
 
-Student alone: exact 55.0%, top level 73.7%, two levels 66.6%; p50 12.8 ms, p99 25.3 ms per Listing, one at a time. 4 of 2000 eval labels never occur in training.
+Student alone: exact 55.0%, top level 73.7%, two levels 66.6%; p50 15.2 ms, p99 30.3 ms per Listing, one at a time. 4 of 2000 eval labels never occur in training.
 
 | τ | Kept local | Exact, Jev below τ |
 |---|---|---|

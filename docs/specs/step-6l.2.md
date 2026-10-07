@@ -90,7 +90,7 @@ In `tests/integration/test_student.py`:
 - **On Shopify's 2,000 it is not met:** 60.9% at 73.5% kept against Jev's 61.8%; the student alone is 55.0% (6l: 55.2%). The new rows help our Listings, not Shopify's.
 - **Leakage check:** besides the exact-title drop, 15 of the 1,020 titles (1.5%) share their first 40 normalized characters with a training title, mostly Amazon gift cards and subscription-box variants. Even all 15 counted as wins is under half the 3.1-point margin (about 32 Listings).
 - **A caveat for 6m:** the 1,020's labels are Claude-made (the 198 drafted by Claude and checked, the 822 by Sonnet), and the student now learns from 10k Opus labels, so a shared labeling style may favor the student over Jev on this eval. The Shopify 2,000 (Shopify's own labels) shows no gain.
-- **Speed:** kNN p50 12.5 ms, p99 18.2 ms. The softmax p99 (267 ms on the 1,020) is an artifact: the run was paused partway.
+- **Speed:** kNN p50 13–16 ms, p99 18–47 ms per Listing over two runs; the spread is load on the Mac (the first run was also paused partway, which put softmax's p99 at 267 ms).
 
 ## Out of scope
 

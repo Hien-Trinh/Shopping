@@ -150,7 +150,11 @@ def pick_tau(
 def amazon(scored: Sequence, held: Sequence[dict]) -> list:
     """The scored held-out answers of the Amazon rows only (they carry `amazon_category`): τ is
     picked on Listings like ours, not on the Shopify rows that dominate `train/` (step-6l.2.md)."""
-    return [s for s, r in zip(scored, held, strict=True) if "amazon_category" in r]
+    return [s for s, r in zip(scored, held, strict=True) if _is_amazon(r)]
+
+
+def _is_amazon(row: dict) -> bool:
+    return "amazon_category" in row
 
 
 def _tau(t: float | None) -> str:
@@ -289,6 +293,9 @@ def report(
     eval_labels = {name: _labels([p for p in lp if p.exists()]) for name, (lp, _) in evals.items()}
     titles = [x["title"] for labels in eval_labels.values() for x in labels]
     fit, held = held_out([without_titles(rows, titles) for rows in sources], seed=seed)
+    n_amazon = sum(map(_is_amazon, held))
+    if not n_amazon:  # τ is picked on these: none means an Amazon file is missing from TRAIN
+        raise ValueError("no Amazon rows held out: τ is picked on them (step-6l.2.md)")
     x_held = vectors([_text(r["title"], r["description"]) for r in held], embed, cache)
     first_name = next(iter(evals))
     jev_first = _answers(first_fallback)
@@ -301,7 +308,6 @@ def report(
         if line
     }
     seen = {r["category"] for r in fit}
-    n_amazon = sum("amazon_category" in r for r in held)
     lines = [
         "# The student (steps 6l and 6l.2)",
         "",
@@ -371,7 +377,7 @@ def report(
                     beats = _exact(out, labels) > _exact(fb, labels)
                     if n == "Jev" and kept / len(labels) >= 0.7 and met is None and beats:
                         met = t
-                mark = " ← τ" if t == tau else ""
+                mark = " ← τ" if t == tau else " ← τ (all rows)" if t == tau_all else ""
                 lines.append(f"| {t:.2f}{mark} | {kept / len(labels):.1%} | {' | '.join(cells)} |")
             lines.append("")
             for n, fb in fallbacks:

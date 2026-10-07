@@ -91,7 +91,7 @@ Not in CI: the training script (torch isn't installed there). Its check is the O
 ## Questions
 
 1. **Where to train.** Decided Oct 6: Colab first, by hand; Hugging Face Jobs (about $0.07 a run, one command) once reruns are needed. Modal is free but a second account.
-2. **The artifact's home.** Decided Oct 6: a public Hub model repo under your account (no secret anywhere, CI can fetch it). Rejected: private (a token on the Mac and in CI, against the no-secrets rule) and a GitHub release asset loaded through onnxruntime directly.
+2. **The artifact's home.** Decided Oct 6: a public Hub model repo under your account, `Hien-Trinh/listing-student-ft` (no secret anywhere, CI can fetch it). Rejected: private (a token on the Mac and in CI, against the no-secrets rule) and a GitHub release asset loaded through onnxruntime directly.
 3. **The bar above:** student alone +3 points over kNN on the 1,020, and the cascade no worse than 6l.2's point in both exact and kept. OK (Oct 6).
 4. **The test points above.** OK (Oct 6).
 

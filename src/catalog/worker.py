@@ -345,6 +345,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         shortlist = jev.shortlist(tax, classify.fastembed(a.models), a.models / "texts")
         # ponytail: a static share of Jev's limit; an idle worker's share goes unused
         classifier = jev.JevClassifier(tax, shortlist, call, rate=jev.LIMIT / a.workers)
+    elif a.classifier == "student":
+        from catalog import student  # here: it loads the eval module too
+
+        classifier = student.pipeline(taxonomy.load(), a.models)  # step-6m.md: no key, no Jev
     elif a.classifier == "embedding":
         classifier = classify.EmbeddingClassifier(taxonomy.load(), classify.fastembed(a.models))
     else:

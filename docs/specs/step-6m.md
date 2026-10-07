@@ -1,6 +1,6 @@
 # Step 6m: the student in the pipeline (mini PRD)
 
-Status: question 1 decided Oct 7: **τ = 0, the student replaces Jev**; questions 2 to 5 open (at the end). The Oct 7 draft proposed a cascade (the student first, Jev below a threshold); this version is the student alone, and the cascade is a later step. Plan row: [plan-v1.md, PR steps, 6m](../plan-v1.md). Builds on [step-6l.3.md](step-6l.3.md) (the fine-tuned student meets the bar; "for 6m" in its Outcome), [step-6l.2.md](step-6l.2.md) (the τ rule and its review's deferral), [step-6f.md](step-6f.md) (how Jev entered the pipeline: the kind, the version, the Procfile switch) and [docs/research/classifier-hosting-options.md](../research/classifier-hosting-options.md) (keep the classifier in-process). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 7. Question 1: **τ = 0, the student replaces Jev**. Question 2: measure (int8 against fp32, the rule in 6m.1 point 8). Question 3: the index built locally, downloads separate. Question 4: yes, plus the design doc's Runtime list line, which becomes "fastembed running the fine-tuned student (step 6m); Jev, the shortlist and Laya were the earlier choices". Question 5: the test points OK. The Oct 7 draft proposed a cascade (the student first, Jev below a threshold); this version is the student alone, and the cascade is a later step. Plan row: [plan-v1.md, PR steps, 6m](../plan-v1.md). Builds on [step-6l.3.md](step-6l.3.md) (the fine-tuned student meets the bar; "for 6m" in its Outcome), [step-6l.2.md](step-6l.2.md) (the τ rule and its review's deferral), [step-6f.md](step-6f.md) (how Jev entered the pipeline: the kind, the version, the Procfile switch) and [docs/research/classifier-hosting-options.md](../research/classifier-hosting-options.md) (keep the classifier in-process). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -43,7 +43,7 @@ The student alone beats Jev by 5.6 points on our Listings and matches it on the 
 ### 6m.2: the switch
 
 - `Procfile`: the `worker-*` and `backfill` lines say `--classifier student`; `chaos.procfile` rewrites them to `fake` (its `n == 4` / `n == 1` checks fail loudly if the lines change shape), so the e2e test and the chaos runner never load a model.
-- Design doc, Categorization: a sentence that step 6m replaces Jev with the student (question 4). Lifecycle step 5's timeout sentence gains the student's seconds.
+- Design doc, Categorization: a sentence that step 6m replaces Jev with the student (question 4). Lifecycle step 5's timeout sentence gains the student's seconds. The Runtime list's classifier line becomes "fastembed running the fine-tuned student (step 6m); Jev, the shortlist and Laya were the earlier choices".
 - Runbook: `TYPESAFE_API_KEY` is no longer needed to start; exit 6 names both downloads; exit 7 stays for the `jev` kind. README's Run section says what the workers classify with and the two downloads.
 - By hand: the supervisor on this Mac, 20 Listings through the API, the Listing Store shows their categories and versions, the events show `classify_ms`. The PR states the result. Then 7d.2b ([step-7d.md](step-7d.md), amended): the SLO run and the 10k bulk on the student.
 
@@ -58,12 +58,12 @@ The student alone beats Jev by 5.6 points on our Listings and matches it on the 
 
 | Scenario | Expected |
 |---|---|
-| The encoder, head or index missing from `models/` | `ModelMissing` naming `python -m catalog.student --download`, exit 6, before claiming partitions |
+| The encoder or index missing from `models/` (the head is the eval's; the pipeline never loads it) | `ModelMissing` naming `python -m catalog.student --download`, exit 6, before claiming partitions |
 | The index was built with the other ONNX file | Its name carries the file tag, so the worker looks for the right one and finds it missing (exit 6) |
 | The index is truncated by a killed `--download` | Written atomically (`state.atomic`): whole or absent |
 | `train/` changes (a new labeled file) | The version's `train-` hash changes; `--download` builds a new index; the Backfill reclassifies every row, for nothing |
 | A new Hub revision is pushed | Nothing changes until `FT_REVISION` does; `--download` fetches the pinned commit |
-| The taxonomy changes under the student | The index holds a label the taxonomy lacks: the worker refuses to start, naming it |
+| The taxonomy changes under the student | The index holds a label the taxonomy lacks: `ModelMissing` naming it (exit 6, so the supervisor stops instead of restarting), saying to retrain |
 | A Category with no training rows | kNN can never answer it (2 of the 1,020's labels); counted in the report, accepted |
 | A Listing the student is sure of but wrong | Stored with its confidence under the student's version; the eval's price (27.5% of the 1,020). Nothing goes Uncategorized by the student: no threshold |
 | A batch that takes long (a bulk upload) | A few seconds for 1,000; measured in 7d.2b against the 60 s heartbeat |
@@ -96,10 +96,27 @@ Not in CI: the real student in a worker (no download in CI; 6m.2's hand run cove
 ## Questions
 
 1. **τ.** Decided Oct 7: **τ = 0, the student alone replaces Jev.** The cascade (the student first, Jev below τ; the Oct 7 draft's rule picked τ = 0.60 on the held-out rows: 75.2% at 80.0% kept on the 1,020, 65.6% on Shopify, about $12 per 1M) is a later step if wanted.
-2. **int8 or fp32.** Measure as in 6m.1 point 8 and ship fp32 only if it earns 1 point on the 1,020 at under twice the latency; int8 otherwise. OK, or ship int8 without the rerun (the measured bar) and leave fp32 as a later lever?
-3. **The index built locally by `student --download`** (decision 3), downloads kept separate from `classify --download` (point 9). OK?
-4. **The design doc** gets the step 6m sentence in Categorization and the student's seconds in lifecycle step 5's timeout sentence, as 6f added Jev's. OK?
-5. **The test points above.** OK?
+2. **int8 or fp32.** Measure as in 6m.1 point 8 and ship fp32 only if it earns 1 point on the 1,020 at under twice the latency; int8 otherwise. **Measure (Oct 7).**
+3. **The index built locally by `student --download`** (decision 3), downloads kept separate from `classify --download` (point 9). **Agreed (Oct 7).**
+4. **The design doc** gets the step 6m sentence in Categorization and the student's seconds in lifecycle step 5's timeout sentence, as 6f added Jev's. **Agreed (Oct 7), plus the Runtime list line:** "fastembed for the shortlist, TypeSafe Jev for the choice (step 6f)" becomes "fastembed running the fine-tuned student (step 6m); Jev, the shortlist and Laya were the earlier choices".
+5. **The test points above.** **OK (Oct 7).**
+
+## Outcome, 6m.1 (Oct 7)
+
+- **The code**: `student.pipeline` (kNN, k = 5, over the index), `build_index` / `load_index` (`models/student/index-<revision12>-<int8|fp32>.npz`, written whole or not at all by `--download`, checked on load), `version` from constants and the training files' hash, the encoder fetched at `FT_REVISION` and loaded through fastembed's `specific_model_path` (so the eval and the pipeline score one Hub commit), `--classifier student` for the worker and the Backfill, the classifier embedding in chunks of 256, the report's τ needing 200 held-out rows behind it and printing the accuracy of each band above it, the vector cache keyed by the encoder file too.
+- **int8 against fp32** (point 8), the report rerun once per file on this Mac, one Listing at a time:
+
+| `student-ft-knn` (k = 5) | int8 (32 MB) | fp32 (133 MB) |
+|---|---|---|
+| Exact on the 1,020 | 72.5% | 73.4% |
+| Exact on Shopify's 2,000 | 60.9% | 62.9% |
+| Held-out exact | 63.4% | 64.7% |
+| p50 / p99 per Listing | 6.7 / 27.3 ms | 5.8 / 12.5 ms |
+
+  **fp32 ships.** The rule asked for a full point on the 1,020 before paying latency for fp32; it gains 0.9 there and 2.0 on the independent set, and costs no latency: on this Mac the fp32 file is faster than int8's dynamic quantization. The price is 133 MB per worker instead of 32, well inside the memory row above. [eval/student.md](../../eval/student.md) is the fp32 run.
+- **Review round 1** (#104, 11 finders, 13 candidates, 12 held) fixes, each with a regression test: the index file is named by the training files' hash too, so a stale index after `train/` changes is "missing" (exit 6) instead of serving under the new version; a label the taxonomy lacks, an empty index and a malformed label array are `ModelMissing` (exit 6, the supervisor stops) rather than a `ValueError` the supervisor would restart forever; a missing training file at start is `ModelMissing` naming it, not a bare `FileNotFoundError`; the chunked embed is one shared `embed_chunks` for the cache and the classifier; the snapshot directory comes from the ONNX file's own path; the `ponytail:` notes on the budget and on fastembed's threads; the plan's code layout lists `student.py`; this table's head row (the pipeline never loads the head). Tests: the 200-row support ships and the report applies it (the toy report says "no τ"), the chunking needs several calls, `embedder` fetches every file at `FT_REVISION` and loads the snapshot, the Backfill stamps the student's version, the index guards. Refuted: an `embed` answering too few or NaN rows is caught by the worker's strict pairing and confidence check.
+- **A real run on this Mac** (the fp32 encoder and the 41k-row index, `--download` 588 s the first time, then seconds from the vector cache): one worker on `--classifier student` classified three Listings in 1.6 s including its start (a cotton t-shirt to Clothing Tops at 1.00, a wooden train set to Play Vehicles at 0.59, a chef's knife to Kitchen Tools at 1.00), stamped `shopify-2026-08+student-ft-knn@1970ef96152e+fp32+k5+train-ce767c3a`, the string the Backfill builds without a model.
+- **The report's τ rule** still picks τ = 0 on the Amazon held-out rows with the 200-row support, as the Oct 7 decision expects; the bands line shows the knee (the 0.35 to 0.60 bands are right 22 to 68% of the time) for a later cascade step.
 
 ## Out of scope
 

@@ -544,8 +544,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     a = p.parse_args(argv)
     if a.download:
-        embedder(a.models, download=True)
-        load_head(a.models, download=True)
+        _, rev = embedder(a.models, download=True)
+        load_head(a.models, revision=rev, download=True)  # the head of the encoder just fetched
         return
     embed = classify.fastembed(a.models)
     try:

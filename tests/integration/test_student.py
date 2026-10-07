@@ -333,11 +333,19 @@ def test_main_writes_the_report(tmp_path, monkeypatch):
 def test_main_download_fetches_the_finetuned_student_and_stops(tmp_path, monkeypatch):
     # 6l.3: `--download` is the student's own, the Hub repo may not exist when classify downloads
     calls = []
-    monkeypatch.setattr(student, "embedder", lambda models, download: calls.append(download))
-    monkeypatch.setattr(student, "load_head", lambda models, download: calls.append(download))
+
+    def embedder(models, download):
+        calls.append(download)
+        return None, "d" * 40
+
+    def load_head(models, revision, download):
+        calls.append((revision, download))
+
+    monkeypatch.setattr(student, "embedder", embedder)
+    monkeypatch.setattr(student, "load_head", load_head)
     monkeypatch.setattr(student, "report", lambda *_, **__: pytest.fail("no report"))
     student.main(["--models", str(tmp_path), "--download"])
-    assert calls == [True, True]
+    assert calls == [True, ("d" * 40, True)]  # the head at the encoder's revision
 
 
 # docs/specs/step-6l.3.md: the fine-tuned student

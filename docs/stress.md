@@ -1,6 +1,6 @@
 # Stress report
 
-The full runs of [step 7d.2](specs/step-7d.md) on one Mac. Part 7d.2a (Oct 7): the 1M initial load on the `fake` classifier and the six deferred costs on that store. Part 7d.2b, the SLO run and the 10k bulk on the student, runs after step 6m.2 and decides the Phase 7 exit. Commands follow [the runbook](runbook.md); terms follow [CONTEXT.md](../CONTEXT.md).
+The full runs of [step 7d.2](specs/step-7d.md) on one Mac. Part 7d.2a (Oct 7): the 1M initial load on the `fake` classifier and the six deferred costs on that store. Part 7d.2b (Oct 7, after step 6m.2): the SLO run and the 10k bulk on the student; the exit stays open, blocked by the disk. Commands follow [the runbook](runbook.md); terms follow [CONTEXT.md](../CONTEXT.md).
 
 ## The machine
 
@@ -68,15 +68,47 @@ Methods, in brief. (a) `store.read(dt, keys)` as shipped against the same partit
 
 State after this step: Listing Store at version 1011 (the measurement MERGE: 3,252 live files, 1,000,000 rows, 0 tombstones), Landing log untouched at version 102, `state/` untouched (offsets went to a temp dir), `data/` 2.0 GB, 9.0 GiB free.
 
-## 7d.2b, after 6m.2
+## 7d.2b, point 3: the SLO run on the student
 
-The runs on the shipped classifier wait for the student in the pipeline ([step 6m.2](specs/step-6m.md)). They are the amended points 3 and 4 of 7d.2:
+The shipped `Procfile` with `--classifier student` (the fp32 encoder and the 41k-row index in `models/`), on top of the 1M store from 7d.2a (version 1011), no key in the environment. Three runs, because the first two filled the disk.
 
-- **The SLO run**: the shipped `Procfile` with `--classifier student`, the `backfill` line kept, on top of this 1M store. The Backfill reclassifies the 1M `fake`-versioned Listings onto the student's version, for nothing, and its time to leave no row on the old version is itself a measurement. Then 30 minutes of `catalog.load --rate 50 --keys 1000000` and `catalog.metrics --since 35m`. Pass: p99 freshness under 300 s. Recorded: every `metrics` field, `classify_ms`, the Backfill's time.
-- **The 10k bulk**: after a reset, one 10k batch on the same `Procfile`: freshness of its Changes, and a worker's full 1,000-Change batch time (the `batch` and `classify` events) against the 60 s heartbeat.
+**Run 1, the Backfill kept** (19:47 to 19:55 UTC, 7.2 minutes; the load at 50/s from 19:50). The Backfill appended 1,000 reclassifies a tick; the gaps between ticks were 24 s for the first five, then 50 to 89 s once the workers lagged (it never lets more than 1,000 reclassifies sit ahead of Merchant Changes). 9,036 `reclassified` Outcomes in 6.9 minutes, 1,307 a minute, so the 1M rows would take about 12.7 hours, bounded by the worker's time over a 1,000-Change batch (16.6 to 39.3 s with the other three workers busy, see point 4) and the Backfill's scan of the store, not by the classifier. Meanwhile freshness over the window's 9,743 Merchant Changes was p50 13.8 s, p99 57.8 s; 1 stale, 0 conflict, 0 failed; utilization 0.33 to 0.35. Stopped at 7 minutes: the store had grown from 1.2 to 3.6 GB on disk and free space had fallen from 18 to 8.7 GiB, towards the API's 5 GiB guard.
 
-This worktree's 1M store (its `data/` and `state/`, at version 1011 after the measurement MERGE) is kept for the SLO run. No key is needed for either run.
+| Reclaim, with nothing running | |
+|---|---|
+| `DeltaTable.vacuum(retention_hours=0, enforce_retention_duration=False)` | 16,858 files removed; the store 3,583 MB to 755 MB on disk; 18 GiB free |
+| Live data | 126 MB in 1,265 files (the generator's texts repeat, so Parquet compresses them hard); the rest of the 755 MB is the Delta log and its checkpoints |
+
+**Run 2, the `backfill` line removed** (19:57 to 20:28 UTC, 31 minutes at 50/s, as the Oct 5 design had it). Void as the SLO run: the API refused 42,271 of the 90,000 Changes (`503`, `low_disk`; 77,397 refusals counting the generator's retries) and accepted 46,050.
+
+| | |
+|---|---|
+| The store on disk | 755 MB at the start, 10.9 GB after 8 minutes; free space 18.6 GiB to 5.1 GiB at 20:05, when the refusals began |
+| MERGE commits in the 31 minutes | 4,775 (155 a minute, p50 9 Changes each): each removed p50 7 files / 10.8 MB (p90 20 MB, max 25 MB) and added the same, copying about 78,000 rows to update 7; 55 GB written and left dead |
+| Why they stay | `LOG_RETENTION_HOURS = 1`: maintenance vacuums nothing younger than an hour, and the 7d.2a MERGE measurement (cost b) showed each MERGE coalescing a partition's files into one, so every later MERGE on that partition rewrites all of it |
+| Vacuums during the run | maintenance's 4 (`VACUUM END`) and 11 by hand at retention 0 from a watcher under 7 GiB free (each reported a commit conflict with the writers but freed 5 to 10 GB), after which the API accepted again, so the run alternated between accepting and refusing |
+| Over the accepted Changes (`metrics --since 35m`, 80,099 Changes including run 1's tail) | freshness p50 2.8 s, **p99 51.7 s**; stale 0.6% (the generator's retries after a `503` land behind a newer `source_version`), conflict 0, failed 0; `classify_ms` p50 221 ms over calls of about 14 Listings, p99 4.9 s; utilization 0.69; lag 0 commits on every partition; 2 `tick_failed` (`CommitFailedError`, retried); Uncategorized 0 |
+| Request latency at the API | p50 97 ms, p99 1,372 ms, max 7.9 s |
+
+**Verdict: a new plan row (7f).** The SLO held on every Change the API accepted (p99 52 s against the 300 s line), but at 50/s on 1M rows the MERGE churn under the one-hour vacuum floor needs about 100 GB of headroom an hour, and this Mac's guard trips in 8 minutes: the disk-guard scenario, uninvited. 7d.2a's cost (b) measured one MERGE's time and file share and called it fine; its disk side at 50/s is what breaks. Run 3 is the 10k bulk below, after the reset the spec asks for.
+
+## 7d.2b, point 4: the 10k bulk on the student
+
+After a reset (`rm -rf data/landing_log data/listing_store data/events data/export data/snapshots state`), the shipped `Procfile` (`--classifier student`, the `backfill` line back): one `catalog.load --changes 10000 --batch 10000 --rate 0 --processes 1`.
+
+| | |
+|---|---|
+| The batch | accepted in one request, 249 ms; 10,000 `202` |
+| Settled | 94 s from the request to the 10,000th Outcome; freshness p50 71.2 s, p99 92.6 s; 0 stale, conflict or failed; Uncategorized 0 |
+| A worker's full 1,000-Change batch | 34.2 to 37.7 s (`batch`), of which `classify` 34.0 to 37.3 s, with all four workers embedding at once; the half batches at the end 19 s. Against the 60 s heartbeat: under, at 58 to 63% of it |
+| One worker alone, measured by hand with nothing else running | 1,000 Listings in 9.0 s (9.0 ms a Listing), 256 in 2.4 s |
+| The machine's throughput | the four together classify 4,000 Listings in 35 s: about 110 a second, the same work shared over the 10 cores (each ONNX session uses them all). A 1M bulk is about 2.5 hours of classification (Jev: 3.5 hours at 80 calls/s and about $62); the 50/s SLO load takes about 45% of it |
+| Disk | 20 GiB free before, 19 after |
+
+**Verdict: fine at this size.** The batch stays under the heartbeat with four workers; a rescale to eight during a bulk would not (about 70 s each), and the knob is the one `student.py`'s note names, fastembed's `threads` per worker, so that a worker's embedding can't be stretched by its siblings. The batch budget the spec deferred (6m.1 point 2) stays deferred: the heartbeat, not a budget, is the line, and the measurement says where it is.
 
 ## The Phase 7 exit
 
-Open. The exit (every scenario ends with the three oracles passing, and p99 freshness under 5 minutes at 50/s) is measured on the student, in 7d.2b. What 7d.2a settles: the 1M load lands and drains cleanly at 24 times the target rate with no stale, conflict or failed Outcomes; five of the six deferred costs are fine at this size and need no fix; one, the 24 h metrics window, gets a plan row (events straight into DuckDB). The chaos scenarios pass at low rate on every PR (`stress-smoke`, 7d.1).
+**Open, blocked by plan row 7f.** What 7d.2b settles: on the student, every accepted Change at 50/s had freshness p99 52 s and the 10k bulk p99 92.6 s, both well under the 5-minute line, with 0 conflict, 0 failed, 0 lag and nothing Uncategorized, and the Backfill over 1M rows is a 13-hour job bounded by the workers' batch time. What it doesn't settle: a 30-minute SLO run at 50/s on the 1M store cannot complete on this Mac as shipped, because the MERGE churn (cost b's disk side, 1.7 GB a minute held an hour by the vacuum floor) trips the API's 5 GiB guard within 8 minutes. The exit is decided by rerunning point 3 after 7f, on this store or a fresh 1M load. The chaos scenarios pass at low rate on every PR (`stress-smoke`, 7d.1). What 7d.2a settled stands: the 1M load lands and drains cleanly; five of the six costs are fine at this size; `catalog.metrics` over 24 h gets plan row 7e.
+
+State after this step: the 1M store is gone (the reset before the bulk); `data/` holds the 10k bulk's tables and events; `models/` is a symlink to the main checkout's, which now holds the student. Logs and the raw numbers (timings, metrics JSON, the Delta-log and event analyses) are under `.stress/7d2b/`, untracked.

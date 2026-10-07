@@ -10,6 +10,14 @@ from catalog import classify, evaluate, student
 from catalog.taxonomy import Taxonomy
 
 TAX = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
+
+
+@pytest.fixture(autouse=True)
+def tiny_support(monkeypatch):
+    """The report's τ needs MIN_KEPT held-out rows behind it (step-6m.md); toy sets have 3."""
+    monkeypatch.setattr(student, "MIN_KEPT", 1)
+
+
 CLUSTERS = {"Apparel": [1.0, 0.0], "Apparel > Shirts": [0.0, 1.0], "Toys": [-1.0, -1.0]}
 
 
@@ -96,7 +104,7 @@ def test_cascade_splits_at_tau():
 
 def test_pick_tau_is_the_lowest_threshold_whose_kept_answers_reach_the_target():
     scored = [("A", 0.9, True), ("B", 0.8, True), ("C", 0.4, False), ("D", 0.2, False)]
-    assert student.pick_tau(scored, target=0.75, grid=[0.0, 0.3, 0.5, 0.85]) == 0.5
+    assert student.pick_tau(scored, target=0.75, grid=[0.0, 0.3, 0.5, 0.85], min_kept=1) == 0.5
 
 
 # 4. The vector cache
@@ -153,12 +161,12 @@ def test_cascade_keeps_a_confidence_equal_to_tau():
 
 def test_pick_tau_accepts_a_kept_rate_equal_to_the_target():
     scored = [("A", 0.9, True), ("B", 0.4, False)]
-    assert student.pick_tau(scored, target=0.5, grid=[0.0, 0.5]) == 0.0
+    assert student.pick_tau(scored, target=0.5, grid=[0.0, 0.5], min_kept=1) == 0.0
 
 
 def test_pick_tau_is_none_when_no_threshold_reaches_the_target():
-    assert student.pick_tau([("A", 0.9, False)], target=0.5, grid=[0.0, 0.5]) is None
-    assert student.pick_tau([], target=0.5, grid=[0.0]) is None
+    assert student.pick_tau([("A", 0.9, False)], target=0.5, grid=[0.0, 0.5], min_kept=1) is None
+    assert student.pick_tau([], target=0.5, grid=[0.0], min_kept=1) is None
 
 
 def test_a_truncated_cache_file_is_recomputed(tmp_path):
@@ -343,9 +351,14 @@ def test_main_download_fetches_the_finetuned_student_and_stops(tmp_path, monkeyp
 
     monkeypatch.setattr(student, "embedder", embedder)
     monkeypatch.setattr(student, "load_head", load_head)
+    monkeypatch.setattr(student, "build_index", lambda tax, embed, rev, models: calls.append(rev))
     monkeypatch.setattr(student, "report", lambda *_, **__: pytest.fail("no report"))
     student.main(["--models", str(tmp_path), "--download"])
-    assert calls == [True, ("d" * 40, True)]  # the head at the encoder's revision
+    assert calls == [
+        True,
+        ("d" * 40, True),
+        "d" * 40,
+    ]  # the head and the index at the encoder's revision
 
 
 # docs/specs/step-6l.3.md: the fine-tuned student
@@ -462,6 +475,8 @@ def hub_cache(models: Path, rev: str, head: student.Softmax | None = None) -> Pa
     snapshot = repo / "snapshots" / rev
     (snapshot / "onnx").mkdir(parents=True)
     (snapshot / "onnx" / "model_quantized.onnx").write_bytes(b"onnx")
+    for name in student.FILES:
+        (snapshot / name).write_text("{}")
     if head:
         head.save(snapshot / student.HEAD)
     (repo / "refs").mkdir()
@@ -473,20 +488,20 @@ def test_the_head_is_loaded_from_the_encoders_revision(tmp_path):
     # review round 1: encoder and head from the same Hub commit, and the revision names the cache
     old, new = "a" * 40, "b" * 40
     hub_cache(tmp_path, new, fake_head())
-    assert student.revision(tmp_path) == new
     assert student.load_head(tmp_path, revision=new).classes == fake_head().classes
     with pytest.raises(classify.ModelMissing, match="catalog.student --download") as e:
         student.load_head(tmp_path, revision=old)
     assert e.value.__cause__ is not None and "(" in str(e.value)  # the cause is in the message
-    assert student._name(new) == "student-ft@bbbbbbbbbbbb"
+    assert student._name(new) == "student-ft@bbbbbbbbbbbb-int8"
 
 
 def test_a_missing_finetuned_encoder_names_the_students_download(tmp_path, monkeypatch):
     # review round 1: classify's hint would refetch bge-small, not the fine-tuned encoder
-    def missing(models, model, *, download):
+    def missing(models, model, **kwargs):
         raise classify.ModelMissing(f"{model} won't load: {classify.DOWNLOAD}") from ValueError("x")
 
     monkeypatch.setattr(classify, "fastembed", missing)
+    hub_cache(tmp_path, student.FT_REVISION)  # the files are there; the encoder won't load
     with pytest.raises(classify.ModelMissing, match="catalog.student --download") as e:
         student.embedder(tmp_path)
     assert "catalog.classify --download" not in str(e.value) and "ValueError" in str(e.value)
@@ -515,6 +530,121 @@ def test_finetuned_wires_the_head_into_the_ft_candidate_only(tmp_path, monkeypat
     monkeypatch.setattr(student, "load_head", lambda models, revision: (revision, head)[1])
     monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
     ft = student.finetuned(TAX, tmp_path, "ft")
-    assert ft.model is head and ft.taxonomy_version.endswith("+student-ft@cccccccccccc+student-ft")
+    assert ft.model is head
+    assert ft.taxonomy_version.endswith("+student-ft@cccccccccccc-int8+student-ft")
     knn = student.finetuned(TAX, tmp_path, "ft-knn")
     assert isinstance(knn.model, student.Knn)
+
+
+# docs/specs/step-6m.md: the student in the pipeline
+
+REV = student.FT_REVISION
+
+
+def test_the_index_round_trips_and_is_unit_vectors(tmp_path, monkeypatch):
+    # 6m test point 1
+    monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
+    path = student.build_index(TAX, fake_embed, REV, tmp_path)
+    assert path == tmp_path / "student" / f"index-{REV[:12]}-int8.npz"
+    x, y = student.load_index(path, TAX, width=2)
+    assert x.shape == (6, 2) and x.dtype == np.float32 and np.allclose(np.linalg.norm(x, axis=1), 1)
+    assert y == [r["category"] for r in FT_ROWS]
+
+
+def test_a_bad_index_names_the_download(tmp_path):
+    # 6m test point 1: missing, truncated, the wrong shape, not finite
+    path = tmp_path / "index.npz"
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+        student.load_index(path, TAX, width=2)
+    path.write_bytes(b"PK\x03\x04")
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+        student.load_index(path, TAX, width=2)
+    np.savez(path, x=np.ones((2, 3), np.float32), y=np.array(["Toys", "Toys"]))
+    with pytest.raises(classify.ModelMissing, match="width 2"):
+        student.load_index(path, TAX, width=2)
+    np.savez(path, x=np.array([[np.nan, 1.0]], np.float32), y=np.array(["Toys"]))
+    with pytest.raises(classify.ModelMissing, match="finite"):
+        student.load_index(path, TAX, width=2)
+    np.savez(path, x=np.ones((2, 2), np.float32), y=np.array(["Toys"]))  # x and y disagree
+    with pytest.raises(classify.ModelMissing):
+        student.load_index(path, TAX, width=2)
+
+
+def test_an_index_label_outside_the_taxonomy_is_refused_by_name(tmp_path):
+    path = tmp_path / "index.npz"
+    np.savez(path, x=np.ones((1, 2), np.float32), y=np.array(["Kites"]))
+    with pytest.raises(ValueError, match="Kites"):
+        student.load_index(path, TAX, width=2)
+
+
+def test_the_pipeline_classifier_answers_every_listing_from_the_index(tmp_path, monkeypatch):
+    # 6m test point 2: a path and a confidence for every Listing, in order, in chunks
+    calls = []
+
+    def embed(texts):
+        calls.append(len(texts))
+        return fake_embed(texts)
+
+    monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
+    monkeypatch.setattr(student, "embedder", lambda models: (embed, REV))
+    student.build_index(TAX, fake_embed, REV, tmp_path)
+    c = student.pipeline(TAX, tmp_path)
+    assert c.classify([]) == []
+    got = c.classify([listing(title="Red shirt"), listing(title="Wooden train")])
+    assert [a[0] for a in got] == ["Apparel > Shirts", "Toys"]
+    assert all(0 <= a[1] <= 1 for a in got)
+    calls.clear()
+    batch = [listing(title="shirt" if i % 2 else "train") for i in range(600)]
+    got = c.classify(batch)
+    assert len(got) == 600 and max(calls) <= student.CHUNK and sum(calls) == 600
+    assert [a[0] for a in got[:2]] == ["Toys", "Apparel > Shirts"]
+    assert all(a is not None and a[0] != classify.UNCATEGORIZED for a in got)
+    assert c.taxonomy_version == student.version(TAX.version, REV)
+    assert isinstance(c.model, student.Knn) and c.model.k == student.K
+
+
+def test_the_pipeline_needs_the_index(tmp_path, monkeypatch):
+    monkeypatch.setattr(student, "embedder", lambda models: (fake_embed, REV))
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+        student.pipeline(TAX, tmp_path)
+
+
+def test_the_version_names_every_setting(tmp_path, monkeypatch):
+    # 6m test point 3
+    v = student.version("shopify-2026-08", "a" * 40)
+    assert v.startswith("shopify-2026-08+student-ft-knn@aaaaaaaaaaaa+int8+k5+train-")
+    assert len(v.rpartition("-")[2]) == 8
+    assert student.version("shopify-2026-08", "b" * 40) != v
+    monkeypatch.setattr(student, "ONNX", "onnx/model.onnx")
+    assert "+fp32+" in student.version("shopify-2026-08", "a" * 40)
+    monkeypatch.setattr(student, "ONNX", "onnx/model_quantized.onnx")
+    monkeypatch.setattr(student, "K", 7)
+    assert "+k7+" in student.version("shopify-2026-08", "a" * 40)
+    monkeypatch.setattr(student, "K", 5)
+    other = tmp_path / "rows.jsonl"
+    other.write_text("{}\n")
+    monkeypatch.setattr(student, "TRAIN", (other,))
+    assert student.version("shopify-2026-08", "a" * 40) != v  # the training data is in it
+
+
+def test_pick_tau_needs_min_kept_rows_behind_it():
+    # 6m test point 5: the 6l.2b review's deferral
+    scored = [("A", 0.9, True), ("B", 0.8, True), ("C", 0.4, False), ("D", 0.2, False)]
+    grid = [0.0, 0.3, 0.5, 0.85]
+    assert student.pick_tau(scored, target=0.6, grid=grid, min_kept=1) == 0.3
+    assert student.pick_tau(scored, target=0.6, grid=grid, min_kept=3) == 0.3
+    assert student.pick_tau(scored, target=0.6, grid=grid, min_kept=4) is None
+
+
+def test_report_prints_the_held_out_bands(tmp_path):
+    # 6m test point 5: the accuracy of the band just above each τ, so the knee is visible
+    evals, opus = write_eval(tmp_path)
+    body = student.report(
+        TAX, fake_embed, SOURCES, tmp_path / "cache", evals=evals, opus=opus, clock=ticking()
+    )
+    assert "Bands on the Amazon held-out rows (τ: right/rows): 1.00: 1/1" in body
+
+
+def test_bands_count_each_row_once():
+    scored = [("A", 0.9, True), ("B", 0.55, False), ("C", 0.5, True), ("D", 0.0, False)]
+    assert student.bands(scored, grid=[0.0, 0.5, 1.0]) == [(0.0, 1, 0), (0.5, 3, 2), (1.0, 0, 0)]

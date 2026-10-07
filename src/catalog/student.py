@@ -1,14 +1,18 @@
-"""The student prototype: a softmax head or kNN over bge-small vectors (docs/specs/step-6l.md).
+"""The student: kNN over bge-small vectors, frozen (docs/specs/step-6l.md) or fine-tuned
+(step-6l.3.md), and the pipeline's classifier (step-6m.md).
 
-Eval only. `evaluate run --classifier student-softmax` (or `student-knn`) scores a student
-trained on `train/`; `python -m catalog.student` writes `eval/student.md`: each student alone,
-then the cascade (the student where it is sure, Jev or Opus below a threshold) on the evals.
+`evaluate run --classifier student-softmax` (or `student-knn`, `student-ft`, `student-ft-knn`)
+scores a student trained on `train/`; `python -m catalog.student` writes `eval/student.md`: each
+student alone, then the cascade (the student where it is sure, Jev or Opus below a threshold).
+`python -m catalog.student --download` fetches the fine-tuned encoder and head at FT_REVISION and
+builds the index the workers' `--classifier student` loads: `pipeline()`.
 """
 
 import argparse
 import gzip
 import hashlib
 import json
+import math
 import random
 import sys
 import time
@@ -34,7 +38,12 @@ OUT = Path("eval/student.md")
 FT_MODEL = "student-ft"  # bge-small fine-tuned end-to-end by train/finetune.py (step-6l.3.md)
 FT_REPO = "Hien-Trinh/listing-student-ft"  # the public Hub repo the script pushes to
 HEAD = "head.npz"  # the linear head beside the ONNX encoder in that repo
-ONNX = "onnx/model_quantized.onnx"  # the encoder file the eval serves, as the workers do bge-small
+ONNX = "onnx/model_quantized.onnx"  # the encoder file served; step-6m.md point 8 picks int8 or fp32
+FT_REVISION = "1970ef96152e2390c0ae7e08d2ad1db7fd25fb91"  # the Hub commit the pipeline is pinned to
+# (the 6l.3 run); a retrain is a new constant, which is a new version
+FILES = ("config.json", "tokenizer.json", "tokenizer_config.json")  # fetched beside ONNX and HEAD
+K = 5  # the pipeline's kNN: the better k on both evals (step-6l.3.md)
+MIN_KEPT = 200  # held-out rows a τ needs behind it, so one or two rows can't choose it (6m)
 MARGIN = 0.03  # 6l.3's bar: the fine-tuned student alone beats kNN alone by this much
 DOWNLOAD = "run python -m catalog.student --download"
 EVALS = {  # label file, Jev's stored answers on it (step-6h.md / 6j), Opus's answers if any
@@ -152,16 +161,32 @@ def cascade(
 
 
 def pick_tau(
-    scored: Sequence[tuple[str, float, bool]], *, target: float, grid=TAUS
+    scored: Sequence[tuple[str, float, bool]],
+    *,
+    target: float,
+    grid=TAUS,
+    min_kept: int | None = None,
 ) -> float | None:
-    """The lowest threshold whose kept answers (label, confidence, right) are right at least
-    `target` of the time (below it, the student would do worse than the fallback's average);
-    None if no threshold gets there."""
+    """The lowest threshold that keeps at least `min_kept` answers (label, confidence, right)
+    and whose kept answers are right at least `target` of the time (below it, the student would
+    do worse than the fallback's average); None if no threshold gets there."""
+    least = max(MIN_KEPT if min_kept is None else min_kept, 1)
     for tau in grid:
         kept = [right for _, c, right in scored if c >= tau]
-        if kept and sum(kept) / len(kept) >= target:
+        if len(kept) >= least and sum(kept) / len(kept) >= target:
             return tau
     return None
+
+
+def bands(scored: Sequence[tuple[str, float, bool]], *, grid=TAUS) -> list[tuple[float, int, int]]:
+    """Per grid step, (τ, rows, right) of the answers with a confidence in [τ, the next step):
+    how good the student is just above each threshold, so the knee shows."""
+    out = []
+    for i, tau in enumerate(grid):
+        upper = grid[i + 1] if i + 1 < len(grid) else math.inf
+        band = [right for _, c, right in scored if tau <= c < upper]
+        out.append((tau, len(band), sum(band)))
+    return out
 
 
 def amazon(scored: Sequence, held: Sequence[dict]) -> list:
@@ -231,15 +256,23 @@ class StudentClassifier:
         return cls(embed, fitted, version)
 
     def classify(self, listings: Sequence[Content]) -> list[tuple[str, float]]:
+        """A path and a confidence for every Listing: never None, never Uncategorized (no
+        threshold, step-6m.md). Embedded in chunks, each one ONNX run that releases the GIL."""
         if not listings:
             return []
-        x = unit(np.asarray(self.embed([_text(x.title, x.description) for x in listings])))
+        texts = [_text(x.title, x.description) for x in listings]
+        x = unit(
+            np.vstack(
+                [np.asarray(self.embed(texts[i : i + CHUNK])) for i in range(0, len(texts), CHUNK)]
+            )
+        )
         return self.model.predict(x)
 
 
 def embedder(models: Path, *, download: bool = False) -> tuple[Callable, str]:
-    """An `embed` over the fine-tuned encoder, fetched from the Hub like bge-small, and the Hub
-    revision it came from: the head is pinned to it, and it names the vectors in the cache."""
+    """An `embed` over the fine-tuned encoder at FT_REVISION, the Hub commit the pipeline is
+    pinned to (fetched into `models` when `download`, like bge-small), and that revision: it
+    names the head, the index and the vectors in the cache."""
     from fastembed import TextEmbedding
     from fastembed.common.model_description import ModelSource, PoolingType
 
@@ -252,20 +285,18 @@ def embedder(models: Path, *, download: bool = False) -> tuple[Callable, str]:
             dim=384,
             model_file=ONNX,
         )
+    for name in (*FILES, ONNX):
+        path = _hub_file(models, name, revision=FT_REVISION, download=download)
+    snapshot = Path(path).parents[1]  # .../snapshots/<revision>/onnx/<file>
     try:
-        embed = classify.fastembed(models, FT_MODEL, download=download)
+        embed = classify.fastembed(models, FT_MODEL, specific_model_path=str(snapshot))
     except (
         classify.ModelMissing
     ) as e:  # its hint names classify's download, which fetches bge-small
         raise classify.ModelMissing(
-            f"{FT_MODEL} won't load from {models} ({e.__cause__!r}): {DOWNLOAD}"
+            f"{FT_MODEL} won't load from {snapshot} ({e.__cause__!r}): {DOWNLOAD}"
         ) from e
-    return embed, revision(models)
-
-
-def revision(models: Path) -> str:
-    """The Hub commit of the downloaded encoder (the snapshot directory fastembed filled)."""
-    return Path(_hub_file(models, ONNX)).parents[1].name
+    return embed, FT_REVISION
 
 
 def load_head(models: Path, *, revision: str | None = None, download: bool = False) -> Softmax:
@@ -296,7 +327,85 @@ def finetuned(tax, models: Path, kind: str) -> StudentClassifier:
 
 
 def _name(rev: str) -> str:
-    return f"{FT_MODEL}@{rev[:12]}"
+    """Names the encoder (revision and file) for the vector cache and the eval's version."""
+    return f"{FT_MODEL}@{rev[:12]}-{tag()}"
+
+
+def tag() -> str:
+    return "int8" if "quantized" in ONNX else "fp32"
+
+
+# The pipeline (step-6m.md): the index the workers load, and the classifier over it.
+
+
+def index_path(models: Path, rev: str) -> Path:
+    return models / "student" / f"index-{rev[:12]}-{tag()}.npz"
+
+
+def build_index(tax, embed: Callable, rev: str, models: Path) -> Path:
+    """Every row of `train/` through the encoder: `x` (unit vectors) and `y` (its labels), whole
+    or not at all. About 5 minutes on the Mac, once, by `--download`; a worker only loads it."""
+    rows = load_training()
+    if bad := sorted({r["category"] for r in rows} - set(tax.paths)):
+        raise ValueError(f"training labels not in the taxonomy: {bad[:5]}")
+    x = vectors(
+        [_text(r["title"], r["description"]) for r in rows],
+        embed,
+        models / "student",
+        model=_name(rev),
+    )
+    path = index_path(models, rev)
+    with state.atomic(path) as f:
+        np.savez(f, x=x.astype(np.float32), y=np.array([r["category"] for r in rows]))
+    return path
+
+
+def load_index(path: Path, tax, *, width: int) -> tuple[np.ndarray, list[str]]:
+    """The index, or ModelMissing naming the download; a label the taxonomy lacks is a
+    ValueError naming it (the taxonomy changed under the student: retrain)."""
+    try:
+        with np.load(path) as f:
+            x, y = f["x"], [str(c) for c in f["y"]]
+    except Exception as e:  # missing, truncated, not an npz, a field missing
+        raise classify.ModelMissing(f"no usable student index at {path} ({e!r}): {DOWNLOAD}") from e
+    if not (
+        isinstance(x, np.ndarray)
+        and x.ndim == 2
+        and np.issubdtype(x.dtype, np.floating)
+        and x.shape == (len(y), width)
+    ):
+        shape = getattr(x, "shape", None)
+        raise classify.ModelMissing(
+            f"{path} doesn't hold {len(y)} vectors of width {width} (shape {shape}): {DOWNLOAD}"
+        )
+    if not np.isfinite(x).all():
+        raise classify.ModelMissing(f"{path} holds vectors that aren't finite: {DOWNLOAD}")
+    if bad := sorted(set(y) - set(tax.paths)):
+        raise ValueError(f"the student index holds labels not in {tax.version}: {bad[:5]}")
+    return x, y
+
+
+def train_hash(paths: Sequence[Path] | None = None) -> str:
+    """Names the training files' bytes, the index's input, in the version."""
+    h = hashlib.sha256()
+    for path in TRAIN if paths is None else paths:
+        h.update(path.read_bytes())
+    return h.hexdigest()[:8]
+
+
+def version(taxonomy_version: str, rev: str = FT_REVISION) -> str:
+    """Every setting that changes an answer, so changing one reclassifies (step-6f.md, 6):
+    the taxonomy, the encoder's Hub revision and file, k, and the training data."""
+    return f"{taxonomy_version}+{FT_MODEL}-knn@{rev[:12]}+{tag()}+k{K}+train-{train_hash()}"
+
+
+def pipeline(tax, models: Path) -> StudentClassifier:
+    """The workers' `--classifier student`: kNN (K) over the index, the encoder at FT_REVISION,
+    nothing embedded at start (step-6f.md, 6f.3)."""
+    embed, rev = embedder(models)
+    width = np.asarray(embed(["probe"])).shape[1]
+    x, y = load_index(index_path(models, rev), tax, width=width)
+    return StudentClassifier(embed, Knn(x, y, K), version(tax.version, rev))
 
 
 def beats_knn(alone: float, curve, knn_alone: float, knn_point) -> bool:
@@ -466,7 +575,10 @@ def report(
             f"## {name}",
             "",
             f"Held-out exact {acc:.1%}; {_tau(tau)} on the Amazon held-out rows "
-            f"({_tau(tau_all)} on all of them).{note}",
+            f"({_tau(tau_all)} on all of them), a τ needing {MIN_KEPT} kept rows behind it.{note}",
+            "",
+            "Bands on the Amazon held-out rows (τ: right/rows): "
+            + ", ".join(f"{t:.2f}: {r}/{n}" for t, n, r in bands(amazon(scored, held)) if n),
             "",
         ]
         for eval_name, (_, fallback_paths) in evals.items():
@@ -540,12 +652,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     p.add_argument("--models", type=Path, default=classify.MODELS)
     p.add_argument("--out", type=Path, default=OUT)
     p.add_argument(
-        "--download", action="store_true", help="fetch the fine-tuned student from the Hub and stop"
+        "--download",
+        action="store_true",
+        help="fetch the fine-tuned student from the Hub, build the workers' index, and stop",
     )
     a = p.parse_args(argv)
     if a.download:
-        _, rev = embedder(a.models, download=True)
+        embed, rev = embedder(a.models, download=True)
         load_head(a.models, revision=rev, download=True)  # the head of the encoder just fetched
+        build_index(taxonomy.load(), embed, rev, a.models)  # and the workers' index over it
         return
     embed = classify.fastembed(a.models)
     try:

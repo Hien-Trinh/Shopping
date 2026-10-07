@@ -346,3 +346,12 @@ def test_download_builds_the_cache_the_worker_loads(tmp_path, monkeypatch):
     classify.main(["--download", "--models", str(tmp_path)])
     loaded = jev.shortlist(taxonomy.load(), fake, tmp_path / "texts")  # what the worker does
     assert loaded._paths.shape == (len(loaded.texts), 3)
+
+
+def test_the_student_kind_version_needs_no_model(monkeypatch):  # step-6m.md, test point 3
+    from catalog import classify, student, taxonomy
+
+    assert classify.KINDS.index("student") < classify.KINDS.index("down")  # down stays last
+    expected = student.version(taxonomy.load().version, student.FT_REVISION)
+    assert classify.taxonomy_version("student") == expected
+    assert "+student-ft-knn@" in expected and "jev" not in expected

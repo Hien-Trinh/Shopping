@@ -20,7 +20,11 @@ import numpy as np
 from catalog import classify, entry, evaluate, state, taxonomy
 from catalog.envelope import Content
 
-TRAIN = (Path("train/shopify.jsonl.gz"), Path("train/amazon-opus.jsonl"))
+TRAIN = (
+    Path("train/shopify.jsonl.gz"),
+    Path("train/amazon-opus.jsonl"),
+    Path("train/amazon-opus-2.jsonl"),
+)
 DESCRIPTION = 200  # description characters after the title, as Jev reads them (step-6f.md)
 CHUNK = 256  # rows per embed call and per kNN similarity block
 KS = (5, 10, 20, 50)

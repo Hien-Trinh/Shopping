@@ -1,5 +1,7 @@
 """The student prototype (docs/specs/step-6l.md, test points 1-5)."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from support import listing
@@ -185,6 +187,14 @@ def test_held_out_takes_ten_percent_of_each_source():
     assert sum(r["title"][0] == "a" for r in held) == 10
     assert sum(r["title"][0] == "b" for r in held) == 2
     assert len(fit) == 108
+
+
+def test_training_reads_the_second_amazon_file():
+    # docs/specs/step-6l.2.md, test point 1
+    path = Path("train/amazon-opus-2.jsonl")
+    assert path in student.TRAIN
+    rows = student.load_training([path])
+    assert len(rows) > 8000 and all("amazon_category" in r for r in rows)
 
 
 def test_tau_is_picked_on_the_amazon_rows_only():

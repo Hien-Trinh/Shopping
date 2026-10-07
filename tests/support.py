@@ -30,6 +30,12 @@ def reclassify(mpid, merchant="m_1") -> Change:
     return Change(merchant, mpid, 0, "reclassify")
 
 
+def poison(mpid, sv, **bad) -> Change:
+    """An upsert whose content slipped past validation: storing it fails on the data itself."""
+    content = Content.model_construct(**listing().model_dump() | (bad or {"price_micros": "free"}))
+    return Change("m_1", mpid, sv, "upsert", content)
+
+
 def classified(category="Apparel > Shirts", taxonomy=TAX, needs_reclassify=False) -> Classification:
     return Classification(category, 0.9, taxonomy, needs_reclassify)
 

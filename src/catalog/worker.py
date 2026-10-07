@@ -1,7 +1,8 @@
 """Ingestion worker: batches from the Landing log to the Listing Store (design doc, lifecycle).
 
-A batch: read -> plan -> classify -> one conditional MERGE -> events -> offsets. Offsets are saved
-last, so a crash anywhere earlier replays the batch, which plan's rules make safe (at least once).
+A batch: read -> decide (plan, classify) -> one conditional MERGE -> events -> offsets. Offsets
+are saved last, so a crash anywhere earlier replays the batch, which plan's rules make safe (at
+least once).
 `run` loops batches over the partitions one worker owns, and bootstraps them when cleanup removed
 history they still needed (step-5e.md); `python -m catalog.worker` starts it.
 """
@@ -15,20 +16,16 @@ import threading
 import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from time import monotonic  # its own name: a test can time _classify alone
 
 from deltalake import DeltaTable
 
 from catalog import classify, delta, entry, jev, landing, state, store, taxonomy
-from catalog.classify import UNCATEGORIZED
+from catalog.decide import decide
 from catalog.events import EventLog, prepared
 from catalog.keys import owned, partition
 from catalog.landing import Batch, Landed, Position
-from catalog.plan import Classification, Outcome, Write, plan
-from catalog.status import FAILED
 
 
 def process_batch(
@@ -55,31 +52,17 @@ def process_batch(
 
 
 def _apply(store_dt, classifier, events: EventLog, landed: Sequence[Landed], now) -> None:
-    """Storability check, plan, classify, MERGE and Outcome events for Changes in replay order."""
-    # A Change whose data can't be stored fails alone, before planning, so the rest plan without it
-    # (design doc, lifecycle step 8). Any other error propagates: storage or a bug, never the data.
-    errors = store.unstorable([x.change.listing for x in landed])
-    good = [x for x, error in zip(landed, errors, strict=True) if error is None]
-    outcomes, notes = _merge(store_dt, good, classifier, now)
-    merged = iter(outcomes)
-    results = [{"type": FAILED, "error": error} if error else next(merged) for error in errors]
+    """Read, decide, one conditional MERGE, then the batch's events, for Changes in replay order."""
+    stored = store.read(store_dt, {x.change.key for x in landed})
+    decision = decide(landed, stored, classifier)  # storage errors and bugs propagate from here
+    merged = store.merge(store_dt, decision.writes, now())
+    if merged.applied != len(decision.writes):
+        parts = sorted({partition(*w.key) for w in decision.writes})
+        raise Overtaken(
+            f"MERGE applied {merged.applied} of {len(decision.writes)} rows (partitions {parts})"
+        )
     # Emitted only once the MERGE committed, so a retried batch doesn't repeat them.
-    events.emit(
-        [
-            *notes,
-            *(
-                {
-                    "submission_id": x.submission_id,
-                    "change_index": x.change_index,
-                    "merchant_id": x.change.merchant_id,
-                    "merchant_product_id": x.change.merchant_product_id,
-                    "partition": x.partition,
-                }
-                | result
-                for x, result in zip(landed, results, strict=True)
-            ),
-        ]
-    )
+    events.emit(decision.events(merged.version))
 
 
 def bootstrap(
@@ -356,93 +339,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     run(a.data, a.state, a.index, a.workers, classifier, stop=stop)
 
 
-_WRITES = {Outcome.WRITTEN, Outcome.RECLASSIFIED}
-
-
 class Overtaken(RuntimeError):
     """The MERGE applied fewer rows than planned: another writer got there first (ADR-0001)."""
-
-
-def _merge(store_dt, landed: Sequence[Landed], classifier, now) -> tuple[list[dict], list[dict]]:
-    """Event fields per Change, and batch-level events (classify_failed) to emit with them."""
-    changes = [x.change for x in landed]
-    stored = store.read(store_dt, {c.key for c in changes})
-    planned = plan(changes, stored, classifier.taxonomy_version)
-    writes, notes = _classify(planned.writes, classifier)
-    merged = store.merge(store_dt, writes, now())
-    if merged.applied != len(writes):
-        parts = sorted({partition(*w.key) for w in writes})
-        raise Overtaken(
-            f"MERGE applied {merged.applied} of {len(writes)} rows (partitions {parts})"
-        )
-    outcomes = [
-        {"type": o} | ({"store_version": merged.version} if o in _WRITES else {})
-        for o in planned.outcomes
-    ]
-    return outcomes, notes
-
-
-def _classify(writes: Sequence[Write], classifier) -> tuple[list[Write], list[dict]]:
-    """Classify the Writes that need it in one call; on any failure, or for those the classifier
-    didn't reach (answered None), they become Uncategorized.
-
-    Returns the Writes, a classify event (its size and time, for classify latency) and a
-    classify_failed one if any went unanswered.
-    """
-    todo = [w for w in writes if w.needs_classify]
-    if not todo:
-        return list(writes), []
-    version = classifier.taxonomy_version
-    started = monotonic()
-    try:
-        results = classifier.classify([w.listing for w in todo])
-        found = [
-            None if a is None else _answer(a, version) for _, a in zip(todo, results, strict=True)
-        ]
-        # for the Listings it answered None: a classifier may say why (jev.JevClassifier.error)
-        error = getattr(classifier, "error", None)
-        reason, error = ("error", error) if error else ("budget", "budget spent")
-    except jev.KeyMissing:  # a refused key: no batch can succeed, so stop (exit 7)
-        raise
-    except Exception as e:  # an outage or a bad answer: never stall the partition
-        found, reason = [None] * len(todo), "error"
-        error = repr(e)[:500]  # a provider error may echo listing text
-    ms = round((monotonic() - started) * 1000)
-    notes = [{"type": "classify", "listings": len(todo), "ms": ms}]
-    if missed := [w for w, f in zip(todo, found, strict=True) if f is None]:
-        notes.append({
-            "type": "classify_failed",
-            "listings": len(missed),
-            "partitions": sorted({partition(*w.key) for w in missed}),
-            "reason": reason,  # budget spent or an error: no matching on the error's text
-            "batch": len(todo),
-            "error": error,
-        })  # fmt: skip
-    # Keep an answer whose inputs haven't changed, else Uncategorized; either way flagged so
-    # the Backfill reclassifies it (design doc, lifecycle step 5).
-    found = [
-        f
-        or (
-            replace(w.fallback, needs_reclassify=True)
-            if w.fallback
-            else Classification(UNCATEGORIZED, 0.0, version, needs_reclassify=True)
-        )
-        for w, f in zip(todo, found, strict=True)
-    ]
-    answers = iter(found)
-    classified = [
-        replace(w, classification=next(answers), needs_classify=False) if w.needs_classify else w
-        for w in writes
-    ]
-    return classified, notes
-
-
-def _answer(answer, version: str) -> Classification:
-    category, confidence = answer
-    confidence = float(confidence)
-    if not (isinstance(category, str) and category and 0.0 <= confidence <= 1.0):  # NaN fails too
-        raise ValueError(f"bad classifier answer: {answer!r}")
-    return Classification(category, confidence, version)
 
 
 if __name__ == "__main__":

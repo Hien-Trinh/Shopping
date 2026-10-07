@@ -65,5 +65,6 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 [tool.mutmut]
 # Pure modules only (plan-v1.md, Testing rules); run with `make mutate`.
 source_paths = ["src/catalog/keys.py", "src/catalog/envelope.py", "src/catalog/plan.py", "src/catalog/replay.py", "src/catalog/status.py", "src/catalog/collapse.py"]
-pytest_add_cli_args_test_selection = ["tests/unit/"]
+# test_decide imports non-pure modules, which the mutants tree doesn't hold
+pytest_add_cli_args_test_selection = ["tests/unit/", "--ignore=tests/unit/test_decide.py"]
 also_copy = ["tests/"]

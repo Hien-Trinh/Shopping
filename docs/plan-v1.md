@@ -194,7 +194,7 @@ Merchant ─HTTP─▶ Ingestion API (1 process, async, group commit ≤100 ms)
                    │ load_cdf(since per-partition offset)
                    ▼
   Ingestion worker ×N (flock per partition, heartbeat, batch ≤1000/200 ms)
-    plan (pure) → classify batch (timeout) → conditional MERGE → events → offsets
+    decide: plan (pure) → classify batch (timeout) → conditional MERGE → events → offsets
                    ▼
              Listing Store (Delta, partitioned, CDF, tombstones forever)
                │ change feed since watermark          │ pinned-version copy
@@ -211,6 +211,7 @@ src/catalog/
   keys.py         Listing key encoding, stable hash, partition, owner(p, N)            [pure]
   envelope.py     pydantic models, limits, source_version ceiling, currency rule        [pure]
   plan.py         batch + stored rows → outcomes, merge rows, needs-classify set       [pure]  ← the heart
+  decide.py       a batch's decision: storability, plan, classify call, fallback, events (no I/O but the classifier)
   replay.py       the three oracles: store, export, snapshot                           [pure]
   status.py       events → Submission status fold                                     [pure]
   collapse.py     change-feed rows → latest row per key, tombstone → delete            [pure]
@@ -226,7 +227,7 @@ src/catalog/
   store.py        schema, read rows by keys, conditional MERGE, compact own partitions
   state.py        atomic offset/watermark files, partition flocks, heartbeat
   events.py       JSONL writer, event types
-  worker.py       loop + error policy (A6)
+  worker.py       loop + error policy (A6); a batch is read → decide → MERGE → events
   supervisor.py   runs the Procfile: restarts, heartbeat watchdog, fatal exits
   entry.py        how every standalone entry point exits (flush, os._exit)
   api.py          FastAPI app, auth, body cap, disk guard

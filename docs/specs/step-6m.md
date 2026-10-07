@@ -1,6 +1,6 @@
 # Step 6m: the student in the pipeline (mini PRD)
 
-Status: question 1 decided Oct 7: **τ = 0, the student replaces Jev**; questions 2 to 5 open (at the end). The Oct 7 draft proposed a cascade (the student first, Jev below a threshold); this version is the student alone, and the cascade is a later step. Plan row: [plan-v1.md, PR steps, 6m](../plan-v1.md). Builds on [step-6l.3.md](step-6l.3.md) (the fine-tuned student meets the bar; "for 6m" in its Outcome), [step-6l.2.md](step-6l.2.md) (the τ rule and its review's deferral), [step-6f.md](step-6f.md) (how Jev entered the pipeline: the kind, the version, the Procfile switch) and [docs/research/classifier-hosting-options.md](../research/classifier-hosting-options.md) (keep the classifier in-process). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 7. Question 1: **τ = 0, the student replaces Jev**. Question 2: measure (int8 against fp32, the rule in 6m.1 point 8). Question 3: the index built locally, downloads separate. Question 4: yes, plus the design doc's Runtime list line, which becomes "fastembed running the fine-tuned student (step 6m); Jev, the shortlist and Laya were the earlier choices". Question 5: the test points OK. The Oct 7 draft proposed a cascade (the student first, Jev below a threshold); this version is the student alone, and the cascade is a later step. Plan row: [plan-v1.md, PR steps, 6m](../plan-v1.md). Builds on [step-6l.3.md](step-6l.3.md) (the fine-tuned student meets the bar; "for 6m" in its Outcome), [step-6l.2.md](step-6l.2.md) (the τ rule and its review's deferral), [step-6f.md](step-6f.md) (how Jev entered the pipeline: the kind, the version, the Procfile switch) and [docs/research/classifier-hosting-options.md](../research/classifier-hosting-options.md) (keep the classifier in-process). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -43,7 +43,7 @@ The student alone beats Jev by 5.6 points on our Listings and matches it on the 
 ### 6m.2: the switch
 
 - `Procfile`: the `worker-*` and `backfill` lines say `--classifier student`; `chaos.procfile` rewrites them to `fake` (its `n == 4` / `n == 1` checks fail loudly if the lines change shape), so the e2e test and the chaos runner never load a model.
-- Design doc, Categorization: a sentence that step 6m replaces Jev with the student (question 4). Lifecycle step 5's timeout sentence gains the student's seconds.
+- Design doc, Categorization: a sentence that step 6m replaces Jev with the student (question 4). Lifecycle step 5's timeout sentence gains the student's seconds. The Runtime list's classifier line becomes "fastembed running the fine-tuned student (step 6m); Jev, the shortlist and Laya were the earlier choices".
 - Runbook: `TYPESAFE_API_KEY` is no longer needed to start; exit 6 names both downloads; exit 7 stays for the `jev` kind. README's Run section says what the workers classify with and the two downloads.
 - By hand: the supervisor on this Mac, 20 Listings through the API, the Listing Store shows their categories and versions, the events show `classify_ms`. The PR states the result. Then 7d.2b ([step-7d.md](step-7d.md), amended): the SLO run and the 10k bulk on the student.
 
@@ -96,10 +96,10 @@ Not in CI: the real student in a worker (no download in CI; 6m.2's hand run cove
 ## Questions
 
 1. **τ.** Decided Oct 7: **τ = 0, the student alone replaces Jev.** The cascade (the student first, Jev below τ; the Oct 7 draft's rule picked τ = 0.60 on the held-out rows: 75.2% at 80.0% kept on the 1,020, 65.6% on Shopify, about $12 per 1M) is a later step if wanted.
-2. **int8 or fp32.** Measure as in 6m.1 point 8 and ship fp32 only if it earns 1 point on the 1,020 at under twice the latency; int8 otherwise. OK, or ship int8 without the rerun (the measured bar) and leave fp32 as a later lever?
-3. **The index built locally by `student --download`** (decision 3), downloads kept separate from `classify --download` (point 9). OK?
-4. **The design doc** gets the step 6m sentence in Categorization and the student's seconds in lifecycle step 5's timeout sentence, as 6f added Jev's. OK?
-5. **The test points above.** OK?
+2. **int8 or fp32.** Measure as in 6m.1 point 8 and ship fp32 only if it earns 1 point on the 1,020 at under twice the latency; int8 otherwise. **Measure (Oct 7).**
+3. **The index built locally by `student --download`** (decision 3), downloads kept separate from `classify --download` (point 9). **Agreed (Oct 7).**
+4. **The design doc** gets the step 6m sentence in Categorization and the student's seconds in lifecycle step 5's timeout sentence, as 6f added Jev's. **Agreed (Oct 7), plus the Runtime list line:** "fastembed for the shortlist, TypeSafe Jev for the choice (step 6f)" becomes "fastembed running the fine-tuned student (step 6m); Jev, the shortlist and Laya were the earlier choices".
+5. **The test points above.** **OK (Oct 7).**
 
 ## Out of scope
 

@@ -1,6 +1,6 @@
 # Step 6l.2: 8k more Amazon Listings labeled by Opus, then the student again (mini PRD)
 
-Status: approved Oct 6. Question 1: the usage OK. Question 2: τ from the held-out Amazon rows only. Question 3: the test points OK. Plan row: [plan-v1.md, PR steps, 6l.2](../plan-v1.md). Builds on [step-6l.md](step-6l.md) (the student; its bar is not met), [step-6k.md](step-6k.md) (6k.2, the first 2k Opus labels) and [docs/labeling.md](../labeling.md) (the method). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 6 (see the two Outcomes); approved Oct 6. Question 1: the usage OK. Question 2: τ from the held-out Amazon rows only. Question 3: the test points OK. Plan row: [plan-v1.md, PR steps, 6l.2](../plan-v1.md). Builds on [step-6l.md](step-6l.md) (the student; its bar is not met), [step-6k.md](step-6k.md) (6k.2, the first 2k Opus labels) and [docs/labeling.md](../labeling.md) (the method). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -68,6 +68,29 @@ In `tests/integration/test_student.py`:
 - **Changed:** 292 labels (240 unsure, 50 of the 55 above level 3, 2 random, 0 subscription). 7 final `none` rows dropped.
 - **Error rate:** 2 of the 100 random sure labels changed, so about 2% among the sure labels (95% interval about 0.5–7%).
 - **Committed:** `train/amazon-opus-2.jsonl`, 8,078 rows over 790 Categories; [docs/labeling.md](../labeling.md) records the run.
+
+## Outcome, 6l.2b (Oct 6)
+
+**The bar is met on the 1,020** by kNN (k=10, picked on the held-out rows; 6l had k=5). Full curves: [eval/student.md](../../eval/student.md).
+
+| On the 1,020 (exact) | Kept local | System |
+|---|---|---|
+| Jev alone | 0% | 66.9% |
+| kNN alone (6l: 52.3%) | 100% | 65.7% |
+| kNN, Jev below τ = 0.20 (lowest τ that meets the bar) | 94.4% | 67.8% |
+| kNN, Jev below τ = 0.25 (the τ picked on the Amazon held-out rows) | 83.7% | **70.0%** |
+| kNN, Jev below τ = 0.35 | 69.8% | 72.1% |
+| kNN, Opus below τ = 0.25 | 83.7% | 74.9% |
+| Softmax alone (6l: 47.5%) | 100% | 57.2% |
+| Opus alone (the teacher) | 0% | 86.7% |
+
+- **The 8k Amazon rows close most of the gap:** kNN alone went from 52.3% to 65.7% exact (top level 72.4% to 83.6%). The cascade now beats Jev at every τ from 0.20 up, peaking at 72.9% with 52% kept. It is still 16.7 points under the teacher at the chosen τ.
+- **The softmax head** improved (47.5% to 57.2%) but misses the bar; kNN stays the student for 6m.
+- **The τ rule:** on the Amazon held-out rows (1,007 of 4,150) kNN's τ is 0.25, the same as on all held-out rows; softmax's is 0.15 against 0.25. For kNN the chosen τ lands on the curve where the bar is met.
+- **On Shopify's 2,000 it is not met:** 60.9% at 73.5% kept against Jev's 61.8%; the student alone is 55.0% (6l: 55.2%). The new rows help our Listings, not Shopify's.
+- **Leakage check:** besides the exact-title drop, 15 of the 1,020 titles (1.5%) share their first 40 normalized characters with a training title, mostly Amazon gift cards and subscription-box variants. Even all 15 counted as wins is under half the 3.1-point margin (about 32 Listings).
+- **A caveat for 6m:** the 1,020's labels are Claude-made (the 198 drafted by Claude and checked, the 822 by Sonnet), and the student now learns from 10k Opus labels, so a shared labeling style may favor the student over Jev on this eval. The Shopify 2,000 (Shopify's own labels) shows no gain.
+- **Speed:** kNN p50 12.5 ms, p99 18.2 ms. The softmax p99 (267 ms on the 1,020) is an artifact: the run was paused partway.
 
 ## Out of scope
 

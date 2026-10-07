@@ -10,11 +10,11 @@ from datetime import UTC, datetime
 
 import pyarrow as pa
 import pytest
-from support import delete, listing, product_in, reclassify, up
+from support import delete, listing, poison, product_in, reclassify, up
 
 from catalog import events, jev, landing, state, store, supervisor, worker
 from catalog.classify import UNCATEGORIZED, FakeClassifier
-from catalog.envelope import Change, Content
+from catalog.envelope import Change
 from catalog.events import EventLog
 from catalog.keys import PARTITIONS
 from catalog.landing import START
@@ -25,13 +25,7 @@ NOW = datetime(2026, 9, 30, 12, tzinfo=UTC)
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")  # pydantic, on poison content
 
 
-def poison(mpid, sv, **bad) -> Change:
-    """An upsert whose content slipped past validation: storing it fails on the data itself."""
-    content = Content.model_construct(**listing().model_dump() | (bad or {"price_micros": "free"}))
-    return Change("m_1", mpid, sv, "upsert", content)
-
-
-def is_poison(c: Change) -> bool:  # the default poison above
+def is_poison(c: Change) -> bool:  # support.poison's default
     return c.listing is not None and c.listing.price_micros == "free"
 
 
@@ -119,81 +113,6 @@ def test_classifier_failure_marks_uncategorized_then_backfill_fixes_it(tmp_path)
     assert env.outcomes("backfill") == {1: "reclassified"}
 
 
-def category(env, mpid):
-    return store.read(env.store, [("m_1", mpid)])[("m_1", mpid)].classification
-
-
-def test_answers_go_to_their_own_listings(env):
-    env.land(up(A, 1, listing("Shirt")), up(B, 1, listing("Hat")))
-    env.run()
-    assert (category(env, A).category, category(env, B).category) == ("Fake > S", "Fake > H")
-
-
-@pytest.mark.parametrize(
-    "answer",
-    [[], [("Fake > S", 0.9)] * 2, [(None, 0.5)], [("", 0.5)], [("x", float("nan"))], [("x", 1.5)],
-     [("x", -0.1)], [("x", None)], ["x"]],
-)  # fmt: skip
-def test_a_bad_answer_counts_as_a_failure(env, monkeypatch, answer):
-    monkeypatch.setattr(env.classifier, "classify", lambda listings: answer)
-    env.land(up(A, 1))
-    env.run()
-    assert (category(env, A).category, category(env, A).needs_reclassify) == (UNCATEGORIZED, True)
-    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
-    assert (failed["listings"], failed["partitions"]) == (1, [3])
-
-
-def test_each_classifier_call_logs_its_size_and_time(env, monkeypatch):  # step 7c.2
-    ticks = iter([10.0, 10.25])
-    monkeypatch.setattr(worker, "monotonic", lambda: next(ticks))
-    env.land(up(A, 1, listing("Shirt")), up(B, 1, listing("Hat")))
-    env.run()
-    (call,) = [e for e in events.read(env.events_root) if e["type"] == "classify"]
-    assert (call["listings"], call["ms"]) == (2, 250)
-    env.land(up(A, 1, listing("Shirt")), submission="s2")  # already applied: nothing to classify
-    env.run()
-    assert sum(e["type"] == "classify" for e in events.read(env.events_root)) == 1
-
-
-def test_an_outage_keeps_a_good_answer_whose_inputs_are_unchanged(env):
-    env.land(up(A, 1, listing("Shirt")), up(B, 1, listing("Hat")))
-    env.run()
-    env.classifier.fail = True
-    env.land(reclassify(A), up(B, 2, listing("Cap")), submission="s2")
-    env.run()
-    assert (category(env, A).category, category(env, A).needs_reclassify) == ("Fake > S", True)
-    assert (category(env, B).category, category(env, B).needs_reclassify) == (UNCATEGORIZED, True)
-
-
-def test_a_huge_classifier_error_is_truncated(env, monkeypatch):
-    def boom(listings):
-        raise RuntimeError("x" * 10_000)
-
-    monkeypatch.setattr(env.classifier, "classify", boom)
-    env.land(up(A, 1))
-    env.run()
-    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
-    assert len(failed["error"]) == 500
-    assert (failed["reason"], failed["batch"]) == ("error", 1)  # step 7c.2: no text matching
-
-
-def test_listings_the_classifier_did_not_reach_take_the_failure_path(env, monkeypatch):
-    env.land(up(A, 1, listing("Shirt")))
-    env.run()
-    C = product_in(5)
-    reached = {"Hat": ("Fake > H", 0.8)}  # the budget ran out before Shirt and Cup
-    monkeypatch.setattr(env.classifier, "classify", lambda ls: [reached.get(x.title) for x in ls])
-    env.land(up(B, 1, listing("Hat")), reclassify(A), up(C, 1, listing("Cup")), submission="s2")
-    env.run()
-    assert (category(env, B).category, category(env, B).needs_reclassify) == ("Fake > H", False)
-    assert (category(env, A).category, category(env, A).needs_reclassify) == ("Fake > S", True)
-    assert (category(env, C).category, category(env, C).needs_reclassify) == (UNCATEGORIZED, True)
-    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
-    assert (failed["listings"], failed["partitions"]) == (2, [3, 5])
-    assert failed["error"] == "budget spent"
-    assert (failed["reason"], failed["batch"]) == ("budget", 3)  # step 7c.2
-
-
 def test_only_moved_offsets_are_saved(env, monkeypatch):
     env.land(up(A, 1))
     env.run()
@@ -207,56 +126,12 @@ def failed_indexes(env):
     return {e["change_index"] for e in events.read(env.events_root) if e["type"] == "failed"}
 
 
-def test_a_poison_change_is_isolated_and_skipped(env):
-    env.land(up(A, 1), up(B, 1), poison(A, 2), up(B, 2), poison(B, 3), up(A, 3, listing("New")))
-    env.run()
-    assert env.outcomes() == {0: "written", 1: "written", 2: "failed", 3: "written",
-                              4: "failed", 5: "written"}  # fmt: skip
-    assert failed_indexes(env) == {2, 4}
-    assert diff(expected_store(env.landed, {2, 4}), store.fingerprints(env.store)) == []
-    assert env.load_offsets()[3] != START  # the partition keeps moving
-    (error,) = {e["error"] for e in events.read(env.events_root) if e["type"] == "failed"}
-    assert "free" in error
-
-
-@pytest.mark.parametrize(
-    ("bad", "error"),
-    [
-        ({"price_micros": "free"}, "ArrowInvalid"),
-        ({"title": 123}, "ArrowTypeError"),
-        ({"price_micros": 2**70}, "OverflowError"),
-    ],
-)
-def test_every_kind_of_unstorable_data_fails_only_its_change(env, bad, error):
-    env.land(up(A, 1), poison(B, 1, **bad), up(B, 2))
-    env.run()
-    assert env.outcomes() == {0: "written", 1: "failed", 2: "written"}
-    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "failed"]
-    assert failed["error"].startswith(error)
-
-
 @pytest.mark.parametrize("limit", [1, 2, 10])
 def test_a_superseded_poison_change_fails_whatever_the_batch_size(tmp_path, limit):
     env = Env(tmp_path)
     env.land(poison(A, 2), up(A, 3))  # plan would fold both into A@3, hiding the poison
     env.drain(limit)
     assert env.outcomes() == {0: "failed", 1: "written"}
-
-
-def test_a_poison_change_never_reaches_the_classifier(env, monkeypatch):
-    calls = []
-    real = env.classifier.classify
-    monkeypatch.setattr(env.classifier, "classify", lambda ls: calls.append(len(ls)) or real(ls))
-    env.land(up(A, 1), poison(B, 1), up(B, 2, listing("Hat")))
-    env.run()
-    assert calls == [2]  # one call, for the two good Listings
-
-
-def test_a_long_error_is_truncated(env):
-    env.land(poison(A, 1, price_micros="x" * 5000))  # Arrow echoes the value in its message
-    env.run()
-    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "failed"]
-    assert len(failed["error"]) == 500
 
 
 def assert_nothing_advanced(env):
@@ -459,21 +334,6 @@ def test_spend_of_a_failed_tick_shows_in_the_next_batch_event(env, monkeypatch):
     run(env, Ticks(3), limit=1)  # fails, then one Change per batch
     ticks = [e for e in events.read(env.events_root) if e["type"] == "batch"]
     assert [t["usd"] for t in ticks] == [1.0, 0.5]  # the failed tick's spend shows once
-
-
-def test_classify_failed_names_the_classifiers_error(env):  # PR #63
-    class Partial(FakeClassifier):
-        error = "RuntimeError('Jev answered 429')"
-
-        def classify(self, listings):
-            return [None] * len(listings)
-
-    env.classifier = Partial()
-    env.land(up(A, 1))
-    env.run()
-    (failed,) = [e for e in events.read(env.events_root) if e["type"] == "classify_failed"]
-    assert failed["error"] == Partial.error
-    assert failed["reason"] == "error"  # it said why: not the budget (step 7c.2)
 
 
 def test_the_jev_kind_runs_with_the_pipeline_settings(monkeypatch, tmp_path):  # PR #63

@@ -508,6 +508,34 @@ def test_the_jev_kind_runs_with_the_pipeline_settings(monkeypatch, tmp_path):  #
         )
 
 
+def test_main_builds_the_student_kind_from_the_index(tmp_path, monkeypatch):
+    # step-6m.md, test point 4: the index and the pinned encoder, nothing of Jev
+    import numpy as np
+
+    from catalog import classify, student, taxonomy
+
+    got = {}
+    tax = taxonomy.load()
+
+    def fake(texts):
+        return np.array([[1.0, 0.0] if "shirt" in t.lower() else [0.0, 1.0] for t in texts])
+
+    monkeypatch.setattr(student, "embedder", lambda models: (fake, student.FT_REVISION))
+    monkeypatch.setattr(jev, "http", lambda **kw: pytest.fail("Jev is not in the loop"))
+    monkeypatch.setattr(worker, "run", lambda *a, stop: got.update(classifier=a[4]))
+    path = student.index_path(tmp_path, student.FT_REVISION)
+    path.parent.mkdir(parents=True)
+    np.savez(path, x=np.eye(2, dtype=np.float32), y=np.array(tax.paths[:2]))
+    args = ["--index", "0", "--workers", "4", "--classifier", "student"]
+    worker.main([*args, "--models", str(tmp_path)])
+    c = got["classifier"]
+    assert isinstance(c, student.StudentClassifier)
+    assert c.taxonomy_version == classify.taxonomy_version("student")  # the Backfill's string
+    assert [a[0] for a in c.classify([listing("Blue shirt")])] == [tax.paths[0]]
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):  # exit 6
+        worker.main([*args, "--models", str(tmp_path / "empty")])
+
+
 def test_a_worker_behind_reads_again_without_waiting(env, monkeypatch):
     monkeypatch.setattr(landing, "read", functools.partial(landing.read, max_versions=1))
     env.land(up(A, 1))
@@ -714,6 +742,13 @@ def test_the_cli_exits_6_without_the_embedding_model(env):
     missing = cli(*args, "--classifier", "embedding", "--models", str(env.tmp / "models"))
     assert missing.returncode == 6 and "--download" in missing.stderr
     assert 6 in supervisor.FATAL_CODES  # the supervisor stops instead of restarting it
+
+
+def test_the_cli_exits_6_without_the_student(env):  # step-6m.md, test point 4
+    args = ["--index", "0", "--workers", "4", "--data", str(env.tmp), "--state", str(env.state)]
+    missing = cli(*args, "--classifier", "student", "--models", str(env.tmp / "models"))
+    assert missing.returncode == 6 and "catalog.student --download" in missing.stderr
+    assert not (env.state / "locks").exists()  # stopped before claiming a partition
 
 
 def test_the_cli_exits_7_without_the_jev_key(env):  # step-6f.md, test point 4

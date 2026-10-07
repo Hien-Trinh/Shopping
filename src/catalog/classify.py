@@ -177,7 +177,7 @@ def texts(taxonomy, recipe: str, deeper: dict[str, list[str]]) -> list[tuple[str
     return [(p, p) for p in paths] + [(d, p) for p in paths for d in deeper[p]]
 
 
-KINDS = ("fake", "embedding", "jev", "down")  # a worker's and the Backfill's --classifier
+KINDS = ("fake", "embedding", "jev", "student", "down")  # a worker's and the Backfill's kinds
 # down: the fake one in an outage, every call failing (the chaos runner's, step-7b.md)
 
 
@@ -189,6 +189,10 @@ def taxonomy_version(kind: str) -> str:
 
     if kind == "jev":
         return jev.version(taxonomy.load().version)
+    if kind == "student":
+        from catalog import student  # here: it imports this module
+
+        return student.version(taxonomy.load().version)
     return _version(taxonomy.load().version, MODEL)
 
 
@@ -200,15 +204,18 @@ def _unit(vectors: np.ndarray) -> np.ndarray:
     return vectors / np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-12)
 
 
-def fastembed(models: Path, model: str = MODEL, *, download: bool = False):
-    """An `embed` function over fastembed's `model` in `models`; offline unless `download`."""
+def fastembed(models: Path, model: str = MODEL, *, download: bool = False, **kwargs):
+    """An `embed` function over fastembed's `model` in `models`; offline unless `download`.
+    `kwargs` go to `TextEmbedding` (the student passes `specific_model_path`, step-6m.md)."""
     from fastembed import TextEmbedding  # here: importing onnxruntime takes a second
 
     def embed(texts: Sequence[str]) -> np.ndarray:  # one ONNX run: the classifier sizes chunks
         return np.array(list(loaded.embed(list(texts), batch_size=max(len(texts), 1))))
 
     try:
-        loaded = TextEmbedding(model, cache_dir=str(models), local_files_only=not download)
+        loaded = TextEmbedding(
+            model, cache_dir=str(models), local_files_only=not download, **kwargs
+        )
         embed(["probe"])  # a model that loads but won't run is as good as missing
     except Exception as e:  # missing or corrupt: fastembed raises ValueError, onnxruntime others
         raise ModelMissing(f"{model} won't load from {models}: {DOWNLOAD}") from e

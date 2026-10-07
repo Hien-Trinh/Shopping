@@ -217,6 +217,7 @@ src/catalog/
   classify.py     Classifier protocol, threshold, EmbeddingClassifier, FakeClassifier
   laya.py         LayaClassifier for the eval (hierarchical or shortlist), laya-mlx chooser
   jev.py          JevClassifier (embedding shortlist, then Jev): the workers' `--classifier jev` and an eval candidate; TypeSafe HTTP call
+  student.py      the student (kNN over the fine-tuned encoder's vectors): the workers' `--classifier student` (`pipeline`, the index built by `--download`, the version), the eval candidates and the report
   evaluate.py     the classifier eval: labeled set, sample, run, score, report
   benchmark.py    Shopify's product benchmark → eval and training files (fetch, English filter, renames)
   taxonomy.py     load Shopify taxonomy, trim to depth 3, version string

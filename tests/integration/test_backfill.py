@@ -261,6 +261,16 @@ def types(data):
     return {e["type"] for e in events.read(data / "events")}
 
 
+def test_main_stamps_the_student_version_without_a_model(tmp_path, monkeypatch):
+    # step-6m.md, test point 3: the Backfill's string is the workers' (constants, no model)
+    from catalog import classify
+
+    seen = {}
+    monkeypatch.setattr(backfill, "run", lambda data, state, version, **kw: seen.update(v=version))
+    backfill.main(["--classifier", "student", "--data", str(tmp_path), "--state", str(tmp_path)])
+    assert seen["v"] == classify.taxonomy_version("student") and "+student-ft-knn@" in seen["v"]
+
+
 @pytest.mark.parametrize("flag", [["--limit", "0"], ["--interval", "0"], ["--interval", "nan"]])
 def test_main_refuses_a_flag_that_would_spin(flag, monkeypatch):
     monkeypatch.setattr(backfill, "run", lambda *a, **kw: pytest.fail("ran with a bad flag"))

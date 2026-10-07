@@ -12,13 +12,14 @@ How to run the pipeline on one Mac: start, stop, rescale, recover, reset and rea
 | `data/events/<hour>/` | one JSONL file per process run; kept 3 days | only in a reset |
 | `data/export/`, `data/snapshots/` | Change Export files (3 days) and Catalog Snapshots (7 days) | only in a reset |
 | `state/` | offsets, the export watermark, heartbeats, and the locks that keep one process per role | only in a reset, and only with `data/`'s tables |
-| `models/` | the embedding model and shortlist vectors | yes; `--download` fetches them again |
+| `models/` | the embedding model, shortlist vectors and the fine-tuned student | yes; `--download` fetches them again |
 
 ## First run
 
 ```bash
 uv sync
 uv run python -m catalog.classify --download             # once: about 2 min, into models/
+uv run python -m catalog.student --download              # the fine-tuned student (step 6l.3), for the eval
 uv run python -m catalog.merchants create --currency USD # prints merchant_id and key, once
 ```
 

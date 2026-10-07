@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from support import listing
 
-from catalog import evaluate, student
+from catalog import classify, evaluate, student
 from catalog.taxonomy import Taxonomy
 
 TAX = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
@@ -320,9 +320,109 @@ def test_report_refuses_missing_fallback_answers_before_training(tmp_path):
 
 
 def test_main_writes_the_report(tmp_path, monkeypatch):
-    monkeypatch.setattr(student.classify, "fastembed", lambda models: None)
+    monkeypatch.setattr(student.classify, "fastembed", lambda models, model=None, **_: None)
     monkeypatch.setattr(student, "load_training", lambda paths: [])
-    monkeypatch.setattr(student, "report", lambda *_: "# report\n")
+    seen = {}
+    monkeypatch.setattr(student, "report", lambda *_, **kw: seen.update(kw) or "# report\n")
     out = tmp_path / "r" / "student.md"
     student.main(["--models", str(tmp_path), "--out", str(out)])
     assert out.read_text() == "# report\n"
+    assert seen["finetuned"] is None  # nothing fine-tuned in tmp_path: the frozen students only
+
+
+def test_main_download_fetches_the_finetuned_student_and_stops(tmp_path, monkeypatch):
+    # 6l.3: `--download` is the student's own, the Hub repo may not exist when classify downloads
+    calls = []
+    monkeypatch.setattr(student, "embedder", lambda models, download: calls.append(download))
+    monkeypatch.setattr(student, "load_head", lambda models, download: calls.append(download))
+    monkeypatch.setattr(student, "report", lambda *_, **__: pytest.fail("no report"))
+    student.main(["--models", str(tmp_path), "--download"])
+    assert calls == [True, True]
+
+
+# docs/specs/step-6l.3.md: the fine-tuned student
+
+
+def test_softmax_round_trips_through_a_head_file(tmp_path):
+    # 6l.3 test point 1
+    x, y = toy()
+    head = student.Softmax.fit(x, y)
+    head.save(tmp_path / "head.npz")
+    back = student.Softmax.load(tmp_path / "head.npz")
+    assert back.classes == head.classes
+    assert back.predict(x) == head.predict(x)
+
+
+def test_vectors_are_cached_per_model(tmp_path):
+    # 6l.3 test point 2: the fine-tuned and frozen vectors of one text never share a file
+    calls = []
+
+    def embed(texts):
+        calls.append(list(texts))
+        return np.array([[1.0, 0.0] for _ in texts])
+
+    student.vectors(["ab"], embed, tmp_path, model="bge-small")
+    student.vectors(["ab"], embed, tmp_path, model="student-ft")
+    assert len(calls) == 2
+    student.vectors(["ab"], embed, tmp_path, model="student-ft")
+    assert len(calls) == 2
+
+
+FT_ROWS = [{"title": "Blue shirt", "description": "", "category": "Apparel > Shirts"}] * 3 + [
+    {"title": "Toy train", "description": "", "category": "Toys"}
+] * 3
+
+
+def fake_head():
+    """A head fitted on `fake_embed`'s vectors, standing in for the fine-tuning script's."""
+    x = student.unit(fake_embed([r["title"] for r in FT_ROWS]))
+    return student.Softmax.fit(x, [r["category"] for r in FT_ROWS])
+
+
+def test_the_finetuned_student_answers_a_taxonomy_path_for_every_listing(tmp_path):
+    # 6l.3 test point 3: the head comes from a file, the kNN from the fine-tuned vectors
+    c = student.StudentClassifier.train(
+        TAX, fake_embed, FT_ROWS, "ft", cache=tmp_path, model="student-ft", head=fake_head()
+    )
+    got = c.classify([listing(title="Red shirt"), listing(title="Wooden train")])
+    assert [a[0] for a in got] == ["Apparel > Shirts", "Toys"]
+    assert all(0 <= a[1] <= 1 for a in got)
+    assert c.taxonomy_version.endswith("+student-ft+student-ft")
+    knn = student.StudentClassifier.train(
+        TAX, fake_embed, FT_ROWS, "ft-knn", cache=tmp_path, model="student-ft", k=3
+    )
+    assert [a[0] for a in knn.classify([listing(title="Red shirt")])] == ["Apparel > Shirts"]
+    assert knn.taxonomy_version.endswith("+student-ft+student-ft-knn")
+
+
+def test_a_missing_finetuned_head_names_the_download(tmp_path):
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+        student.load_head(tmp_path)
+
+
+def test_evaluate_knows_the_finetuned_candidates():
+    assert {"student-ft", "student-ft-knn"} <= set(evaluate.CANDIDATES)
+
+
+def test_report_lists_the_finetuned_students_when_given(tmp_path):
+    # 6l.3 test point 4: the same sections as the frozen students; a note when there is none
+    evals, opus = write_eval(tmp_path)
+    kw = dict(evals=evals, opus=opus, clock=ticking())
+    body = student.report(
+        TAX, fake_embed, SOURCES, tmp_path / "cache", finetuned=(fake_embed, fake_head()), **kw
+    )
+    assert "## student-ft" in body and "## student-ft-knn (k=5)" in body
+    assert body.count("Bar (beats Jev alone with 70% or more kept local)") == 4
+    without = student.report(TAX, fake_embed, SOURCES, tmp_path / "cache", **kw)
+    assert "## student-ft" not in without and "catalog.student --download" in without
+
+
+def test_finetuned_wires_the_head_into_the_ft_candidate_only(tmp_path, monkeypatch):
+    head = fake_head()
+    monkeypatch.setattr(student, "embedder", lambda models: fake_embed)
+    monkeypatch.setattr(student, "load_head", lambda models: head)
+    monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
+    ft = student.finetuned(TAX, tmp_path, "ft")
+    assert ft.model is head and ft.taxonomy_version.endswith("+student-ft")
+    knn = student.finetuned(TAX, tmp_path, "ft-knn")
+    assert isinstance(knn.model, student.Knn)

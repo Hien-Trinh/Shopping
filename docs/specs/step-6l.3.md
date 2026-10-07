@@ -95,6 +95,12 @@ Not in CI: the training script (torch isn't installed there). Its check is the O
 3. **The bar above:** student alone +3 points over kNN on the 1,020, and the cascade no worse than 6l.2's point in both exact and kept. OK (Oct 6).
 4. **The test points above.** OK (Oct 6).
 
+## Outcome (in progress)
+
+- **The code** (6l.3's PR): `train/finetune.py` (torch and transformers in a `finetune` dependency group, never imported by `src/`), `Softmax.save`/`load`, the vector cache keyed by model name, the `student-ft` and `student-ft-knn` candidates, and the report's two new sections. One deviation from the plan above: the fine-tuned student has its own download, `python -m catalog.student --download`, so `catalog.classify --download` keeps working before the Hub repo exists.
+- **Smoke run on the Mac** (MPS, 200 rows, 3 steps, 1 epoch): 26 s end to end; the fp32 ONNX export agrees with torch to 3e-7 on 100 held-out texts; fastembed loads the exported folder as a custom model and the head applies to its vectors.
+- **The full run** (Colab, T4): pending.
+
 ## Out of scope
 
 - The pipeline (6m), hierarchy-aware heads, label-text augmentation, a top-10 shortlist for Jev (a candidate for 6m's spec), images, non-English, a bigger encoder (ModernBERT, DeBERTa).

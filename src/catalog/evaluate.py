@@ -72,7 +72,7 @@ CATEGORIES = [  # Amazon Reviews '23's category files, less Unknown
 ]
 CANDIDATES = (
     *classify.KINDS, "laya-hierarchical", "laya-shortlist", "jev-shortlist", "student-softmax",
-    "student-knn",
+    "student-knn", "student-ft", "student-ft-knn",
 )  # fmt: skip
 THRESHOLDS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 .. 0.90
 
@@ -466,6 +466,10 @@ def candidate(
             tax, embedding, jev.http(), shortlist, description,
             threshold=0, budget=math.inf, rate=math.inf, threads=1,  # one call at a time
         )  # fmt: skip
+    if kind.startswith("student-ft"):
+        from catalog import student
+
+        return student.finetuned(tax, models, kind.removeprefix("student-"))
     if kind.startswith("student-"):
         from catalog import student
 

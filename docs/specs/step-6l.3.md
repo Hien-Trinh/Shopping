@@ -31,7 +31,7 @@ The script is plain Python, so it runs in any of these; the artifact comes back 
 
 | Where | GPU | Price for one run (about 10 min) | How it runs | Notes |
 |---|---|---|---|---|
-| **Google Colab (free)**, the first runs | T4 (varies, preemptible) | $0; Pro $9.99 a month if the free GPU isn't available | A notebook cell: clone the repo, `pip install`, `python train/finetune.py` | By hand; 90 min idle disconnect, GPU not guaranteed, so the script checkpoints each epoch |
+| **Google Colab (free)**, the first runs | T4 (varies, preemptible) | $0; Pro $9.99 a month if the free GPU isn't available | A notebook cell: install uv (the project needs Python 3.14, which Colab doesn't ship), clone, `uv sync --group finetune`, run the script (the recipe is in the script's docstring) | By hand; 90 min idle disconnect, GPU not guaranteed, so the script checkpoints each epoch |
 | **Hugging Face Jobs, `t4-small`**, scripted reruns | T4 | about $0.07 ($0.40/h, per-minute billing); needs a positive credit balance, no free tier | `hf jobs uv run --flavor t4-small -s HF_TOKEN train/finetune.py`; `hf jobs wait` fails loudly | One command from the Mac, no notebook; pin the script to a commit and the image to a tag; the 30 min default timeout fits |
 | Modal (Starter plan) | T4 | $0 ($30 credit a month, about 50 T4 hours) | `modal run` on a decorated function; `modal volume get` for files | Same script-and-CLI shape; a second account to manage |
 | Kaggle | T4 ×2 / P100 | $0 (about 30 GPU hours a week) | Notebook, or `kaggle kernels push` | Phone verification; preinstalled versions drift |
@@ -91,9 +91,33 @@ Not in CI: the training script (torch isn't installed there). Its check is the O
 ## Questions
 
 1. **Where to train.** Decided Oct 6: Colab first, by hand; Hugging Face Jobs (about $0.07 a run, one command) once reruns are needed. Modal is free but a second account.
-2. **The artifact's home.** Decided Oct 6: a public Hub model repo under your account (no secret anywhere, CI can fetch it). Rejected: private (a token on the Mac and in CI, against the no-secrets rule) and a GitHub release asset loaded through onnxruntime directly.
+2. **The artifact's home.** Decided Oct 6: a public Hub model repo under your account, `Hien-Trinh/listing-student-ft` (no secret anywhere, CI can fetch it). Rejected: private (a token on the Mac and in CI, against the no-secrets rule) and a GitHub release asset loaded through onnxruntime directly.
 3. **The bar above:** student alone +3 points over kNN on the 1,020, and the cascade no worse than 6l.2's point in both exact and kept. OK (Oct 6).
 4. **The test points above.** OK (Oct 6).
+
+## Outcome (Oct 7)
+
+- **The code** (6l.3's PR, #99): `train/finetune.py` (torch and transformers in a `finetune` dependency group, never imported by `src/`), `Softmax.save`/`load`, the vector cache keyed by model name and Hub revision, the `student-ft` and `student-ft-knn` candidates, and the report's two new sections with 6l.3's bar beside 6l.2's. Deviations from the plan above, all small: the fine-tuned student has its own download, `python -m catalog.student --download`, so `catalog.classify --download` keeps working before the Hub repo exists; what int8 costs is measured by the script on the held-out rows (`held_out_exact_fp32` and `_int8` in `train.json`), not by the report on the 1,020; the script also clips gradients at 1.0 and uses weight decay 0.01 (recorded in `train.json`); the Colab recipe installs through uv because the project needs Python 3.14.
+- **Review round 1** (#99) fixes: the report computes 6l.3's bar against kNN's own point (it printed only 6l.2's, which kNN already meets); the head is fetched at the encoder's Hub revision and that revision names the vectors in the cache (a retrain pushed to the same repo would have been scored on the old encoder's cached vectors); the checkpoint is written atomically and ignored when it comes from another run; the saved tokenizer carries the training length (128, not 512); a missing encoder names the student's download with the cause; the Hub token is checked before the GPU run; `entry.exit_with`.
+- **Smoke run on the Mac** (MPS, 200 rows, 3 steps, 1 epoch): 15–26 s end to end; the fp32 ONNX export agrees with torch to 3e-7 on 100 held-out texts; int8 and fp32 agree on the (tiny) smoke held-out set; fastembed loads the exported folder as a custom model and the head applies to its vectors; a checkpoint resumes after a stop and is ignored when the hyperparameters differ.
+- **Full run 1** (Colab, Tesla T4, Oct 7; 37,366 fit rows, 4,150 held out, 1,717 classes; 979 s): held-out exact 8.7% → 19.6% → 22.6% → 23.6% over the 4 epochs, still climbing; ONNX agrees with torch to 7e-7; int8 23.9% against fp32 23.6% on the held-out rows, so quantization costs nothing. Far under kNN's 55.5% on the same rows: not a bug but an underfit. The head started from random weights, and 1,717 classes on unit vectors learn too slowly at a fine-tuning rate (6l's numpy head needed hundreds of steps at lr 0.5 on the same vectors to reach 45%). Fix: the head now starts from the frozen-vector `Softmax.fit` (`--no-init-head` turns it off), and the rerun gets 8 epochs. In the smoke run the initialised head scores 22% on its 50 rows where the random one scored 2%.
+- **Full run 2** (Colab, Tesla T4, Oct 7; head initialised, 8 epochs, 2,543 s; `Hien-Trinh/listing-student-ft`): the initialised head starts at 46.3% held-out; epochs 53.5% → 57.5% → 59.5% → 60.5% → 60.9% → 61.3% → 61.5% → 61.7%, still rising slowly. ONNX agrees with torch to 3e-7. **int8 costs 1.7 points** on the held-out rows (59.9% against 61.7%), over the 1-point line in the failure table: the eval below serves int8 as the workers would; 6m's spec picks the file (fp32 is 133 MB).
+
+**The bar is met**, on the 1,020 and on Shopify's 2,000 ([eval/student.md](../../eval/student.md)):
+
+| On the 1,020 (exact) | Alone | Cascade with Jev, points on the curve |
+|---|---|---|
+| Jev alone (production settings) | 66.9% | |
+| kNN (k=10), 6l.2's student | 65.7% | 70.0% at 83.7% kept (τ = 0.25) |
+| **student-ft** (the fine-tuned encoder and its head) | **70.8%** | 73.3% at 92.5% kept (τ = 0.20); 75.8% at 74.5% kept (τ = 0.50) |
+| **student-ft-knn** (k=5 over the fine-tuned vectors) | **72.5%** | 74.1% at 94.5% kept (τ = 0.40); 75.3% at 87.3% kept (τ = 0.45) |
+| Opus alone (the teacher) | 86.7% | |
+
+- Both fine-tuned students beat Jev alone, so the Amazon held-out rule picks τ = 0 (keep everything local); the "all rows" τ (0.20 and 0.40) is the better operating point on the 1,020. Top level 86.6% / 86.8%, two levels 81.9% / 83.3%; p50 6.5–6.7 ms (the smaller tokenizer length helps), p99 12–15 ms.
+- **Shopify's 2,000** (the independent check; 94% of training rows are Shopify's, but their labels are Shopify's own): student-ft 58.2% alone, 62.3% at 85.2% kept; student-ft-knn 60.9% alone, 63.1% at 88.1% kept; Jev 61.8%. kNN was 55.0% alone, 60.9% at 73.5% kept. Both 6l.3 bars met there too.
+- kNN over the fine-tuned vectors beats the head it was trained with (+1.7 on the 1,020, +2.7 on Shopify), the opposite of the papers' "kNN interpolation adds little". Its confidence is a vote share, so with k = 5 it reaches 1.0 on 53% of Listings (unanimous neighbours) and the curve has plateaus.
+- Caveats carried from 6l.2: the 1,020's labels are Claude-made and the training rows are Opus-labeled, so labeling style may favour the student on that set; Shopify's 2,000 is the check that it isn't only style. The ft held-out figure (60.3% in the report, 61.7% in training, int8 against fp32) picked the epoch, so it is optimistic; τ was picked on it.
+- **For 6m:** ship the fine-tuned encoder; `student-ft-knn` (k = 5, τ about 0.40) is the better student on both evals; whether the pipeline serves int8 or fp32 (1.7 points on held-out rows) is 6m's call, and the index is the 41k fine-tuned vectors (61 MB).
 
 ## Out of scope
 

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from support import listing
 
-from catalog import evaluate, student
+from catalog import classify, evaluate, student
 from catalog.taxonomy import Taxonomy
 
 TAX = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
@@ -320,9 +320,201 @@ def test_report_refuses_missing_fallback_answers_before_training(tmp_path):
 
 
 def test_main_writes_the_report(tmp_path, monkeypatch):
-    monkeypatch.setattr(student.classify, "fastembed", lambda models: None)
+    monkeypatch.setattr(student.classify, "fastembed", lambda models, model=None, **_: None)
     monkeypatch.setattr(student, "load_training", lambda paths: [])
-    monkeypatch.setattr(student, "report", lambda *_: "# report\n")
+    seen = {}
+    monkeypatch.setattr(student, "report", lambda *_, **kw: seen.update(kw) or "# report\n")
     out = tmp_path / "r" / "student.md"
     student.main(["--models", str(tmp_path), "--out", str(out)])
     assert out.read_text() == "# report\n"
+    assert seen["finetuned"] is None  # nothing fine-tuned in tmp_path: the frozen students only
+
+
+def test_main_download_fetches_the_finetuned_student_and_stops(tmp_path, monkeypatch):
+    # 6l.3: `--download` is the student's own, the Hub repo may not exist when classify downloads
+    calls = []
+
+    def embedder(models, download):
+        calls.append(download)
+        return None, "d" * 40
+
+    def load_head(models, revision, download):
+        calls.append((revision, download))
+
+    monkeypatch.setattr(student, "embedder", embedder)
+    monkeypatch.setattr(student, "load_head", load_head)
+    monkeypatch.setattr(student, "report", lambda *_, **__: pytest.fail("no report"))
+    student.main(["--models", str(tmp_path), "--download"])
+    assert calls == [True, ("d" * 40, True)]  # the head at the encoder's revision
+
+
+# docs/specs/step-6l.3.md: the fine-tuned student
+
+
+def test_softmax_round_trips_through_a_head_file(tmp_path):
+    # 6l.3 test point 1
+    x, y = toy()
+    head = student.Softmax.fit(x, y)
+    head.save(tmp_path / "head.npz")
+    back = student.Softmax.load(tmp_path / "head.npz")
+    assert back.classes == head.classes
+    assert back.predict(x) == head.predict(x)
+
+
+def test_vectors_are_cached_per_model(tmp_path):
+    # 6l.3 test point 2: the fine-tuned and frozen vectors of one text never share a file
+    calls = []
+
+    def embed(texts):
+        calls.append(list(texts))
+        return np.array([[1.0, 0.0] for _ in texts])
+
+    student.vectors(["ab"], embed, tmp_path, model="bge-small")
+    student.vectors(["ab"], embed, tmp_path, model="student-ft")
+    assert len(calls) == 2
+    student.vectors(["ab"], embed, tmp_path, model="student-ft")
+    assert len(calls) == 2
+
+
+FT_ROWS = [{"title": "Blue shirt", "description": "", "category": "Apparel > Shirts"}] * 3 + [
+    {"title": "Toy train", "description": "", "category": "Toys"}
+] * 3
+
+
+def fake_head():
+    """A head fitted on `fake_embed`'s vectors, standing in for the fine-tuning script's."""
+    x = student.unit(fake_embed([r["title"] for r in FT_ROWS]))
+    return student.Softmax.fit(x, [r["category"] for r in FT_ROWS])
+
+
+def test_the_finetuned_student_answers_a_taxonomy_path_for_every_listing(tmp_path):
+    # 6l.3 test point 3: the head comes from a file, the kNN from the fine-tuned vectors
+    c = student.StudentClassifier.train(
+        TAX, fake_embed, FT_ROWS, "ft", cache=tmp_path, model="student-ft", head=fake_head()
+    )
+    got = c.classify([listing(title="Red shirt"), listing(title="Wooden train")])
+    assert [a[0] for a in got] == ["Apparel > Shirts", "Toys"]
+    assert all(0 <= a[1] <= 1 for a in got)
+    assert c.taxonomy_version.endswith("+student-ft+student-ft")
+    knn = student.StudentClassifier.train(
+        TAX, fake_embed, FT_ROWS, "ft-knn", cache=tmp_path, model="student-ft", k=3
+    )
+    assert [a[0] for a in knn.classify([listing(title="Red shirt")])] == ["Apparel > Shirts"]
+    assert knn.taxonomy_version.endswith("+student-ft+student-ft-knn")
+
+
+def test_a_missing_finetuned_head_names_the_download(tmp_path):
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+        student.load_head(tmp_path)
+
+
+def test_evaluate_knows_the_finetuned_candidates():
+    assert {"student-ft", "student-ft-knn"} <= set(evaluate.CANDIDATES)
+
+
+def swapped_head():
+    """A head that calls shirts Toys and trains Shirts: only a report that uses the supplied head
+    (not one it refits) scores 0% with it."""
+    x = student.unit(fake_embed([r["title"] for r in FT_ROWS]))
+    swap = {"Apparel > Shirts": "Toys", "Toys": "Apparel > Shirts"}
+    return student.Softmax.fit(x, [swap[r["category"]] for r in FT_ROWS])
+
+
+def test_report_lists_the_finetuned_students_when_given(tmp_path):
+    # 6l.3 test point 4: the same sections as the frozen students, scored with the given head,
+    # plus 6l.3's bar against kNN; a note when there is none
+    evals, opus = write_eval(tmp_path)
+    kw = dict(evals=evals, opus=opus, clock=ticking())
+    body = student.report(
+        TAX,
+        fake_embed,
+        SOURCES,
+        tmp_path / "cache",
+        finetuned=(fake_embed, swapped_head(), "student-ft@abc123def456"),
+        **kw,
+    )
+    ft = body[body.index("## student-ft\n") : body.index("## student-ft-knn")]
+    assert "Student alone: exact 0.0%" in ft and "so this is optimistic" in ft
+    assert "Bar 6l.3 (alone 3% over kNN's 100.0%, and a cascade point no worse than kNN's" in ft
+    assert ft.count("not met") == 2  # 6l.2's bar and 6l.3's
+    knn_ft = body[body.index("## student-ft-knn (k=5)") :]
+    assert "Student alone: exact 100.0%" in knn_ft and "Bar 6l.3" in knn_ft
+    assert body.count("Bar (beats Jev alone with 70% or more kept local)") == 4
+    without = student.report(TAX, fake_embed, SOURCES, tmp_path / "cache", **kw)
+    assert "## student-ft" not in without and "catalog.student --download" in without
+
+
+def test_beats_knn_needs_the_margin_and_a_no_worse_cascade_point():
+    # step-6l.3.md, the bar: +3 points alone, and a point at least as accurate at a higher kept
+    # rate or more accurate at the same kept rate
+    knn_point = (0.837, 0.700)
+    better = [(0.90, 0.700), (0.70, 0.750)]
+    assert student.beats_knn(0.687, better, 0.657, knn_point)
+    assert not student.beats_knn(0.686, better, 0.657, knn_point)  # 2.9 points is not 3
+    assert not student.beats_knn(0.70, [(0.837, 0.700)], 0.657, knn_point)  # the same point
+    assert not student.beats_knn(0.70, [(0.90, 0.699), (0.80, 0.75)], 0.657, knn_point)
+    assert student.beats_knn(0.70, [(0.837, 0.701)], 0.657, knn_point)
+
+
+def hub_cache(models: Path, rev: str, head: student.Softmax | None = None) -> Path:
+    """What `--download` leaves in `models`: the Hub cache layout at one revision."""
+    repo = models / f"models--{student.FT_REPO.replace('/', '--')}"
+    snapshot = repo / "snapshots" / rev
+    (snapshot / "onnx").mkdir(parents=True)
+    (snapshot / "onnx" / "model_quantized.onnx").write_bytes(b"onnx")
+    if head:
+        head.save(snapshot / student.HEAD)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(rev)
+    return snapshot
+
+
+def test_the_head_is_loaded_from_the_encoders_revision(tmp_path):
+    # review round 1: encoder and head from the same Hub commit, and the revision names the cache
+    old, new = "a" * 40, "b" * 40
+    hub_cache(tmp_path, new, fake_head())
+    assert student.revision(tmp_path) == new
+    assert student.load_head(tmp_path, revision=new).classes == fake_head().classes
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download") as e:
+        student.load_head(tmp_path, revision=old)
+    assert e.value.__cause__ is not None and "(" in str(e.value)  # the cause is in the message
+    assert student._name(new) == "student-ft@bbbbbbbbbbbb"
+
+
+def test_a_missing_finetuned_encoder_names_the_students_download(tmp_path, monkeypatch):
+    # review round 1: classify's hint would refetch bge-small, not the fine-tuned encoder
+    def missing(models, model, *, download):
+        raise classify.ModelMissing(f"{model} won't load: {classify.DOWNLOAD}") from ValueError("x")
+
+    monkeypatch.setattr(classify, "fastembed", missing)
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download") as e:
+        student.embedder(tmp_path)
+    assert "catalog.classify --download" not in str(e.value) and "ValueError" in str(e.value)
+
+
+def test_evaluate_dispatches_the_finetuned_candidates(tmp_path, monkeypatch):
+    # review round 1: the branch in evaluate.candidate, not only the names
+    seen = []
+    monkeypatch.setattr(student, "finetuned", lambda tax, models, kind: seen.append(kind))
+    evaluate.candidate("student-ft", tmp_path)
+    evaluate.candidate("student-ft-knn", tmp_path)
+    assert seen == ["ft", "ft-knn"]
+
+
+def test_main_says_why_the_finetuned_student_is_skipped(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(student.classify, "fastembed", lambda models, model=None, **_: None)
+    monkeypatch.setattr(student, "load_training", lambda paths: [])
+    monkeypatch.setattr(student, "report", lambda *_, **__: "# report\n")
+    student.main(["--models", str(tmp_path), "--out", str(tmp_path / "r.md")])
+    assert "no fine-tuned student" in capsys.readouterr().err
+
+
+def test_finetuned_wires_the_head_into_the_ft_candidate_only(tmp_path, monkeypatch):
+    head = fake_head()
+    monkeypatch.setattr(student, "embedder", lambda models: (fake_embed, "c" * 40))
+    monkeypatch.setattr(student, "load_head", lambda models, revision: (revision, head)[1])
+    monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
+    ft = student.finetuned(TAX, tmp_path, "ft")
+    assert ft.model is head and ft.taxonomy_version.endswith("+student-ft@cccccccccccc+student-ft")
+    knn = student.finetuned(TAX, tmp_path, "ft-knn")
+    assert isinstance(knn.model, student.Knn)

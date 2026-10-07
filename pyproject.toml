@@ -24,6 +24,11 @@ dev = [
     "pytest-cov>=6",
     "ruff>=0.13",
 ]
+finetune = [
+    "onnx>=1.23.2",
+    "torch>=2.14.1",
+    "transformers>=5.19.0",
+]
 laya = [
     "laya-mlx==0.3.0 ; platform_machine == 'arm64' and sys_platform == 'darwin'",
 ]

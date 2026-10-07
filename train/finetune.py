@@ -121,7 +121,26 @@ def signature(a, fit, classes) -> dict:
         "lr": a.lr,
         "head_lr": a.head_lr,
         "smoke": a.smoke,
+        "init_head": a.init_head,
     }
+
+
+@torch.no_grad()
+def init_head(model: Student, tokenizer, fit, classes, size, device) -> None:
+    """Start the head where the frozen-vector softmax of step 6l ended (45% held-out) instead of
+    at random: 1,717 classes on unit vectors learn too slowly from zero at a fine-tuning rate
+    (the first run reached 23.6% after 4 epochs). The same `Softmax.fit` as the report's."""
+    model.eval()
+    x = np.vstack(
+        [
+            model.vectors(b).float().cpu().numpy()
+            for b, _ in batches(tokenizer, fit, classes, size, device, shuffle=False)
+        ]
+    )
+    head = student.Softmax.fit(x, [r["category"] for r in fit])
+    assert head.classes == classes
+    model.head.weight.data = torch.tensor(head.w.T, dtype=model.head.weight.dtype, device=device)
+    model.head.bias.data = torch.tensor(head.b, dtype=model.head.bias.dtype, device=device)
 
 
 def train(a, fit, held, device) -> tuple[Student, AutoTokenizer, list[str], dict]:
@@ -130,6 +149,8 @@ def train(a, fit, held, device) -> tuple[Student, AutoTokenizer, list[str], dict
     sig = signature(a, fit, classes)
     tokenizer = AutoTokenizer.from_pretrained(BASE)
     model = Student(Encoder(BASE), len(classes)).to(device)
+    if a.init_head:
+        init_head(model, tokenizer, fit, classes, 256, device)
     optim = torch.optim.AdamW(
         [
             {"params": model.encoder.parameters(), "lr": a.lr},
@@ -144,6 +165,15 @@ def train(a, fit, held, device) -> tuple[Student, AutoTokenizer, list[str], dict
         optim, lambda s: s / warm if s < warm else max(0.0, (total - s) / max(1, total - warm))
     )
     log = {"held_out_exact": [], "best_epoch": None}
+    if a.init_head:
+        log["held_out_exact_init"] = round(
+            exact(model, tokenizer, held, classes, a.batch, device), 4
+        )
+        print(
+            f"head initialised from the frozen vectors: held-out exact "
+            f"{log['held_out_exact_init']:.1%}",
+            file=sys.stderr,
+        )
     best, start_epoch = None, 0
     checkpoint = a.out / CHECKPOINT
     if checkpoint.exists():  # a Colab disconnect or a spot eviction: pick up at the next epoch
@@ -282,6 +312,12 @@ def main(argv=None) -> None:
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--lr", type=float, default=5e-5, help="encoder learning rate")
     p.add_argument("--head-lr", type=float, default=1e-3)
+    p.add_argument(
+        "--no-init-head",
+        dest="init_head",
+        action="store_false",
+        help="start the head at random instead of from the frozen-vector softmax fit",
+    )
     p.add_argument("--push", action="store_true", help=f"upload --out to {student.FT_REPO}")
     p.add_argument("--repo", default=student.FT_REPO)
     p.add_argument("--smoke", action="store_true", help="200 rows, 1 epoch, a few steps, no push")

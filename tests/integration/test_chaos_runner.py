@@ -89,6 +89,15 @@ def test_the_procfile_rewrite_rescales_and_sets_the_classifier_and_the_guard():
     assert "backfill: python -m catalog.backfill --classifier down" in lines
 
 
+def test_the_shipped_procfile_runs_the_student_and_the_rewrite_never_loads_it():
+    shipped = chaos.PROCFILE.read_text()
+    lines = [line for line in shipped.splitlines() if line.startswith(("worker-", "backfill:"))]
+    assert len(lines) == 5 and all(line.endswith("--classifier student") for line in lines)
+    assert "student" not in chaos.procfile(shipped, 9)  # the e2e test needs no model
+    with pytest.raises(ValueError, match="the Procfile changed"):
+        chaos.procfile(shipped.replace("--classifier student", "--classifier jev"), 9)
+
+
 def fake_load(stdout):
     def load(self, *flags):
         code = f"import sys; sys.stdout.write({stdout!r})"

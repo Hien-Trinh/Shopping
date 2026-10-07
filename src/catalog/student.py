@@ -10,6 +10,7 @@ import gzip
 import hashlib
 import json
 import random
+import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -33,6 +34,8 @@ OUT = Path("eval/student.md")
 FT_MODEL = "student-ft"  # bge-small fine-tuned end-to-end by train/finetune.py (step-6l.3.md)
 FT_REPO = "hientrinh/listing-student-ft"  # the public Hub repo the script pushes to
 HEAD = "head.npz"  # the linear head beside the ONNX encoder in that repo
+ONNX = "onnx/model_quantized.onnx"  # the encoder file the eval serves, as the workers do bge-small
+MARGIN = 0.03  # 6l.3's bar: the fine-tuned student alone beats kNN alone by this much
 DOWNLOAD = "run python -m catalog.student --download"
 EVALS = {  # label file, Jev's stored answers on it (step-6h.md / 6j), Opus's answers if any
     "1,020": (
@@ -234,8 +237,9 @@ class StudentClassifier:
         return self.model.predict(x)
 
 
-def embedder(models: Path, *, download: bool = False) -> Callable:
-    """An `embed` over the fine-tuned encoder, fetched from the Hub like bge-small."""
+def embedder(models: Path, *, download: bool = False) -> tuple[Callable, str]:
+    """An `embed` over the fine-tuned encoder, fetched from the Hub like bge-small, and the Hub
+    revision it came from: the head is pinned to it, and it names the vectors in the cache."""
     from fastembed import TextEmbedding
     from fastembed.common.model_description import ModelSource, PoolingType
 
@@ -246,33 +250,62 @@ def embedder(models: Path, *, download: bool = False) -> Callable:
             normalization=True,
             sources=ModelSource(hf=FT_REPO),
             dim=384,
-            model_file="onnx/model_quantized.onnx",
+            model_file=ONNX,
         )
-    return classify.fastembed(models, FT_MODEL, download=download)
+    try:
+        embed = classify.fastembed(models, FT_MODEL, download=download)
+    except (
+        classify.ModelMissing
+    ) as e:  # its hint names classify's download, which fetches bge-small
+        raise classify.ModelMissing(
+            f"{FT_MODEL} won't load from {models} ({e.__cause__!r}): {DOWNLOAD}"
+        ) from e
+    return embed, revision(models)
 
 
-def load_head(models: Path, *, download: bool = False) -> Softmax:
-    """The fine-tuned head from the same Hub snapshot as the encoder."""
+def revision(models: Path) -> str:
+    """The Hub commit of the downloaded encoder (the snapshot directory fastembed filled)."""
+    return Path(_hub_file(models, ONNX)).parents[1].name
+
+
+def load_head(models: Path, *, revision: str | None = None, download: bool = False) -> Softmax:
+    """The fine-tuned head, from the encoder's Hub revision when given."""
+    return Softmax.load(Path(_hub_file(models, HEAD, revision=revision, download=download)))
+
+
+def _hub_file(models: Path, name: str, *, revision=None, download=False) -> str:
     from huggingface_hub import hf_hub_download
 
     try:
-        path = hf_hub_download(FT_REPO, HEAD, cache_dir=str(models), local_files_only=not download)
-    except Exception as e:  # not downloaded yet (hub raises its own LocalEntryNotFoundError)
-        raise classify.ModelMissing(f"{FT_REPO}/{HEAD} isn't in {models}: {DOWNLOAD}") from e
-    return Softmax.load(Path(path))
+        return hf_hub_download(
+            FT_REPO, name, revision=revision, cache_dir=str(models), local_files_only=not download
+        )
+    except Exception as e:  # not downloaded (the hub's LocalEntryNotFoundError), or a bad fetch
+        raise classify.ModelMissing(
+            f"{FT_REPO}/{name} isn't in {models} ({e!r}): {DOWNLOAD}"
+        ) from e
 
 
 def finetuned(tax, models: Path, kind: str) -> StudentClassifier:
     """The `student-ft` and `student-ft-knn` eval candidates, trained on all of `train/`."""
-    head = load_head(models) if kind == "ft" else None
+    embed, rev = embedder(models)
+    head = load_head(models, revision=rev) if kind == "ft" else None
     return StudentClassifier.train(
-        tax,
-        embedder(models),
-        load_training(),
-        kind,
-        cache=models / "student",
-        model=FT_MODEL,
-        head=head,
+        tax, embed, load_training(), kind, cache=models / "student", model=_name(rev), head=head
+    )
+
+
+def _name(rev: str) -> str:
+    return f"{FT_MODEL}@{rev[:12]}"
+
+
+def beats_knn(alone: float, curve, knn_alone: float, knn_point) -> bool:
+    """6l.3's bar: the fine-tuned student alone beats kNN alone by MARGIN, and some point on its
+    Jev cascade `curve` (kept rate, exact) is no worse than kNN's chosen point in both: at least
+    as accurate at a higher kept rate, or more accurate at the same kept rate or higher."""
+    kept_k, exact_k = knn_point
+    return alone >= knn_alone + MARGIN and any(
+        (e >= exact_k and k > kept_k) or (e > exact_k and k >= kept_k) for k, e in curve
     )
 
 
@@ -361,12 +394,13 @@ def report(
     opus=OPUS,
     clock=time.perf_counter,
     seed=0,
-    finetuned: tuple[Callable, Softmax] | None = None,
+    finetuned: tuple[Callable, Softmax, str] | None = None,
 ) -> str:
     """Fit on 90% of each training source (less any eval title), pick k and the threshold on
     the other 10%, then score each student alone and in the cascade on every eval: the body of
-    `eval/student.md`. `finetuned` is the fine-tuned encoder's `embed` and its head (6l.3),
-    scored the same way. Missing fallback answers for the first eval fail before any work."""
+    `eval/student.md`. `finetuned` is the fine-tuned encoder's `embed`, its head and its name
+    (6l.3), scored the same way plus 6l.3's bar against kNN. Missing fallback answers for the
+    first eval fail before any work."""
     first_labels, first_fallback = next(iter(evals.values()))
     for p in [*first_labels, *first_fallback, opus]:
         if not p.exists():
@@ -400,10 +434,11 @@ def report(
     ]
     students = [("softmax", embed, classify.MODEL, None), ("knn", embed, classify.MODEL, None)]
     if finetuned:
-        ft_embed, head = finetuned
-        students += [("ft", ft_embed, FT_MODEL, head), ("ft-knn", ft_embed, FT_MODEL, None)]
+        ft_embed, head, ft_name = finetuned
+        students += [("ft", ft_embed, ft_name, head), ("ft-knn", ft_embed, ft_name, None)]
     else:
         lines += [f"No fine-tuned student in the models directory ({DOWNLOAD}, step-6l.3.md).", ""]
+    knn = {}  # eval name -> (alone exact, (kept, exact) at kNN's τ with Jev): 6l.3's reference
     for kind, embed, model, head in students:
         x_held = vectors(held_texts, embed, cache, model=model)
         best = None
@@ -422,11 +457,16 @@ def report(
             pick_tau(scored, target=target),
         )
         name = f"student-{kind}" + (f" (k={k})" if k else "")
+        note = (
+            " The fine-tuning script chose its epoch on these rows, so this is optimistic."
+            if kind == "ft"
+            else ""
+        )
         lines += [
             f"## {name}",
             "",
             f"Held-out exact {acc:.1%}; {_tau(tau)} on the Amazon held-out rows "
-            f"({_tau(tau_all)} on all of them).",
+            f"({_tau(tau_all)} on all of them).{note}",
             "",
         ]
         for eval_name, (_, fallback_paths) in evals.items():
@@ -460,13 +500,17 @@ def report(
                 continue
             header = " | ".join(f"Exact, {n} below τ" for n, _ in fallbacks)
             lines += [f"| τ | Kept local | {header} |", "|---|---|" + "---|" * len(fallbacks)]
-            met = None
+            met, curve = None, []
             for t in TAUS:
                 cells = []
                 for n, fb in fallbacks:
                     out, kept = cascade(answers, fb, tau=t)
                     cells.append(f"{_exact(out, labels):.1%}")
                     beats = _exact(out, labels) > _exact(fb, labels)
+                    if n == "Jev":
+                        curve.append((kept / len(labels), _exact(out, labels)))
+                        if t == tau:
+                            point = curve[-1]
                     if n == "Jev" and kept / len(labels) >= 0.7 and met is None and beats:
                         met = t
                 mark = " ← τ" if t == tau else " ← τ (all rows)" if t == tau_all else ""
@@ -477,6 +521,16 @@ def report(
             if fallbacks[0][0] == "Jev":
                 verdict = f"met at τ = {met:.2f}" if met is not None else "not met"
                 lines.append(f"\nBar (beats Jev alone with 70% or more kept local): {verdict}.")
+                if kind == "knn" and tau is not None:
+                    knn[eval_name] = (exact, point)
+                if kind.startswith("ft") and eval_name in knn:
+                    k_alone, (k_kept, k_exact) = knn[eval_name]
+                    ok = beats_knn(exact, curve, k_alone, (k_kept, k_exact))
+                    lines.append(
+                        f"Bar 6l.3 (alone {MARGIN:.0%} over kNN's {k_alone:.1%}, and a cascade "
+                        f"point no worse than kNN's {k_exact:.1%} exact at {k_kept:.1%} kept): "
+                        f"{'met' if ok else 'not met'}."
+                    )
             lines.append("")
     return "\n".join(lines) + "\n"
 
@@ -495,9 +549,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
     embed = classify.fastembed(a.models)
     try:
-        finetuned = (embedder(a.models), load_head(a.models))
-    except classify.ModelMissing:
-        finetuned = None  # the report says so; the frozen students are still scored
+        ft_embed, rev = embedder(a.models)
+        finetuned = (ft_embed, load_head(a.models, revision=rev), _name(rev))
+    except classify.ModelMissing as e:  # the report says so; the frozen students are still scored
+        print(f"no fine-tuned student: {e}", file=sys.stderr)
+        finetuned = None
     body = report(
         taxonomy.load(),
         embed,

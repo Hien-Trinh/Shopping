@@ -404,25 +404,109 @@ def test_evaluate_knows_the_finetuned_candidates():
     assert {"student-ft", "student-ft-knn"} <= set(evaluate.CANDIDATES)
 
 
+def swapped_head():
+    """A head that calls shirts Toys and trains Shirts: only a report that uses the supplied head
+    (not one it refits) scores 0% with it."""
+    x = student.unit(fake_embed([r["title"] for r in FT_ROWS]))
+    swap = {"Apparel > Shirts": "Toys", "Toys": "Apparel > Shirts"}
+    return student.Softmax.fit(x, [swap[r["category"]] for r in FT_ROWS])
+
+
 def test_report_lists_the_finetuned_students_when_given(tmp_path):
-    # 6l.3 test point 4: the same sections as the frozen students; a note when there is none
+    # 6l.3 test point 4: the same sections as the frozen students, scored with the given head,
+    # plus 6l.3's bar against kNN; a note when there is none
     evals, opus = write_eval(tmp_path)
     kw = dict(evals=evals, opus=opus, clock=ticking())
     body = student.report(
-        TAX, fake_embed, SOURCES, tmp_path / "cache", finetuned=(fake_embed, fake_head()), **kw
+        TAX,
+        fake_embed,
+        SOURCES,
+        tmp_path / "cache",
+        finetuned=(fake_embed, swapped_head(), "student-ft@abc123def456"),
+        **kw,
     )
-    assert "## student-ft" in body and "## student-ft-knn (k=5)" in body
+    ft = body[body.index("## student-ft\n") : body.index("## student-ft-knn")]
+    assert "Student alone: exact 0.0%" in ft and "so this is optimistic" in ft
+    assert "Bar 6l.3 (alone 3% over kNN's 100.0%, and a cascade point no worse than kNN's" in ft
+    assert ft.count("not met") == 2  # 6l.2's bar and 6l.3's
+    knn_ft = body[body.index("## student-ft-knn (k=5)") :]
+    assert "Student alone: exact 100.0%" in knn_ft and "Bar 6l.3" in knn_ft
     assert body.count("Bar (beats Jev alone with 70% or more kept local)") == 4
     without = student.report(TAX, fake_embed, SOURCES, tmp_path / "cache", **kw)
     assert "## student-ft" not in without and "catalog.student --download" in without
 
 
+def test_beats_knn_needs_the_margin_and_a_no_worse_cascade_point():
+    # step-6l.3.md, the bar: +3 points alone, and a point at least as accurate at a higher kept
+    # rate or more accurate at the same kept rate
+    knn_point = (0.837, 0.700)
+    better = [(0.90, 0.700), (0.70, 0.750)]
+    assert student.beats_knn(0.687, better, 0.657, knn_point)
+    assert not student.beats_knn(0.686, better, 0.657, knn_point)  # 2.9 points is not 3
+    assert not student.beats_knn(0.70, [(0.837, 0.700)], 0.657, knn_point)  # the same point
+    assert not student.beats_knn(0.70, [(0.90, 0.699), (0.80, 0.75)], 0.657, knn_point)
+    assert student.beats_knn(0.70, [(0.837, 0.701)], 0.657, knn_point)
+
+
+def hub_cache(models: Path, rev: str, head: student.Softmax | None = None) -> Path:
+    """What `--download` leaves in `models`: the Hub cache layout at one revision."""
+    repo = models / f"models--{student.FT_REPO.replace('/', '--')}"
+    snapshot = repo / "snapshots" / rev
+    (snapshot / "onnx").mkdir(parents=True)
+    (snapshot / "onnx" / "model_quantized.onnx").write_bytes(b"onnx")
+    if head:
+        head.save(snapshot / student.HEAD)
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text(rev)
+    return snapshot
+
+
+def test_the_head_is_loaded_from_the_encoders_revision(tmp_path):
+    # review round 1: encoder and head from the same Hub commit, and the revision names the cache
+    old, new = "a" * 40, "b" * 40
+    hub_cache(tmp_path, new, fake_head())
+    assert student.revision(tmp_path) == new
+    assert student.load_head(tmp_path, revision=new).classes == fake_head().classes
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download") as e:
+        student.load_head(tmp_path, revision=old)
+    assert e.value.__cause__ is not None and "(" in str(e.value)  # the cause is in the message
+    assert student._name(new) == "student-ft@bbbbbbbbbbbb"
+
+
+def test_a_missing_finetuned_encoder_names_the_students_download(tmp_path, monkeypatch):
+    # review round 1: classify's hint would refetch bge-small, not the fine-tuned encoder
+    def missing(models, model, *, download):
+        raise classify.ModelMissing(f"{model} won't load: {classify.DOWNLOAD}") from ValueError("x")
+
+    monkeypatch.setattr(classify, "fastembed", missing)
+    with pytest.raises(classify.ModelMissing, match="catalog.student --download") as e:
+        student.embedder(tmp_path)
+    assert "catalog.classify --download" not in str(e.value) and "ValueError" in str(e.value)
+
+
+def test_evaluate_dispatches_the_finetuned_candidates(tmp_path, monkeypatch):
+    # review round 1: the branch in evaluate.candidate, not only the names
+    seen = []
+    monkeypatch.setattr(student, "finetuned", lambda tax, models, kind: seen.append(kind))
+    evaluate.candidate("student-ft", tmp_path)
+    evaluate.candidate("student-ft-knn", tmp_path)
+    assert seen == ["ft", "ft-knn"]
+
+
+def test_main_says_why_the_finetuned_student_is_skipped(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(student.classify, "fastembed", lambda models, model=None, **_: None)
+    monkeypatch.setattr(student, "load_training", lambda paths: [])
+    monkeypatch.setattr(student, "report", lambda *_, **__: "# report\n")
+    student.main(["--models", str(tmp_path), "--out", str(tmp_path / "r.md")])
+    assert "no fine-tuned student" in capsys.readouterr().err
+
+
 def test_finetuned_wires_the_head_into_the_ft_candidate_only(tmp_path, monkeypatch):
     head = fake_head()
-    monkeypatch.setattr(student, "embedder", lambda models: fake_embed)
-    monkeypatch.setattr(student, "load_head", lambda models: head)
+    monkeypatch.setattr(student, "embedder", lambda models: (fake_embed, "c" * 40))
+    monkeypatch.setattr(student, "load_head", lambda models, revision: (revision, head)[1])
     monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
     ft = student.finetuned(TAX, tmp_path, "ft")
-    assert ft.model is head and ft.taxonomy_version.endswith("+student-ft")
+    assert ft.model is head and ft.taxonomy_version.endswith("+student-ft@cccccccccccc+student-ft")
     knn = student.finetuned(TAX, tmp_path, "ft-knn")
     assert isinstance(knn.model, student.Knn)

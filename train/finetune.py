@@ -1,8 +1,16 @@
 """Fine-tune bge-small end-to-end as the student (docs/specs/step-6l.3.md).
 
-Plain Python, so it runs where there is a GPU: a Colab cell (clone the repo, `pip install -e .
-torch transformers onnx`, run this file), a Hugging Face Job, or the Mac for `--smoke`
-(`uv run --group finetune python train/finetune.py --smoke`). Not imported by `src/`.
+Plain Python, so it runs where there is a GPU. The project needs Python 3.14, which Colab
+doesn't ship, so install through uv there (it brings its own Python and the locked versions):
+
+    !curl -LsSf https://astral.sh/uv/install.sh | sh
+    !git clone -b <branch> https://github.com/Hien-Trinh/Shopping.git && cd Shopping && \
+        ~/.local/bin/uv sync --group finetune                      # about 2 min
+    %env HF_TOKEN=<a write token>                                   # or Colab's secrets
+    !cd Shopping && ~/.local/bin/uv run python train/finetune.py --smoke --out /content/smoke
+    !cd Shopping && ~/.local/bin/uv run python train/finetune.py --out /content/student-ft --push
+
+On the Mac, `uv run --group finetune python train/finetune.py --smoke`. Not imported by `src/`.
 
 Writes to `--out`: `onnx/model.onnx` and `onnx/model_quantized.onnx` (the encoder; fastembed does
 the CLS pooling and normalization), the tokenizer files, `head.npz` (the linear head in
@@ -13,6 +21,7 @@ folder to the Hub repo the eval downloads (`python -m catalog.student --download
 import argparse
 import hashlib
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -24,7 +33,7 @@ import torch
 from torch.nn import functional as F
 from transformers import AutoModel, AutoTokenizer
 
-from catalog import student
+from catalog import entry, student
 
 BASE = "BAAI/bge-small-en-v1.5"  # the fp32 checkpoint of the model the workers run as int8 ONNX
 MAX_LENGTH = 128  # title plus 200 description characters is about 64 tokens
@@ -100,9 +109,25 @@ def exact(model, tokenizer, rows, classes, size, device) -> float:
     return hits / len(rows)
 
 
+def signature(a, fit, classes) -> dict:
+    """What a checkpoint must match to be resumed: the data and the hyperparameters that shape
+    the weights and the optimizer (not the epoch count, so a run can be continued for more)."""
+    return {
+        "data_sha256": hashlib.sha256(
+            json.dumps([[r["title"], r["description"], r["category"]] for r in fit]).encode()
+        ).hexdigest(),
+        "classes": len(classes),
+        "batch": a.batch,
+        "lr": a.lr,
+        "head_lr": a.head_lr,
+        "smoke": a.smoke,
+    }
+
+
 def train(a, fit, held, device) -> tuple[Student, AutoTokenizer, list[str], dict]:
     torch.manual_seed(SEED)
     classes = sorted({r["category"] for r in fit})
+    sig = signature(a, fit, classes)
     tokenizer = AutoTokenizer.from_pretrained(BASE)
     model = Student(Encoder(BASE), len(classes)).to(device)
     optim = torch.optim.AdamW(
@@ -123,6 +148,15 @@ def train(a, fit, held, device) -> tuple[Student, AutoTokenizer, list[str], dict
     checkpoint = a.out / CHECKPOINT
     if checkpoint.exists():  # a Colab disconnect or a spot eviction: pick up at the next epoch
         saved = torch.load(checkpoint, map_location=device, weights_only=False)
+        if saved.get("signature") != sig:
+            print(
+                "ignoring a checkpoint from another run (data or hyperparameters differ)",
+                file=sys.stderr,
+            )
+            saved = None
+    else:
+        saved = None
+    if saved:
         model.load_state_dict(saved["model"])
         optim.load_state_dict(saved["optim"])
         sched.load_state_dict(saved["sched"])
@@ -166,9 +200,11 @@ def train(a, fit, held, device) -> tuple[Student, AutoTokenizer, list[str], dict
                 "log": log,
                 "best": best,
                 "epoch": epoch,
+                "signature": sig,
             },
-            checkpoint,
+            checkpoint.with_suffix(".tmp"),
         )
+        os.replace(checkpoint.with_suffix(".tmp"), checkpoint)  # whole or absent, never truncated
     model.load_state_dict(best[1])
     return model, tokenizer, classes, log
 
@@ -181,6 +217,7 @@ def export(model: Student, tokenizer, classes, held, out: Path, device) -> dict:
 
     model.eval().to("cpu")
     (out / "onnx").mkdir(parents=True, exist_ok=True)
+    tokenizer.model_max_length = MAX_LENGTH  # fastembed reads it: serve at the training length
     tokenizer.save_pretrained(out)
     model.encoder.model.config.save_pretrained(out)
     sample, _ = next(batches(tokenizer, held[:4], classes, 4, torch.device("cpu"), shuffle=False))
@@ -213,14 +250,35 @@ def export(model: Student, tokenizer, classes, held, out: Path, device) -> dict:
     )
     w = model.head.weight.detach().numpy().T.astype(np.float64)
     b = model.head.bias.detach().numpy().astype(np.float64)
-    student.Softmax(classes, w, b).save(out / student.HEAD)
-    return {"onnx_vs_torch_max_abs_diff": gap}
+    head = student.Softmax(classes, w, b)
+    head.save(out / student.HEAD)
+    return {"onnx_vs_torch_max_abs_diff": gap, **_int8_cost(out, tokenizer, held, classes, head)}
+
+
+def _int8_cost(out: Path, tokenizer, held, classes, head) -> dict:
+    """Held-out exact through each ONNX file and the head, the path the eval serves: what int8
+    costs against fp32 (step-6l.3.md)."""
+    import onnxruntime as ort
+
+    names = ["input_ids", "attention_mask", "token_type_ids"]
+    labels = [r["category"] for r in held]
+    exact = {}
+    for key, name in (("fp32", "model.onnx"), ("int8", "model_quantized.onnx")):
+        session = ort.InferenceSession(str(out / "onnx" / name))
+        got = []
+        for batch, _ in batches(tokenizer, held, classes, 100, torch.device("cpu"), shuffle=False):
+            x = student.unit(session.run(None, {n: batch[n].numpy() for n in names})[0][:, 0])
+            got += [p[0] for p in head.predict(x)]
+        exact[f"held_out_exact_{key}"] = round(
+            sum(g == y for g, y in zip(got, labels, strict=True)) / len(labels), 4
+        )
+    return exact
 
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--out", type=Path, default=Path("models/student-ft"))
-    p.add_argument("--epochs", type=int, default=4)
+    p.add_argument("--epochs", type=int, default=None, help="4, or 1 with --smoke")
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--lr", type=float, default=5e-5, help="encoder learning rate")
     p.add_argument("--head-lr", type=float, default=1e-3)
@@ -229,8 +287,13 @@ def main(argv=None) -> None:
     p.add_argument("--smoke", action="store_true", help="200 rows, 1 epoch, a few steps, no push")
     p.add_argument("--smoke-steps", type=int, default=3)
     a = p.parse_args(argv)
+    a.epochs = a.epochs or (1 if a.smoke else 4)
     if a.smoke:
-        a.epochs, a.push = 1, False
+        a.push = False
+    if a.push:  # fail before the GPU run, not after it
+        from huggingface_hub import HfApi
+
+        HfApi().whoami()
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()
@@ -256,9 +319,10 @@ def main(argv=None) -> None:
         "max_length": MAX_LENGTH,
         "seed": SEED,
         "smoke": a.smoke,
-        "data_sha256": hashlib.sha256(
-            json.dumps([[r["title"], r["description"], r["category"]] for r in fit]).encode()
-        ).hexdigest(),
+        "weight_decay": 0.01,
+        "grad_clip": 1.0,
+        "mixed_precision": device.type == "cuda",
+        **signature(a, fit, classes),
         "git_sha": _git_sha(),
         "device": str(device)
         + (f" {torch.cuda.get_device_name(0)}" if device.type == "cuda" else ""),
@@ -291,4 +355,4 @@ def _git_sha() -> str:
 
 
 if __name__ == "__main__":
-    main()
+    entry.exit_with(main)

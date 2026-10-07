@@ -1,5 +1,7 @@
 """The student prototype (docs/specs/step-6l.md, test points 1-5)."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from support import listing
@@ -187,6 +189,23 @@ def test_held_out_takes_ten_percent_of_each_source():
     assert len(fit) == 108
 
 
+def test_training_reads_the_second_amazon_file():
+    # docs/specs/step-6l.2.md, test point 1
+    path = Path("train/amazon-opus-2.jsonl")
+    assert path in student.TRAIN
+    rows = student.load_training([path])
+    assert len(rows) > 8000 and all("amazon_category" in r for r in rows)
+
+
+def test_tau_is_picked_on_the_amazon_rows_only():
+    # docs/specs/step-6l.2.md, test point 2: Shopify rows right where Amazon rows are wrong
+    held = [{"source": "shopify-train"}] * 4 + [{"amazon_category": "Toys"}] * 2
+    scored = [("A", 0.3, True)] * 4 + [("A", 0.3, False), ("A", 0.6, True)]
+    grid = [0.0, 0.3, 0.6]
+    assert student.pick_tau(scored, target=0.6, grid=grid) == 0.0
+    assert student.pick_tau(student.amazon(scored, held), target=0.6, grid=grid) == 0.6
+
+
 def test_rows_with_an_eval_title_are_dropped():
     rows = [{"title": "Blue Shirt"}, {"title": "Toy train"}]
     assert student.without_titles(rows, ["blue shirt"]) == [{"title": "Toy train"}]
@@ -227,7 +246,15 @@ def ticking():
 SOURCES = [  # titles unlike the eval's, which the report drops from training
     [{"title": "Red shirt", "description": "", "category": "Apparel > Shirts"}] * 10
     + [{"title": "Wooden train", "description": "", "category": "Toys"}] * 10,
-    [{"title": "Green shirt", "description": "", "category": "Apparel > Shirts"}] * 10,
+    [
+        {
+            "title": "Green shirt",
+            "description": "",
+            "category": "Apparel > Shirts",
+            "amazon_category": "x",
+        }
+    ]
+    * 10,
 ]
 
 
@@ -243,6 +270,33 @@ def test_report_scores_each_student_alone_and_in_the_cascade(tmp_path):
     assert "Jev alone: exact 50.0%" in body and "Opus alone: exact 100.0%" in body
     assert "| 0.00 ← τ | 100.0% | 100.0% | 100.0% |" in body
     assert "Bar (beats Jev alone with 70% or more kept local): met at τ = 0.00" in body
+
+
+def test_report_picks_tau_on_the_amazon_rows_and_marks_both(tmp_path, monkeypatch):
+    # step-6l.2.md, 6l.2b point 2 (review round 1): τ from the Amazon rows; the table shows both
+    evals, opus = write_eval(tmp_path)
+    calls = []
+
+    def pick(scored, *, target):
+        calls.append(len(scored))
+        return 0.05 if len(calls) % 2 else 0.5
+
+    monkeypatch.setattr(student, "pick_tau", pick)
+    body = student.report(
+        TAX, fake_embed, SOURCES, tmp_path / "cache", evals=evals, opus=opus, clock=ticking()
+    )
+    assert calls[:2] == [1, 3]  # 1 of the 3 held-out rows is an Amazon row
+    assert "τ = 0.05 on the Amazon held-out rows (τ = 0.50 on all of them)" in body
+    assert "| 0.05 ← τ |" in body and "| 0.50 ← τ (all rows) |" in body
+
+
+def test_report_refuses_a_held_out_set_without_amazon_rows(tmp_path):
+    evals, opus = write_eval(tmp_path)
+    shopify_only = [
+        [{k: v for k, v in r.items() if k != "amazon_category"} for r in s] for s in SOURCES
+    ]
+    with pytest.raises(ValueError, match="no Amazon rows held out"):
+        student.report(TAX, fake_embed, shopify_only, tmp_path / "cache", evals=evals, opus=opus)
 
 
 def test_report_counts_eval_labels_unseen_in_training(tmp_path):

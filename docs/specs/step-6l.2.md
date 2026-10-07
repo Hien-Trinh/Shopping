@@ -59,6 +59,16 @@ In `tests/integration/test_student.py`:
 2. **The threshold rule:** pick τ on the held-out Amazon rows only (my default), or keep the rule from 6l (all held-out rows)? The bar's verdict reads the whole curve, so it doesn't depend on this; τ is what 6m would ship.
 3. **The test points above.** OK?
 
+## Outcome, 6l.2a (Oct 6)
+
+- **The draw:** `sample --per-category 1000 --seed 3`, less the ids and titles above, first 245 per category: 8,085 Listings (33 × 245).
+- **Opus:** 85 agents (95–96 Listings each) with 6k.2's brief, in waves of 20. Every batch passed the in-session checks first time; 1,937 unsure (24%), 8 `none`, 55 non-leaf answers above level 3. About 10.8M tokens.
+- **The review:** 2,139 items to 24 Sonnet agents, blind: the 1,937 unsure, the 55 above level 3, a random 100, and (added) the 47 confident `Subscription Services` answers, a known failure mode the leaf rule would skip. One reviewer said it labeled from titles with quick searches only, so its batch went to a fresh agent. About 2.9M tokens.
+- **Agreement:** 1,199 of 1,937 unsure, 5 of 55 above level 3, 95 of 100 random, 47 of 47 subscription. Of the 793 disagreements, three rules settled 257 (a format pair the text can't settle keeps Opus: 152; a Sonnet `none` keeps Opus: 31; Opus above level 3 with Sonnet on a level-3 child takes Sonnet: 74) and I adjudicated 536 (218 changed).
+- **Changed:** 292 labels (240 unsure, 50 of the 55 above level 3, 2 random, 0 subscription). 7 final `none` rows dropped.
+- **Error rate:** 2 of the 100 random sure labels changed, so about 2% among the sure labels (95% interval about 0.5–7%).
+- **Committed:** `train/amazon-opus-2.jsonl`, 8,078 rows over 790 Categories; [docs/labeling.md](../labeling.md) records the run.
+
 ## Out of scope
 
 - Weighting Amazon rows over Shopify's in training, fine-tuning bge-small, the pipeline (6m).

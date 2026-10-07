@@ -1,12 +1,13 @@
 # Labeling Listings with Claude agents
 
-How to label Listings with Shopify Categories using Claude Code agents on the Max plan: no API key, no spend, no project code. Used three times so far:
+How to label Listings with Shopify Categories using Claude Code agents on the Max plan: no API key, no spend, no project code. Used four times so far:
 
 | Run | Labeler | Listings | Usage | Wall time | Result |
 |---|---|---|---|---|---|
 | [6i](specs/step-6i.md) | Sonnet 5.5, 9 agents | 825 | about 1.5M tokens | about 1 h | `eval/labels-sonnet.jsonl`; 7% errors among sure labels on the first audit, 1–2% after the level-3 fix |
 | [6j](specs/step-6j.md) | Opus 5.5, 11 agents | 1,020 | about 1.45M tokens | about 3 min (parallel) | `eval/results/opus-agents.jsonl`; 96.6% after adjudication ([eval/teacher.md](../eval/teacher.md)) |
 | [6k.2](specs/step-6k.md) | Opus 5.5, 22 agents, then 7 Sonnet 5.5 agents for a second opinion | 2,013 | about 2.8M + 0.8M tokens | about 35 min | `train/amazon-opus.jsonl`; 62 labels changed in review; 1 of 100 random sure labels wrong |
+| [6l.2](specs/step-6l.2.md) | Opus 5.5, 85 agents, then 24 Sonnet 5.5 agents for a second opinion | 8,085 | about 10.8M + 2.9M tokens | about 30 min of agents, then adjudication | `train/amazon-opus-2.jsonl`; 292 labels changed in review, 7 `none` dropped; 2 of 100 random sure labels wrong |
 
 ## 1. Draw the Listings
 
@@ -78,6 +79,8 @@ Only items you can't sort go to the user, each with a default.
 
 For a training set, where there is no reference label: give the items to review (every `confident: false`, every answer above level 3 that isn't a leaf such as `Gift Cards`, and a random 100 of the rest) to a second labeler, blind, with the same brief: Sonnet if Opus labeled. Where both agree, keep the label; adjudicate only where they differ (6k.2: 210 of 594). The random 100's disagreements measure the error among the sure labels.
 
+6l.2 added: every confident `Product Add-Ons > Subscription Services` answer (a leaf, so the rule above skips it, but a known failure mode; all 47 held up), and three rules settled 257 of 793 disagreements before adjudication: a format pair the text can't settle (CD or download, DVD or download, print or e-book, physical or digital game) keeps Opus's answer; a Sonnet `none` keeps Opus's; Opus above level 3 with Sonnet on one of its level-3 children takes Sonnet's. Sonnet agreed with Opus on only 5 of 55 non-leaf answers above level 3, and Opus's answer was wrong on 50 of them.
+
 ## 8. Audit a sample (when the labels become a label file)
 
 From 6i: research every `confident: false`, every `none`, and a random 50–100 of the rest against the full taxonomy. Report the error rate among the sure labels with its 95% interval (6i: 7 of 100, about 3–14%).
@@ -92,6 +95,7 @@ From 6i: research every `confident: false`, every `none`, and a random 50–100 
 ## Gotchas
 
 - At most 20 agents run at once in one session; start the rest as the first ones finish.
+- Read each reviewer's reply: one 6l.2 Sonnet agent said it labeled from titles with quick searches only, so its batch went to a fresh agent. Another answered `none` for 13 films, missing `Media > Videos`; the disagreement step catches that, since a `none` never overrides.
 
 - In a worktree, `models/` is empty: pass `--models /path/to/main/checkout/models` to `evaluate run` rather than downloading again.
 - The eval name of the Jev candidate is `jev-shortlist`; plain `jev` (the worker's name) falls through to Laya and fails with "Laya won't load".

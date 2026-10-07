@@ -1,6 +1,6 @@
 # Step 7f: the Listing Store's rewrite churn (mini PRD)
 
-Status: draft Oct 7, for your review. Decided in chat Oct 7: small files for the Listing Store and a minute-level vacuum of its dead files (options 2 and 3 of the five weighed); the append-only store is question 2. Plan row: [plan-v1.md, PR steps, 7f](../plan-v1.md). Builds on [step-7d.md](step-7d.md) and [docs/stress.md](../stress.md) (7d.2b: the SLO run cannot complete), [step-5d.md](step-5d.md) (maintenance never vacuums past the slowest reader), [ADR-0001](../adr/0001-owner-only-writes.md) (only a partition's owner writes it) and [ADR-0002](../adr/0002-local-first-delta.md) (Delta, so the tables move to Databricks as they are). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: draft Oct 7, for your review. Decided in chat Oct 7: small files for the Listing Store and a minute-level vacuum of its dead files (options 2 and 3 of the five weighed); the append-only store is question 2. Plan row: [plan-v1.md, PR steps, 7f](../plan-v1.md). Builds on [step-7d.md](step-7d.md) and [docs/stress.md](../stress.md) (7d.2b: the SLO run cannot complete), [step-5d.md](step-5d.md) (maintenance never vacuums past the slowest reader), [ADR-0001](../adr/0001-partition-by-listing-key.md) (only a partition's owner writes it) and [ADR-0002](../adr/0002-local-first-delta-no-queue.md) (Delta, so the tables move to Databricks as they are). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 

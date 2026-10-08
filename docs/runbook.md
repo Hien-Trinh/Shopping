@@ -92,6 +92,12 @@ rm -rf data/landing_log data/listing_store data/events data/export data/snapshot
 
 Delete `state/` with the tables, never alone and never without them: offsets saved against one Landing log are refused against another (worker exit 4).
 
+A Listing Store created before step 7f lacks the file-size property, so its MERGEs still rewrite whole partitions. Set it once, with the system stopped; files written before stay large until a MERGE or a compaction touches their partition:
+
+```bash
+uv run python -c "from deltalake import DeltaTable; DeltaTable('data/listing_store').alter.set_table_properties({'delta.targetFileSize': str(1 << 20)})"
+```
+
 ## Read results
 
 ```bash
@@ -123,6 +129,7 @@ cat data/events/*/supervisor-*.jsonl | grep process_exit | tail
 | `worker_stop`, `api_stop`, `export_stop`, `snapshots_stop`, `maintenance_stop`, `backfill_stop` | how it stopped: `error` if one ended it, `reason: supervisor_gone` if its supervisor died. |
 | `watch_exit` | a process stuck after its supervisor died, force-exited |
 | `tick_failed` | a worker's failed tick, retried with backoff (5 in a row and it exits 1) |
+| `store_vacuum` | maintenance removed the Listing Store's dead files (step 7f): `removed` and `bytes`; `kept_versions` a reader can still need; `pin_stale` if a Snapshots pin older than an hour was ignored; `commit_failed` if a MERGE landed meanwhile (what it left goes next pass) |
 | `classify_failed` | Listings left Uncategorized: `reason` budget or error |
 | `refused`, `rejected` | a request or a Change the API turned away |
 

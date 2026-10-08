@@ -1,6 +1,6 @@
 # Step 5d: Retention and maintenance (mini PRD)
 
-Status: approved Oct 3. Confirmed: the history guard (decision 1), refreshing before each append (decision 3), the Listing Store's vacuum (decision 5), the two-PR split (Size), and the test points. Plan row: [plan-v1.md, PR steps, 5d](../plan-v1.md), and Phase 5's tests "Landing log retention and compaction don't break worker reads" and "retention never deletes or vacuums past the slowest partition's offset". Design: the [Landing log and Change Export rows, and the retention line](../design-commerce-ingestion-pipeline.md), A4, A13, A18 and B2 in [plan-v1.md](../plan-v1.md), and [ADR-0002](../adr/0002-local-first-delta-no-queue.md) ("Retention is capped by one laptop disk"). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 3. Confirmed: the history guard (decision 1), refreshing before each append (decision 3), the Listing Store's vacuum (decision 5), the two-PR split (Size), and the test points. Plan row: [plan-v1.md, PR steps, 5d](../plan-v1.md), and Phase 5's tests "Landing log retention and compaction don't break worker reads" and "retention never deletes or vacuums past the slowest partition's offset". Design: the [Landing log and Change Export rows, and the retention line](../design-commerce-ingestion-pipeline.md), A4, A13, A18 and B2 in [plan-v1.md](../plan-v1.md), and [ADR-0002](../adr/0002-local-first-delta-no-queue.md) ("Retention is capped by one laptop disk"). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

@@ -1,6 +1,6 @@
 # Step 4b: `POST /listings:batch` (mini PRD)
 
-Status: approved Oct 3. Confirmed: `verify` raises `Denied` (decision 3), an all-invalid request gets 202 (decision 7), a `refused` event for every refusal (decision 9), and the test points. Plan row: [plan-v1.md, PR steps, 4b](../plan-v1.md). Design: the [Ingestion API row and lifecycle steps 1–2](../design-commerce-ingestion-pipeline.md), and A12, A13 and B8 in [plan-v1.md](../plan-v1.md). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 3. Confirmed: `verify` raises `Denied` (decision 3), an all-invalid request gets 202 (decision 7), a `refused` event for every refusal (decision 9), and the test points. Plan row: [plan-v1.md, PR steps, 4b](../plan-v1.md). Design: the [Ingestion API row and lifecycle steps 1–2](../design-commerce-ingestion-pipeline.md), and A12, A13 and B8 in [plan-v1.md](../plan-v1.md). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

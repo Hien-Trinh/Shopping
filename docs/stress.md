@@ -1,6 +1,6 @@
 # Stress report
 
-The full runs of [step 7d.2](specs/step-7d.md) on one Mac. Part 7d.2a (Oct 7): the 1M initial load on the `fake` classifier and the six deferred costs on that store. Part 7d.2b (Oct 7, after step 6m.2): the SLO run and the 10k bulk on the student; the exit stays open, blocked by the disk. Commands follow [the runbook](runbook.md); terms follow [CONTEXT.md](../CONTEXT.md).
+The full runs of [step 7d.2](specs/step-7d.md) on one Mac. Part 7d.2a (Oct 7): the 1M initial load on the `fake` classifier and the six deferred costs on that store. Part 7d.2b (Oct 7, after step 6m.2): the SLO run and the 10k bulk on the student; the exit stays open, blocked by the disk. Commands follow [the runbook](runbook.md); terms follow [GLOSSARY.md](../GLOSSARY.md).
 
 ## The machine
 

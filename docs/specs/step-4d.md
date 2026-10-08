@@ -1,6 +1,6 @@
 # Step 4d: `GET /submissions/{id}` (mini PRD)
 
-Status: approved Oct 3. Confirmed: 404 for every "not yours" (decision 2), UUIDv7-only ids (decision 3), the response shape (decision 5), minting the id from the API clock (decision 6), and the test points. Plan row: [plan-v1.md, PR steps, 4d](../plan-v1.md). Design: the [Ingestion API row and "Submission status"](../design-commerce-ingestion-pipeline.md), A12 in [plan-v1.md](../plan-v1.md), and the Phase 4 tests ("a merchant can't read another merchant's Submission"; "status moves through pending, then done, then a mix of outcomes"). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 3. Confirmed: 404 for every "not yours" (decision 2), UUIDv7-only ids (decision 3), the response shape (decision 5), minting the id from the API clock (decision 6), and the test points. Plan row: [plan-v1.md, PR steps, 4d](../plan-v1.md). Design: the [Ingestion API row and "Submission status"](../design-commerce-ingestion-pipeline.md), A12 in [plan-v1.md](../plan-v1.md), and the Phase 4 tests ("a merchant can't read another merchant's Submission"; "status moves through pending, then done, then a mix of outcomes"). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

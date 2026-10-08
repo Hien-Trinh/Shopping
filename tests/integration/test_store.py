@@ -1,3 +1,4 @@
+import os
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -153,6 +154,24 @@ def test_merge_rewrites_only_the_file_holding_the_listing(db):
     store.merge(db, [write(2, listing(price=9), key=keys[0])], NOW)
     ops = DeltaTable(db.table_uri).history(1)[0]["operationMetrics"]
     assert ops["num_target_files_removed"] == 1
+
+
+def test_a_partition_is_written_as_small_files_so_a_merge_rewrites_one_of_them(db):
+    # One MERGE lands 2,500 Listings of about 1.2 KB in partition 5: about 3 MB, so more than
+    # one file at the 1 MiB target; a later update of one Listing then rewrites its file alone.
+    keys = [("m_1", product_in(5, prefix=f"s{i}")) for i in range(2500)]
+    text = {k: os.urandom(600).hex() for k in keys}  # 1.2 KB that does not compress away
+    store.merge(db, [write(1, listing(description=text[k]), key=k) for k in keys], NOW)
+    files = len(files_in(db, 5))
+    assert files > 1
+    store.merge(db, [write(2, listing(description=text[keys[7]], price=9), key=keys[7])], NOW)
+    ops = DeltaTable(db.table_uri).history(1)[0]["operationMetrics"]
+    assert ops["num_target_files_removed"] == 1
+    assert len(files_in(db, 5)) == files
+
+
+def test_ensure_creates_the_store_with_the_compaction_target_as_its_file_size(db):
+    assert db.metadata().configuration["delta.targetFileSize"] == str(store.COMPACT_TARGET)
 
 
 def test_a_handle_sees_other_writers(db):

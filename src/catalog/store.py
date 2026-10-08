@@ -69,7 +69,10 @@ class Merged:
 
 
 def ensure(path: str) -> DeltaTable:
-    return delta.ensure(path, SCHEMA)
+    # A MERGE writes a partition's output in files up to this size, so a later MERGE rewrites
+    # the files holding its rows, not the partition (step 7f). An existing store without the
+    # property gets it from the runbook's `alter` line.
+    return delta.ensure(path, SCHEMA, **{"delta.targetFileSize": str(COMPACT_TARGET)})
 
 
 def read(dt: DeltaTable, keys: Collection[Key]) -> dict[Key, Stored]:

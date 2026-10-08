@@ -27,6 +27,7 @@ class Env:
         self.tmp = tmp
         self.dt = store.ensure(str(tmp / "data" / "listing_store"))
         self.out = tmp / "data" / "snapshots"
+        self.state = tmp / "state"
         self.events = EventLog(tmp / "data" / "events", "snapshots")
 
     def merge(self, *writes):
@@ -91,6 +92,46 @@ def test_a_second_snapshot_in_the_same_second_is_refused_and_leaves_nothing(env)
     with pytest.raises(OSError):
         snapshots.take(env.dt, env.out, NOW)
     assert os.listdir(env.out) == ["20261003T120000Z"]
+
+
+# The pin (step 7f): the store's vacuum keeps the version a pass is copying while it exists.
+
+
+def test_a_pass_pins_the_version_it_copies_and_unpins_after(env, monkeypatch):
+    env.merge(write(A, 1, listing()))
+    seen = []
+    real = snapshots.write_deltalake
+    monkeypatch.setattr(
+        snapshots,
+        "write_deltalake",
+        lambda *a, **k: (seen.append(state.load_pin(env.state)), real(*a, **k))[1],
+    )
+    snapshots.take(env.dt, env.out, NOW, state_dir=env.state)
+    (pin,) = seen  # written before the copy, naming the version being copied
+    assert pin[0] == env.dt.version() and pin[1] == NOW
+    assert state.load_pin(env.state) is None  # removed after it
+
+
+def test_a_failed_copy_unpins_too(env):
+    env.merge(write(A, 1, listing()), write(B, 1, listing()))
+    next(p for p in (env.tmp / "data" / "listing_store").rglob("*.parquet")).unlink()
+    with pytest.raises(Exception, match="not found|No such file"):
+        snapshots.take(env.dt, env.out, NOW, state_dir=env.state)
+    assert state.load_pin(env.state) is None
+
+
+def test_a_pin_left_by_a_killed_pass_is_removed_at_start(env):
+    snapshots.take(env.dt, env.out, datetime.now(UTC))  # fresh: the run takes none
+    state.save_pin(env.state, 0, NOW)
+    stop = threading.Event()
+    runner = threading.Thread(
+        target=snapshots.run, args=(env.tmp / "data", env.state), kwargs={"stop": stop}
+    )
+    runner.start()
+    wait_for(lambda: state.load_pin(env.state) is None)
+    stop.set()
+    runner.join(timeout=10)
+    assert names(env) == [snapshots.existing(env.out)[0].name]  # still the one snapshot
 
 
 H = timedelta(hours=1)

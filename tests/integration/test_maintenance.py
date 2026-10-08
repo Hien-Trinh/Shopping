@@ -59,6 +59,16 @@ class Env:
     def rows(self):
         return landing.ensure(self.log.table_uri).to_pyarrow_table().num_rows
 
+    def vacuum_store(self, later=timedelta()):
+        now = datetime.now(UTC) + later
+        return maintenance.vacuum_store(self.store, self.state, self.events, now)
+
+    def store_files(self):
+        return sorted((self.tmp / "data" / "listing_store").rglob("part-*.parquet"))
+
+    def store_events(self):
+        return [e for e in events.read(self.tmp / "data" / "events") if e["type"] == "store_vacuum"]
+
     def reports(self):
         return [e for e in events.read(self.tmp / "data" / "events") if e["type"] == "maintenance"]
 
@@ -149,6 +159,83 @@ def test_the_listing_stores_vacuum_removes_replaced_files_once_exported(env):
     env.offsets()
     env.tick(floor=timedelta())
     assert env.reports()[-1]["listing_store"]["vacuumed"] > 0
+
+
+# The Listing Store's own vacuum (step 7f): every minute, dead files older than the grace go.
+
+
+def test_the_store_vacuum_removes_a_file_replaced_before_the_grace(env):
+    env.merge(1)
+    head = env.merge(2)  # replaces the file holding the Listing
+    env.watermark(head)
+    before = env.store_files()
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert len(env.store_files()) < len(before)
+
+
+def test_the_store_vacuum_keeps_the_files_of_a_version_committed_inside_the_grace(env):
+    env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    before = env.store_files()
+    report = env.vacuum_store()  # both versions are seconds old
+    assert env.store_files() == before
+    assert report["removed"] == 0
+    assert env.store_events() == []  # nothing removed, nothing said
+
+
+def test_the_store_vacuum_keeps_what_change_export_has_not_read(env):
+    exported = env.merge(1)
+    for sv in range(2, 5):
+        env.merge(sv)  # versions 2 to 4 unread by Change Export; each replaces the last's file
+    env.watermark(exported)
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    feed = pa.table(env.store.load_cdf(starting_version=exported + 1).read_all())
+    assert feed.num_rows > 0  # the feed from the first unread version still reads
+    assert len(env.store_files()) >= 3  # the files versions 2 to 4 added are all still there
+
+
+def test_the_store_vacuum_never_removes_an_untracked_file(env):
+    env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    stray = env.tmp / "data" / "listing_store" / "partition=3" / "part-inflight.parquet"
+    stray.write_bytes(b"a MERGE still writing its output")
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert stray.exists()
+
+
+def test_the_store_vacuum_says_what_it_removed(env):
+    env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    (event,) = env.store_events()
+    assert event["removed"] >= 1 and event["bytes"] > 0 and event["ms"] >= 0
+
+
+def test_the_store_vacuum_keeps_the_version_a_snapshots_pass_has_pinned(env):
+    pinned = env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    state.save_pin(env.state, pinned, datetime.now(UTC))  # a Snapshots pass copying version 1
+    before = env.store_files()
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert env.store_files() == before
+    state.clear_pin(env.state)  # the pass finished
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert len(env.store_files()) < len(before)
+
+
+def test_the_store_vacuum_ignores_a_pin_older_than_an_hour(env):
+    pinned = env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    state.save_pin(env.state, pinned, datetime.now(UTC) - timedelta(hours=1, seconds=1))
+    before = env.store_files()
+    report = env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert len(env.store_files()) < len(before)
+    assert report["pin_stale"] is True
 
 
 def test_change_data_files_go_once_exported(env):

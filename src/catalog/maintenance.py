@@ -30,6 +30,14 @@ LANDING_RETENTION = timedelta(days=7)  # plan-v1 A13
 RECEIVE_LAG = timedelta(hours=1)
 HOUR = timedelta(hours=1)
 GONE = datetime.min.replace(tzinfo=UTC)  # the first unread version's log was cleaned (5e)
+# The Listing Store's own vacuum (step 7f): a MERGE leaves every file it rewrote on disk, about
+# one 1,000-row file per Change, so an hour of them at 50/s is tens of GB. Every STORE_VACUUM
+# seconds the files the log marks removed go, except those a reader can still need: a version
+# committed within GRACE (a reader loads the current version and finishes in seconds), the
+# versions Change Export has not read, and a version Catalog Snapshots has pinned.
+STORE_VACUUM = 60.0  # seconds between the Listing Store's vacuums
+GRACE = timedelta(minutes=2)
+PIN_TTL = HOUR  # a Snapshots pin older than this was left by a crashed pass
 
 
 def run(data: Path, state_dir: Path, *, stop: threading.Event, interval: float = INTERVAL) -> None:
@@ -84,6 +92,55 @@ def tick(
             "num_deleted_rows"
         ]
     events.emit([report | {"ms": round((time.monotonic() - started) * 1000)}])
+
+
+def vacuum_store(
+    store_dt: DeltaTable,
+    state_dir: Path,
+    events: EventLog,
+    now: datetime,
+    *,
+    grace: timedelta = GRACE,
+) -> dict:
+    """Remove the Listing Store's dead files no reader can still need; the pass's report, which
+    is also emitted as a `store_vacuum` event when anything was removed."""
+    started = time.monotonic()
+    store_dt.update_incremental()
+    head = store_dt.version()
+    watermark = state.load_watermark(state_dir, store_dt.metadata().id)
+    keep = set(range(watermark + 1, head + 1))  # what Change Export has not read yet
+    version = head
+    while version >= 0:
+        since = _unread_since(store_dt, version)
+        if since is None or since < now - grace:
+            break
+        keep.add(version)  # a reader that loaded it may still be reading
+        version -= 1
+    pin, pin_stale = state.load_pin(state_dir), False
+    if pin is not None:  # a Catalog Snapshots pass is copying that version
+        pinned, since = pin
+        pin_stale = now - since > PIN_TTL
+        if not pin_stale:
+            keep.add(pinned)
+    kept = sorted(keep) or None
+    dead = store_dt.vacuum(retention_hours=0, enforce_retention_duration=False, keep_versions=kept)
+    root = delta.local(store_dt.table_uri)
+    size = sum(f.stat().st_size for p in dead if (f := root / p).exists())
+    if dead:
+        store_dt.vacuum(
+            retention_hours=0, dry_run=False, enforce_retention_duration=False, keep_versions=kept
+        )
+    report = {
+        "type": "store_vacuum",
+        "removed": len(dead),
+        "bytes": size,
+        "kept_versions": len(keep),
+        "pin_stale": pin_stale,
+        "ms": round((time.monotonic() - started) * 1000),
+    }
+    if dead:
+        events.emit([report])
+    return report
 
 
 def _clean(dt: DeltaTable, unread: datetime | None, now: datetime, floor: timedelta) -> dict:

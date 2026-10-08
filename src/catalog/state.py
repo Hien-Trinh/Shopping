@@ -20,6 +20,7 @@ import time
 import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -121,6 +122,23 @@ def load_watermark(state: Path, table: str) -> int:
 
 def save_watermark(state: Path, version: int, table: str) -> None:
     save(state / "export_watermark.json", {"table": table, "version": version})
+
+
+def save_pin(state: Path, version: int, started: datetime) -> None:
+    """The Listing Store version a Catalog Snapshots pass is copying, and since when: the
+    store's vacuum keeps that version's files while the file exists (step 7f)."""
+    save(state / "snapshot_pin.json", {"version": version, "started": started.isoformat()})
+
+
+def load_pin(state: Path) -> tuple[int, datetime] | None:
+    saved = load(state / "snapshot_pin.json", None)
+    if saved is None:
+        return None
+    return saved["version"], datetime.fromisoformat(saved["started"])
+
+
+def clear_pin(state: Path) -> None:
+    (state / "snapshot_pin.json").unlink(missing_ok=True)
 
 
 def load_backfill(state: Path, table: str) -> int:

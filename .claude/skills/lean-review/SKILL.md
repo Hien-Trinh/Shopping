@@ -5,7 +5,7 @@ description: Strict PR review for this repo. Sonnet finder agents scaled to the 
 
 # Lean review
 
-Review target: a PR number (default: the current branch's open PR). Every step is mandatory, and the order matters.
+Review target: a PR number (default: the current branch's open PR). The PR body should already follow the `pr` skill (Summary visual, Evidence, Merge Danger); if it doesn't, say so in the report as an aside, since the Evidence section is what step 6's regression tests update. Every step is mandatory, and the order matters.
 
 1. **Gather the diff and size it.** Save `gh pr diff <n>` to the session scratchpad. Count changed lines (additions + deletions, tests included) from `gh pr view <n> --json additions,deletions,files`. If it is over about 300, say the PR should have been split, and suggest the split for next time. Review it anyway.
 2. **Deterministic gates first.** `make check` must pass. If the diff touches `src/catalog/` pure modules, run `make mutate` and note any surviving mutants in changed lines that aren't in plan-v1.md's equivalent list. Fix or explain them before using agent tokens.
@@ -25,6 +25,7 @@ Review target: a PR number (default: the current branch's open PR). Every step i
 5. **Report** the verified candidates with ReportFindings (at most 15, most severe first). Then list the asides in text, apart from the findings and never ranked with them, because a decision or a smell isn't a defect: the spec decisions as questions for the user, and the standards judgement calls as a short list.
 6. **Fix** every CONFIRMED or PLAUSIBLE finding, or defer it explicitly to a named later step in docs/plan-v1.md. Each fix gets a regression test, and you check that the test fails when the fix is reverted. Then re-report with outcomes.
 7. **At most one more round, and only if step 5 had a correctness finding.** It's an in-context review of the fix commits only, with no agents. Then stop and record "Review: round N done" in a PR comment.
+8. **Hand off to the retro.** Tell the user to run `/retro` on this session (it is user-invoked, so you cannot call it). The retro proposes changes to the agent's environment, not the code: a check that would have caught a finding, a rule for `reviewer-standards`, a navigation pointer. Anything it produces goes in its own docs-or-tooling PR, never into the step PR.
 
 The spec and standards lanes track Matt Pocock's `code-review` as of mattpocock-skills 1.3.1 (the glossary is `GLOSSARY.md`, after the upstream rename from `CONTEXT.md`).
 

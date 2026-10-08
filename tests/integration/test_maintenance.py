@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pyarrow as pa
 import pytest
+from deltalake import DeltaTable
 from support import classified, listing, product_in, up
 from test_supervisor import wait_for
 
@@ -236,6 +237,37 @@ def test_the_store_vacuum_ignores_a_pin_older_than_an_hour(env):
     report = env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
     assert len(env.store_files()) < len(before)
     assert report["pin_stale"] is True
+
+
+def test_a_reader_inside_the_grace_still_reads_every_row_across_a_vacuum(env):
+    env.merge(1)
+    reader = DeltaTable(env.store.table_uri)  # loaded now, at this version
+    before = reader.to_pyarrow_table().num_rows
+    head = env.merge(2)  # replaces the file the reader's version holds
+    env.watermark(head)
+    env.vacuum_store()  # the reader's version is seconds old
+    assert reader.to_pyarrow_table().num_rows == before
+
+
+def test_a_pinned_reader_still_reads_every_row_across_a_vacuum_after_the_grace(env):
+    pinned = env.merge(1)
+    reader = DeltaTable(env.store.table_uri, version=pinned)
+    before = reader.to_pyarrow_table().num_rows
+    head = env.merge(2)
+    env.watermark(head)
+    state.save_pin(env.state, pinned, datetime.now(UTC))
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert reader.to_pyarrow_table().num_rows == before
+
+
+def test_without_the_grace_that_reader_loses_its_file(env):
+    env.merge(1)
+    reader = DeltaTable(env.store.table_uri)
+    head = env.merge(2)
+    env.watermark(head)
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    with pytest.raises(Exception, match="not found|No such file"):
+        reader.to_pyarrow_table()
 
 
 def test_change_data_files_go_once_exported(env):

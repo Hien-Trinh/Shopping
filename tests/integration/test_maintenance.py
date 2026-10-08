@@ -328,6 +328,24 @@ def test_run_cleans_until_stopped(env):
     assert not runner.is_alive()  # the wait for the next pass ends at once
 
 
+def test_run_vacuums_the_store_on_its_own_faster_clock(env, monkeypatch):
+    env.offsets()
+    passes = []
+    monkeypatch.setattr(maintenance, "vacuum_store", lambda *a, **k: passes.append(a[3]))
+    stop = threading.Event()
+    runner = threading.Thread(
+        target=maintenance.run,
+        args=(env.tmp / "data", env.state),
+        kwargs={"stop": stop, "interval": 600, "store_vacuum": 0.05},
+    )
+    runner.start()
+    wait_for(lambda: len(passes) >= 3, timeout=10)  # several vacuums inside one pass's interval
+    stop.set()
+    runner.join(timeout=10)
+    assert not runner.is_alive()
+    assert len(env.reports()) == 1  # the full pass ran once
+
+
 def test_a_second_maintenance_is_refused_before_touching_anything(env):
     env.add(up(A, 1))
     env.offsets()

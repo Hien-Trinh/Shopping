@@ -40,18 +40,33 @@ GRACE = timedelta(minutes=2)
 PIN_TTL = HOUR  # a Snapshots pin older than this was left by a crashed pass
 
 
-def run(data: Path, state_dir: Path, *, stop: threading.Event, interval: float = INTERVAL) -> None:
-    """A pass every `interval` seconds until `stop` is set; any error propagates, and the
-    supervisor's restart is safe: each step is one commit or only deletes (spec decision 8)."""
+def run(
+    data: Path,
+    state_dir: Path,
+    *,
+    stop: threading.Event,
+    interval: float = INTERVAL,
+    store_vacuum: float = STORE_VACUUM,
+) -> None:
+    """A pass every `interval` seconds and a store vacuum every `store_vacuum` seconds until
+    `stop` is set; any error propagates, and the supervisor's restart is safe: each step is one
+    commit or only deletes (spec decision 8)."""
     with state.claim_maintenance(state_dir):  # first: a second one dies before touching anything
         landing_dt = landing.ensure(str(data / "landing_log"))
         store_dt = store.ensure(str(data / "listing_store"))
         events = EventLog(data / "events", "maintenance")
         events.emit([{"type": "maintenance_start", "pid": os.getpid()}])
         with stopping(events, stop):
+            next_pass = next_vacuum = time.monotonic()
             while not stop.is_set():
-                tick(landing_dt, store_dt, data, state_dir, events, datetime.now(UTC))
-                stop.wait(interval)
+                now = time.monotonic()
+                if now >= next_pass:
+                    tick(landing_dt, store_dt, data, state_dir, events, datetime.now(UTC))
+                    next_pass = now + interval
+                if now >= next_vacuum:
+                    vacuum_store(store_dt, state_dir, events, datetime.now(UTC))
+                    next_vacuum = now + store_vacuum
+                stop.wait(max(0.0, min(next_pass, next_vacuum) - time.monotonic()))
 
 
 def tick(
@@ -195,6 +210,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--state", type=Path, default=state.STATE)
     args.add_argument("--interval", type=float, default=INTERVAL)
+    args.add_argument("--store-vacuum", type=float, default=STORE_VACUUM)
     a = args.parse_args(argv)
     try:
         supervisor = worker.supervisor_pid()
@@ -203,7 +219,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     stop = worker.stop_on_signals()
     # so a kill -9ed supervisor leaves none behind
     worker.watch_supervisor(supervisor, stop, a.data / "events", "maintenance")
-    run(a.data, a.state, stop=stop, interval=a.interval)
+    run(a.data, a.state, stop=stop, interval=a.interval, store_vacuum=a.store_vacuum)
 
 
 if __name__ == "__main__":

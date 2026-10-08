@@ -1,6 +1,6 @@
 # Step 7f: the Listing Store's rewrite churn (mini PRD)
 
-Status: draft Oct 7, for your review. Decided in chat Oct 7: small files for the Listing Store and a minute-level vacuum of its dead files (options 2 and 3 of the five weighed); the append-only store is question 2. Plan row: [plan-v1.md, PR steps, 7f](../plan-v1.md). Builds on [step-7d.md](step-7d.md) and [docs/stress.md](../stress.md) (7d.2b: the SLO run cannot complete), [step-5d.md](step-5d.md) (maintenance never vacuums past the slowest reader), [ADR-0001](../adr/0001-partition-by-listing-key.md) (only a partition's owner writes it) and [ADR-0002](../adr/0002-local-first-delta-no-queue.md) (Delta, so the tables move to Databricks as they are). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: draft Oct 7, for your review. Decided in chat Oct 7: small files for the Listing Store and a minute-level vacuum of its dead files (options 2 and 3 of the five weighed). Question 1 (the `alter` line by hand) and question 2 (no plan row for the append-only store: a Future-work line in the design doc, and 7f.2's report records the churn as the known cost) answered Oct 8. Plan row: [plan-v1.md, PR steps, 7f](../plan-v1.md). Builds on [step-7d.md](step-7d.md) and [docs/stress.md](../stress.md) (7d.2b: the SLO run cannot complete), [step-5d.md](step-5d.md) (maintenance never vacuums past the slowest reader), [ADR-0001](../adr/0001-partition-by-listing-key.md) (only a partition's owner writes it) and [ADR-0002](../adr/0002-local-first-delta-no-queue.md) (Delta, so the tables move to Databricks as they are). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -21,14 +21,14 @@ Probes on delta-rs 1.6.6 (the latest) fixed the limits: a MERGE honours `delta.t
 | PR | What | Gate |
 |---|---|---|
 | **7f.1** | The Listing Store writes 1 MiB files; maintenance vacuums its dead files every minute, keeping what any reader can still need | None |
-| **7f.2** | The amended 7d.2 point 3 rerun on a fresh 1M load (the `backfill` line kept, no vacuum by hand) and the Phase 7 exit decided; appended to `docs/stress.md` | A free afternoon of the Mac: 25 s to load, 14 min to drain, 30 min at 50/s, then the Backfill's hours if you want its time to zero |
+| **7f.2** | The amended 7d.2 point 3 rerun on a fresh 1M load (the `backfill` line kept, no vacuum by hand) and the Phase 7 exit decided; appended to `docs/stress.md`, with the rewrite churn recorded as the known cost of the local engine | A free afternoon of the Mac: 25 s to load, 14 min to drain, 30 min at 50/s, then the Backfill's hours if you want its time to zero |
 
 ### 7f.1: small files and a minute-level vacuum
 
 1. **The file size.** `store.ensure` creates the table with `"delta.targetFileSize": str(COMPACT_TARGET)` next to the other properties ([delta.py](../../src/catalog/delta.py)): one constant for what the MERGE writes and what compaction merges up to, so they cannot drift. A store that exists without the property gets it from the runbook's one-line `alter` (Reset section), by hand: the files written before stay large until a MERGE or a compaction touches their partition, one full rewrite each, then stay small. The probe: a 9-Change MERGE rewrites 11 MB instead of 194, and the worker's partition read moves from 67 to 104 ms.
 2. **The store vacuum** is a second cadence inside maintenance, `STORE_VACUUM = 60` s between passes against the pass every 10 minutes: a lite vacuum of the Listing Store at retention 0 (`full=False`: files the log marks removed, never an untracked file, so a MERGE writing its output is safe) with `keep_versions` naming every version committed in the last `GRACE = 2` minutes (from the log's history timestamps) and the version a Catalog Snapshots pass has pinned (point 3). The Landing log keeps its hour: a worker far behind reads its change feed. The store's change-data files keep `_clean`'s hourly cutoff: Change Export reads them from the watermark, and they are not Parquet data files. One event per pass, `store_vacuum` with `removed`, `mb`, `kept_versions` and `ms`; a pass that removed nothing emits nothing.
 3. **Readers, and why the grace covers them.** Each process that reads the Listing Store loads the current version when it starts a pass. Ingestion workers read only their own partitions, whose files only they replace (ADR-0001), so their snapshot is never stale. The Backfill's `pending` scan and `catalog.metrics` load a version and finish in seconds: inside the grace. Catalog Snapshots streams a pinned version for as long as a 1M-row copy takes, so it writes `state/snapshot_pin.json` (`{"version": v, "started": ts}`) before the copy and removes it after, on failure too; maintenance keeps that version while the file exists, and ignores a pin older than an hour (a crashed pass) with a `pin_stale` field in the event. The chaos runner's oracles read pinned snapshots from their own directories, not the store.
-4. **Headroom** becomes churn times about three minutes (the grace plus the cadence): 4 to 11 GB at 50/s on real rows, under the 18 GiB this Mac has free, and the free-space line stays flat instead of falling. The churn itself does not shrink below one 1,000-row file per Change: the disk still takes 1.5 to 3.6 GB a minute of writes at 50/s on real rows. That is the cost 7f.2 records and the reason for question 2.
+4. **Headroom** becomes churn times about three minutes (the grace plus the cadence): 4 to 11 GB at 50/s on real rows, under the 18 GiB this Mac has free, and the free-space line stays flat instead of falling. The churn itself does not shrink below one 1,000-row file per Change: the disk still takes 1.5 to 3.6 GB a minute of writes at 50/s on real rows. That is the cost 7f.2 records as known. The design doc's Future work gains one line: the append-only store (workers append row versions, readers keep the newest per Listing key, the owner compacts a partition once about 20% of its rows are superseded) or deletion-vector writes once delta-rs ships them, either of which removes the churn; neither is a plan row.
 
 ### 7f.2: the rerun
 
@@ -63,7 +63,7 @@ The amended point 3 of [step-7d.md](step-7d.md): the shipped `Procfile` on the s
 3. **1 MiB, the existing compaction target.** The writer's floor is about 1,000 rows, so a smaller target changes nothing; a larger one rewrites more per Change.
 4. **A pin file for Snapshots, not a longer grace.** A 1M-row copy can take longer than any grace that keeps the headroom small; the pin is one small file and the only reader that needs it.
 5. **The rerun on a fresh 1M load**, not the 10k store 7d.2b left: the exit is about 1M rows.
-6. **Not deletion vectors and not the append-only store, now.** delta-rs cannot write the first; the second is a design change (question 2). This step makes the measurement possible and records the churn; it does not make 50/s cheap on one Mac.
+6. **Not deletion vectors and not the append-only store.** delta-rs cannot write the first; the second is a design change, kept as a Future-work line, not a step (decided Oct 8). This step makes the measurement possible and records the churn as the known cost; it does not make 50/s cheap on one Mac.
 
 ## Testing decisions (test points for your OK)
 
@@ -76,15 +76,15 @@ The amended point 3 of [step-7d.md](step-7d.md): the shipped `Procfile` on the s
 
 ## Questions
 
-1. **Existing stores get the property from the runbook's `alter` line, by hand**, not from `store.ensure` at every process start (several processes setting it at once would conflict). OK?
-2. **The append-only store** (workers append row versions, readers keep the newest per Listing key, the owner compacts a partition once about 20% of its rows are superseded) cuts the churn about a hundred-fold and is the shape Kafka's log compaction and Hudi's merge-on-read take; deletion-vector writes in delta-rs would do the same with no code, when they ship. Add it as plan row 7g, after the exit is decided?
+1. **Existing stores get the property from the runbook's `alter` line, by hand**, not from `store.ensure` at every process start (several processes setting it at once would conflict). **Agreed (Oct 8).**
+2. **The append-only store** (workers append row versions, readers keep the newest per Listing key, the owner compacts a partition once about 20% of its rows are superseded) cuts the churn about a hundred-fold and is the shape Kafka's log compaction and Hudi's merge-on-read take; deletion-vector writes in delta-rs would do the same with no code, when they ship. Add it as plan row 7g, after the exit is decided? **No (Oct 8): a Future-work line in the design doc, and 7f.2's report records the churn as the known cost.**
 3. **The load generator's text repeats** (1,020 distinct descriptions over 1M rows, 126 bytes a row after compression), which made 7d.2b's churn 10 to 20 times smaller than real rows would give. Add a `--unique-text` flag that appends the key to each description, and use it for 7f.2?
 4. **`GRACE = 2` minutes and `STORE_VACUUM = 60` s**: headroom of about three minutes of churn. OK?
 5. **The test points above.**
 
 ## Out of scope
 
-Deletion vectors (not in delta-rs), the append-only store (question 2), finer partitions or a bucket column (the same ceiling as small files), a hot/cold split of the row (helps price and stock Changes only), the vacuum of the Landing log (unchanged, an hour).
+Deletion vectors (not in delta-rs), the append-only store (a Future-work line), finer partitions or a bucket column (the same ceiling as small files), a hot/cold split of the row (helps price and stock Changes only), the vacuum of the Landing log (unchanged, an hour).
 
 ## Size
 

@@ -1,12 +1,12 @@
 # v1 Build Plan — Commerce Ingestion
 
-Sep 29, 2026 · Architecture review of [design-commerce-ingestion-pipeline.md](design-commerce-ingestion-pipeline.md), [ADR-0001](adr/0001-partition-by-listing-key.md), [ADR-0002](adr/0002-local-first-delta-no-queue.md). Terms are defined in [CONTEXT.md](../CONTEXT.md).
+Sep 29, 2026 · Architecture review of [design-commerce-ingestion-pipeline.md](design-commerce-ingestion-pipeline.md), [ADR-0001](adr/0001-partition-by-listing-key.md), [ADR-0002](adr/0002-local-first-delta-no-queue.md). Terms are defined in [GLOSSARY.md](../GLOSSARY.md).
 
 ## Verdict
 
 The shape is sound: single-writer partitions, a conditional write, and a replay check that acts as the correctness oracle. **The doc has 19 holes, and 8 of them would ship bugs** (section A). Section B lists risks to prove early, and section C lists scope gaps we accept for v1.
 
-**Status (Sep 30):** every decision is resolved, and A1–A19 are folded into the design doc, CONTEXT.md and both ADRs.
+**Status (Sep 30):** every decision is resolved, and A1–A19 are folded into the design doc, GLOSSARY.md and both ADRs.
 
 ## Is it Python only?
 

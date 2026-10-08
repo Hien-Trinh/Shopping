@@ -1,6 +1,6 @@
 # Step 6l.2: 8k more Amazon Listings labeled by Opus, then the student again (mini PRD)
 
-Status: done Oct 6 (see the two Outcomes); approved Oct 6. Question 1: the usage OK. Question 2: τ from the held-out Amazon rows only. Question 3: the test points OK. Plan row: [plan-v1.md, PR steps, 6l.2](../plan-v1.md). Builds on [step-6l.md](step-6l.md) (the student; its bar is not met), [step-6k.md](step-6k.md) (6k.2, the first 2k Opus labels) and [docs/labeling.md](../labeling.md) (the method). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 6 (see the two Outcomes); approved Oct 6. Question 1: the usage OK. Question 2: τ from the held-out Amazon rows only. Question 3: the test points OK. Plan row: [plan-v1.md, PR steps, 6l.2](../plan-v1.md). Builds on [step-6l.md](step-6l.md) (the student; its bar is not met), [step-6k.md](step-6k.md) (6k.2, the first 2k Opus labels) and [docs/labeling.md](../labeling.md) (the method). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

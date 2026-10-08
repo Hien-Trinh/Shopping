@@ -1,6 +1,6 @@
 # Step 5b: Export gap recovery (mini PRD)
 
-Status: approved Oct 3. Confirmed: detecting the gap from the read error at every tick (decision 1), the gap file as an ordinary export file (decision 2), building it in Arrow (decision 3), the `gap_recovered` event (decision 4), and the test points. Plan row: [plan-v1.md, PR steps, 5b](../plan-v1.md), and Phase 5's test "gap recovery (A18)". Design: A18 and A17 in [plan-v1.md](../plan-v1.md), the [Change Export row](../design-commerce-ingestion-pipeline.md) ("if the watermark is older than what cleanup kept, it exports a full snapshot instead"), and [ADR-0002](../adr/0002-local-first-delta-no-queue.md). Builds on [step-5a.md](step-5a.md). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 3. Confirmed: detecting the gap from the read error at every tick (decision 1), the gap file as an ordinary export file (decision 2), building it in Arrow (decision 3), the `gap_recovered` event (decision 4), and the test points. Plan row: [plan-v1.md, PR steps, 5b](../plan-v1.md), and Phase 5's test "gap recovery (A18)". Design: A18 and A17 in [plan-v1.md](../plan-v1.md), the [Change Export row](../design-commerce-ingestion-pipeline.md) ("if the watermark is older than what cleanup kept, it exports a full snapshot instead"), and [ADR-0002](../adr/0002-local-first-delta-no-queue.md). Builds on [step-5a.md](step-5a.md). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

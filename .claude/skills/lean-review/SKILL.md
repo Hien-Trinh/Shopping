@@ -20,10 +20,12 @@ Review target: a PR number (default: the current branch's open PR). Every step i
 
    `reviewer-spec` asks Matt Pocock's three spec questions (missing or partial, not asked for, implemented but wrong), quoting the spec line. `reviewer-standards` checks the plan's documented coding rules. Both return two kinds of output: **candidates** (defects, like every finder) and **asides**: scope decisions for the user (spec) and code-smell judgement calls (standards).
 
-   Give it the diff path, the scratch directory, the PR's intent in 3–5 lines, and optional per-angle hints. Each finder gets its own scratch subdirectory.
+   Give it the diff path, the scratch directory, the PR's intent in 3–5 lines, and optional per-angle hints. Each finder gets its own scratch subdirectory. Run the workflow in the foreground and wait for its report before moving on; don't start step 4 on partial results.
 4. **Dedupe, then verify.** The workflow merges duplicate candidates. It sends one Sonnet verifier (reproduce, else refute) only for medium- or high-severity candidates that no finder reproduced, at most 5. Check every candidate yourself against the code, including the ones verifiers refuted, before dropping anything. Mark each CONFIRMED (you can name the trigger), PLAUSIBLE (the mechanism is real but the trigger is uncertain), or REFUTED (quote the line that proves it). Drop the refuted ones.
 5. **Report** the verified candidates with ReportFindings (at most 15, most severe first). Then list the asides in text, apart from the findings and never ranked with them, because a decision or a smell isn't a defect: the spec decisions as questions for the user, and the standards judgement calls as a short list.
 6. **Fix** every CONFIRMED or PLAUSIBLE finding, or defer it explicitly to a named later step in docs/plan-v1.md. Each fix gets a regression test, and you check that the test fails when the fix is reverted. Then re-report with outcomes.
 7. **At most one more round, and only if step 5 had a correctness finding.** It's an in-context review of the fix commits only, with no agents. Then stop and record "Review: round N done" in a PR comment.
+
+The spec and standards lanes track Matt Pocock's `code-review` as of mattpocock-skills 1.3.1 (the glossary is `GLOSSARY.md`, after the upstream rename from `CONTEXT.md`).
 
 Cost: about 25–30k Sonnet tokens per finder, plus up to 5 verifiers. A 2.4M-token review of a 21-line docs-and-pruning PR (10 finders, 24 verifiers, no code findings) is why this scales. Never run `/code-review ultra` or `/code-review max` as part of this. Cleanup angles (reuse, simplification, altitude) are not part of a PR review; they run once at the end of the project.

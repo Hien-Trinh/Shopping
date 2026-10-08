@@ -1,6 +1,6 @@
 # Step 6g: Shortlist recall (mini PRD)
 
-Status: approved Oct 4, with the test points. Plan row: [plan-v1.md, PR steps, 6g](../plan-v1.md). It comes from the classification-methods research (Oct 4), whose first recommendation is to measure how often the labelled Category is in the embedding shortlist before spending on anything else. Builds on [step-6d.md](step-6d.md) (`evaluate`, the labelled set) and [step-6e.md](step-6e.md) (`EmbeddingClassifier.top`, the Jev shortlist of 50). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 4, with the test points. Plan row: [plan-v1.md, PR steps, 6g](../plan-v1.md). It comes from the classification-methods research (Oct 4), whose first recommendation is to measure how often the labelled Category is in the embedding shortlist before spending on anything else. Builds on [step-6d.md](step-6d.md) (`evaluate`, the labelled set) and [step-6e.md](step-6e.md) (`EmbeddingClassifier.top`, the Jev shortlist of 50). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

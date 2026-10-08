@@ -1,6 +1,6 @@
 # Step 6i: 800 more labeled Listings, labeled by Claude Sonnet 5.5 in session (mini PRD)
 
-Status: done Oct 5 (see Outcome); approved Oct 5. Question 1: download OK. Question 2: the adjudicated gate. Question 3: a separate file. Question 4: about 11 agents OK. No code, so no test points. Plan row: new, [plan-v1.md, PR steps, 6i](../plan-v1.md). Builds on [step-6e.md](step-6e.md) (the labeled set and `evaluate sample`), [step-6g.md](step-6g.md) (shortlist recall) and [step-6h.md](step-6h.md) (the deeper Category text). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 5 (see Outcome); approved Oct 5. Question 1: download OK. Question 2: the adjudicated gate. Question 3: a separate file. Question 4: about 11 agents OK. No code, so no test points. Plan row: new, [plan-v1.md, PR steps, 6i](../plan-v1.md). Builds on [step-6e.md](step-6e.md) (the labeled set and `evaluate sample`), [step-6g.md](step-6g.md) (shortlist recall) and [step-6h.md](step-6h.md) (the deeper Category text). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

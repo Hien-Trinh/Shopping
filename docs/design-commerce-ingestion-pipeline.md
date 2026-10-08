@@ -2,7 +2,7 @@
 
 Sep 30, 2026 · David
 
-Terms are defined in [CONTEXT.md](../CONTEXT.md). Key decisions: [ADR-0001](adr/0001-partition-by-listing-key.md) (partition by Listing key) and [ADR-0002](adr/0002-local-first-delta-no-queue.md) (local-first on Delta, no separate queue). The build order and risk review are in [plan-v1.md](plan-v1.md).
+Terms are defined in [GLOSSARY.md](../GLOSSARY.md). Key decisions: [ADR-0001](adr/0001-partition-by-listing-key.md) (partition by Listing key) and [ADR-0002](adr/0002-local-first-delta-no-queue.md) (local-first on Delta, no separate queue). The build order and risk review are in [plan-v1.md](plan-v1.md).
 
 ## Overview and goals
 

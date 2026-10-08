@@ -187,6 +187,12 @@ def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system
         copy = store.fingerprints(DeltaTable(str(path)))
         assert diff(store.fingerprints(listings, snapshots.pinned(path)), copy) == []
 
+    # Maintenance's store vacuum (step 7f): the second batch replaced files the first wrote, and
+    # the scratch system vacuums them within seconds; the oracles above still held.
+    wait_for(lambda: [e for e in events.read(data / "events") if e["type"] == "store_vacuum"])
+    (vacuumed,) = [e for e in events.read(data / "events") if e["type"] == "store_vacuum"][:1]
+    assert vacuumed["removed"] >= 1
+
     pids = [*worker_pids(system.tmp), *export_pids(system.tmp), *snapshot_pids(system.tmp)]
     pids += [*maintenance_pids(system.tmp), *backfill_pids(system.tmp), *api_pids(system.port)]
     assert len(pids) == 9  # 4 workers, Change Export, Snapshots, maintenance, Backfill, the API

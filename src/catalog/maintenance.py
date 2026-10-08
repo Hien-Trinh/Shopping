@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from deltalake import DeltaTable
+from deltalake.exceptions import CommitFailedError
 
 from catalog import delta, entry, export, landing, state, store, worker
 from catalog import events as event_files
@@ -47,6 +48,7 @@ def run(
     stop: threading.Event,
     interval: float = INTERVAL,
     store_vacuum: float = STORE_VACUUM,
+    grace: timedelta = GRACE,
 ) -> None:
     """A pass every `interval` seconds and a store vacuum every `store_vacuum` seconds until
     `stop` is set; any error propagates, and the supervisor's restart is safe: each step is one
@@ -64,7 +66,7 @@ def run(
                     tick(landing_dt, store_dt, data, state_dir, events, datetime.now(UTC))
                     next_pass = now + interval
                 if now >= next_vacuum:
-                    vacuum_store(store_dt, state_dir, events, datetime.now(UTC))
+                    vacuum_store(store_dt, state_dir, events, datetime.now(UTC), grace=grace)
                     next_vacuum = now + store_vacuum
                 stop.wait(max(0.0, min(next_pass, next_vacuum) - time.monotonic()))
 
@@ -140,20 +142,29 @@ def vacuum_store(
     kept = sorted(keep) or None
     dead = store_dt.vacuum(retention_hours=0, enforce_retention_duration=False, keep_versions=kept)
     root = delta.local(store_dt.table_uri)
-    size = sum(f.stat().st_size for p in dead if (f := root / p).exists())
+    sizes = {p: f.stat().st_size for p in dead if (f := root / p).exists()}
+    commit_failed = False
     if dead:
-        store_dt.vacuum(
-            retention_hours=0, dry_run=False, enforce_retention_duration=False, keep_versions=kept
-        )
+        try:
+            store_dt.vacuum(
+                retention_hours=0,
+                dry_run=False,
+                enforce_retention_duration=False,
+                keep_versions=kept,
+            )
+        except CommitFailedError:  # a MERGE landed meanwhile: the files it deleted are gone
+            commit_failed = True  # either way; what it didn't delete goes next pass
+    removed = [p for p in sizes if not (root / p).exists()]
     report = {
         "type": "store_vacuum",
-        "removed": len(dead),
-        "bytes": size,
+        "removed": len(removed),
+        "bytes": sum(sizes[p] for p in removed),
+        "commit_failed": commit_failed,
         "kept_versions": len(keep),
         "pin_stale": pin_stale,
         "ms": round((time.monotonic() - started) * 1000),
     }
-    if dead:
+    if removed:
         events.emit([report])
     return report
 
@@ -211,6 +222,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--state", type=Path, default=state.STATE)
     args.add_argument("--interval", type=float, default=INTERVAL)
     args.add_argument("--store-vacuum", type=float, default=STORE_VACUUM)
+    args.add_argument("--grace", type=float, default=GRACE.total_seconds(), help="seconds")
     a = args.parse_args(argv)
     try:
         supervisor = worker.supervisor_pid()
@@ -219,7 +231,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     stop = worker.stop_on_signals()
     # so a kill -9ed supervisor leaves none behind
     worker.watch_supervisor(supervisor, stop, a.data / "events", "maintenance")
-    run(a.data, a.state, stop=stop, interval=a.interval, store_vacuum=a.store_vacuum)
+    run(
+        a.data, a.state, stop=stop, interval=a.interval, store_vacuum=a.store_vacuum,
+        grace=timedelta(seconds=a.grace),
+    )  # fmt: skip
 
 
 if __name__ == "__main__":

@@ -135,6 +135,26 @@ def test_fingerprints_now_and_then(db):
     assert store.fingerprints(db, version=v1) == {K: (5, content_hash(listing()), False)}
 
 
+def test_fingerprints_at_an_old_version_survive_the_vacuum_of_its_files(db):
+    # The oracles read the store at older versions; maintenance's vacuum (step 7f) removes those
+    # versions' files, so fingerprints rebuild them from the change feed instead.
+    k2 = ("m_1", product_in(5, prefix="other"))
+    store.merge(db, [write(1, listing(title="first")), write(1, listing(), key=k2)], NOW)
+    then = DeltaTable(db.table_uri, version=db.version())
+    want = {
+        (r["merchant_id"], r["merchant_product_id"]): store.fingerprint(r)
+        for r in then.to_pyarrow_dataset().to_table().to_pylist()
+    }  # read straight from the old version's files, while they exist
+    k3 = ("m_1", product_in(5, prefix="third"))
+    store.merge(db, [write(2, listing(title="second")), write(1, listing(), key=k3)], NOW)
+    store.merge(db, [write(3)], NOW)  # a Tombstone, so K changed twice after version 1
+    assert store.fingerprints(db, 1) == want
+    db.vacuum(retention_hours=0, dry_run=False, enforce_retention_duration=False)
+    assert store.fingerprints(db, 1) == want
+    with pytest.raises(Exception, match="not found|No such file"):
+        DeltaTable(db.table_uri, version=1).to_pyarrow_dataset().to_table()  # the files are gone
+
+
 def test_compact_merges_small_files_without_changing_data_or_feed(db):
     keys = [("m_1", product_in(5, prefix=f"c{i}")) for i in range(6)]
     for i, k in enumerate(keys):  # one new file per MERGE

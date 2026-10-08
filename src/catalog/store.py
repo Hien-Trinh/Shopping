@@ -136,13 +136,28 @@ def compact(dt: DeltaTable, partitions: Iterable[int], target_size: int = COMPAC
 
 
 def fingerprints(dt: DeltaTable, version: int | None = None) -> dict[Key, Fingerprint]:
-    """Every Listing as the replay oracles see it, optionally at an older version."""
-    if version is None:
-        dt.update_incremental()
-    else:
-        dt = DeltaTable(dt.table_uri, version=version)
+    """Every Listing as the replay oracles see it, optionally at an older version.
+
+    An older version is the current rows rewound through the change feed, newest commit first:
+    maintenance's vacuum removes an old version's files within minutes (step 7f) but keeps the
+    feed's files for over an hour, and the feed carries every inserted and replaced row whole.
+    """
+    dt.update_incremental()
+    head = dt.version()
     rows = dt.to_pyarrow_dataset().to_table(columns=_FINGERPRINT).to_pylist()
-    return {(r["merchant_id"], r["merchant_product_id"]): fingerprint(r) for r in rows}
+    found = {(r["merchant_id"], r["merchant_product_id"]): fingerprint(r) for r in rows}
+    if version is None or version >= head:
+        return found
+    feed = delta.plain(
+        pa.table(dt.load_cdf(starting_version=version + 1, ending_version=head).read_all())
+    )
+    for r in sorted(feed.to_pylist(), key=lambda r: -r["_commit_version"]):
+        key = (r["merchant_id"], r["merchant_product_id"])
+        if r["_change_type"] == "insert":  # not there before this commit
+            found.pop(key, None)
+        elif r["_change_type"] in ("update_preimage", "delete"):  # what it was before
+            found[key] = fingerprint(r)
+    return found
 
 
 # What converting a value that slipped past validation raises (plan-v1.md A6): the data's fault.

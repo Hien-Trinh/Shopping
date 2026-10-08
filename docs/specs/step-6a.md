@@ -1,6 +1,6 @@
 # Step 6a: Taxonomy loader (mini PRD)
 
-Status: approved Oct 3, with the download (decision 1) and the test points. `trim` and `ancestor` stay off the 100% pure-module list. Added after approval, from the downloaded file: Shopify's own `Uncategorized` node is dropped (decision 7). Plan row: [plan-v1.md, PR steps, 6a](../plan-v1.md) ("asks before downloading the Shopify taxonomy"), and Phase 6 ("load and trim the Shopify taxonomy"). Design: [Categorization](../design-commerce-ingestion-pipeline.md) ("Shopify's open-source product taxonomy, cut to 3 levels. Deeper nodes map to their ancestor") and the `taxonomy_version` column. Code layout: `taxonomy.py`, "load Shopify taxonomy, trim to depth 3, version string". Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 3, with the download (decision 1) and the test points. `trim` and `ancestor` stay off the 100% pure-module list. Added after approval, from the downloaded file: Shopify's own `Uncategorized` node is dropped (decision 7). Plan row: [plan-v1.md, PR steps, 6a](../plan-v1.md) ("asks before downloading the Shopify taxonomy"), and Phase 6 ("load and trim the Shopify taxonomy"). Design: [Categorization](../design-commerce-ingestion-pipeline.md) ("Shopify's open-source product taxonomy, cut to 3 levels. Deeper nodes map to their ancestor") and the `taxonomy_version` column. Code layout: `taxonomy.py`, "load Shopify taxonomy, trim to depth 3, version string". Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

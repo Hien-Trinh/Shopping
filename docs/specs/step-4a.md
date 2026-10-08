@@ -1,6 +1,6 @@
 # Step 4a: merchant registry and admin CLI (mini PRD)
 
-Status: approved Oct 3: the scope split (4a ships `verify`, 4b wires it), `revoke` in 4a, the hard-cutover rotate and the test points are confirmed. Plan row: [plan-v1.md, PR steps, 4a](../plan-v1.md). Design: [registry row](../design-commerce-ingestion-pipeline.md) and A16 in [plan-v1.md](../plan-v1.md). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 3: the scope split (4a ships `verify`, 4b wires it), `revoke` in 4a, the hard-cutover rotate and the test points are confirmed. Plan row: [plan-v1.md, PR steps, 4a](../plan-v1.md). Design: [registry row](../design-commerce-ingestion-pipeline.md) and A16 in [plan-v1.md](../plan-v1.md). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

@@ -1,6 +1,6 @@
 # Step 6l.3: fine-tune bge-small end-to-end as the student (mini PRD)
 
-Status: approved Oct 6. Question 1: Colab first, by hand; Hugging Face Jobs for scripted reruns. Question 2: a public Hub model repo. Question 3: the bar OK. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6l.3](../plan-v1.md). Builds on [step-6l.md](step-6l.md) (the student and its eval), [step-6l.2.md](step-6l.2.md) (10k Amazon rows; the bar is met with kNN) and [docs/research/classifier-hosting-options.md](../research/classifier-hosting-options.md) (why this is the next lever). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 6. Question 1: Colab first, by hand; Hugging Face Jobs for scripted reruns. Question 2: a public Hub model repo. Question 3: the bar OK. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6l.3](../plan-v1.md). Builds on [step-6l.md](step-6l.md) (the student and its eval), [step-6l.2.md](step-6l.2.md) (10k Amazon rows; the bar is met with kNN) and [docs/research/classifier-hosting-options.md](../research/classifier-hosting-options.md) (why this is the next lever). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

@@ -1,6 +1,6 @@
 # Step 4c: group-commit appender (mini PRD)
 
-Status: approved Oct 3. Confirmed: the window counted from the oldest waiting request (decision 1), the commit in a thread (decision 2), no row cap (decision 3), `received_at` per row (decision 4), and the test points. Plan row: [plan-v1.md, PR steps, 4c](../plan-v1.md). Design: the [Ingestion API row and lifecycle step 2](../design-commerce-ingestion-pipeline.md), A10 in [plan-v1.md](../plan-v1.md), and [ADR-0002](../adr/0002-local-first-delta-no-queue.md) ("the API group-commits for up to 100 ms"). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 3. Confirmed: the window counted from the oldest waiting request (decision 1), the commit in a thread (decision 2), no row cap (decision 3), `received_at` per row (decision 4), and the test points. Plan row: [plan-v1.md, PR steps, 4c](../plan-v1.md). Design: the [Ingestion API row and lifecycle step 2](../design-commerce-ingestion-pipeline.md), A10 in [plan-v1.md](../plan-v1.md), and [ADR-0002](../adr/0002-local-first-delta-no-queue.md) ("the API group-commits for up to 100 ms"). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

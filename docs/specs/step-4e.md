@@ -1,6 +1,6 @@
 # Step 4e: end-to-end test, HTTP → Landing log → worker → Listing Store (mini PRD)
 
-Status: approved Oct 3. Confirmed: the API's supervisor watch is fixed here (decision 5), the end-to-end test runs unmarked in `make check` (decision 4), and the test points. Plan row: [plan-v1.md, PR steps, 4e](../plan-v1.md), and Phase 4's exit criterion: "an end-to-end request travels HTTP → Landing log → worker → Listing Store". Design: the [Change lifecycle](../design-commerce-ingestion-pipeline.md), steps 1–7. Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 3. Confirmed: the API's supervisor watch is fixed here (decision 5), the end-to-end test runs unmarked in `make check` (decision 4), and the test points. Plan row: [plan-v1.md, PR steps, 4e](../plan-v1.md), and Phase 4's exit criterion: "an end-to-end request travels HTTP → Landing log → worker → Listing Store". Design: the [Change lifecycle](../design-commerce-ingestion-pipeline.md), steps 1–7. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 **Depends on 4c and 4d.** The test reads Submission status through 4d's `GET /submissions/{id}` and lands Changes through 4c's group commit, so it is written after both merge, against their final shapes.
 

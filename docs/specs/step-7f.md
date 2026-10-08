@@ -1,6 +1,6 @@
 # Step 7f: the Listing Store's rewrite churn (mini PRD)
 
-Status: draft Oct 7, for your review. Decided in chat Oct 7: small files for the Listing Store and a minute-level vacuum of its dead files (options 2 and 3 of the five weighed). Questions 1 (the `alter` line by hand), 2 (no plan row for the append-only store: a Future-work line in the design doc, and 7f.2's report records the churn as the known cost) 3 (the load generator's `--unique-text` flag, and 7f.2 runs with its tables on the T9 external drive) and 4 (`GRACE` 2 minutes, `STORE_VACUUM` 60 s) answered Oct 8; question 5, the test points, open. Plan row: [plan-v1.md, PR steps, 7f](../plan-v1.md). Builds on [step-7d.md](step-7d.md) and [docs/stress.md](../stress.md) (7d.2b: the SLO run cannot complete), [step-5d.md](step-5d.md) (maintenance never vacuums past the slowest reader), [ADR-0001](../adr/0001-partition-by-listing-key.md) (only a partition's owner writes it) and [ADR-0002](../adr/0002-local-first-delta-no-queue.md) (Delta, so the tables move to Databricks as they are). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 8 (questions 1 to 5 answered). Decided in chat Oct 7: small files for the Listing Store and a minute-level vacuum of its dead files (options 2 and 3 of the five weighed). Questions 1 (the `alter` line by hand), 2 (no plan row for the append-only store: a Future-work line in the design doc, and 7f.2's report records the churn as the known cost) 3 (the load generator's `--unique-text` flag, and 7f.2 runs with its tables on the T9 external drive) 4 (`GRACE` 2 minutes, `STORE_VACUUM` 60 s) and 5 (the test points, plus an eighth: a reader across a vacuum) answered Oct 8. Plan row: [plan-v1.md, PR steps, 7f](../plan-v1.md). Builds on [step-7d.md](step-7d.md) and [docs/stress.md](../stress.md) (7d.2b: the SLO run cannot complete), [step-5d.md](step-5d.md) (maintenance never vacuums past the slowest reader), [ADR-0001](../adr/0001-partition-by-listing-key.md) (only a partition's owner writes it) and [ADR-0002](../adr/0002-local-first-delta-no-queue.md) (Delta, so the tables move to Databricks as they are). Terms follow [CONTEXT.md](../../CONTEXT.md).
 
 ## Problem
 
@@ -75,6 +75,7 @@ The amended point 3 of [step-7d.md](step-7d.md): the shipped `Procfile` on the s
 5. **`--unique-text`** (new, red first, `tests/unit/test_load.py` or where the generator's tests live): with the flag every generated description ends in its Listing key and no two rows share a text; without it the texts are the labeled set's, as today.
 6. **e2e** (changed): a `store_vacuum` event appears in a run that MERGEd, and the three oracles still hold.
 7. **By hand** (7f.2): the rerun, in the report.
+8. **A reader across a vacuum** (new, red first, `test_maintenance.py`): a reader opens the store at a version, a MERGE replaces one of that version's files, the store vacuum runs with the version inside the grace, and the reader still reads every row; the same with the version outside the grace but pinned.
 
 ## Questions
 
@@ -82,7 +83,7 @@ The amended point 3 of [step-7d.md](step-7d.md): the shipped `Procfile` on the s
 2. **The append-only store** (workers append row versions, readers keep the newest per Listing key, the owner compacts a partition once about 20% of its rows are superseded) cuts the churn about a hundred-fold and is the shape Kafka's log compaction and Hudi's merge-on-read take; deletion-vector writes in delta-rs would do the same with no code, when they ship. Add it as plan row 7g, after the exit is decided? **No (Oct 8): a Future-work line in the design doc, and 7f.2's report records the churn as the known cost.**
 3. **The load generator's text repeats** (1,020 distinct descriptions over 1M rows, 126 bytes a row after compression), which made 7d.2b's churn 10 to 20 times smaller than real rows would give. Add a `--unique-text` flag that appends the key to each description, and use it for 7f.2? **Yes (Oct 8), and 7f.2 runs with its tables on the T9 external drive.**
 4. **`GRACE = 2` minutes and `STORE_VACUUM = 60` s**: headroom of about three minutes of churn. OK? **Yes (Oct 8).** The grace is a correctness bound (ten times the longest non-pinning reader, the Backfill's scan); the cadence a cost bound (each minute of delay adds a minute of churn to the headroom); two knobs because they move for different reasons.
-5. **The test points above.**
+5. **The test points above.** **OK (Oct 8), all seven plus the eighth.**
 
 ## Out of scope
 

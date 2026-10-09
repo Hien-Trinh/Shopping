@@ -452,5 +452,6 @@ def test_each_program_refuses_a_bad_supervisor_pid_and_watches_a_good_one(
     monkeypatch.setenv(entry_var, str(os.getpid()))
     program.main(argv)
     wait_for(lambda: watched)  # it runs in its own thread
-    [(_, stop, _, name)] = watched
-    assert name == process and ran == [stop]
+    [(alive, stop, events_root, name)] = watched
+    assert name == process and events_root == tmp_path / "events" and ran == [stop]
+    assert alive()  # it watches our pid: this process

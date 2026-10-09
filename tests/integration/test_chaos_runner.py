@@ -223,3 +223,8 @@ def test_flagged_rereads_when_the_vacuum_took_a_file_its_snapshot_listed(tmp_pat
     opened = iter([stale])
     monkeypatch.setattr(store, "ensure", lambda p: next(opened, None) or DeltaTable(p))
     assert chaos.flagged(tmp_path) == 1
+    opens = []  # a file missing on every open is a real loss: three tries, then it raises
+    monkeypatch.setattr(store, "ensure", lambda p: opens.append(p) or stale)
+    with pytest.raises(FileNotFoundError):
+        chaos.flagged(tmp_path)
+    assert len(opens) == 3

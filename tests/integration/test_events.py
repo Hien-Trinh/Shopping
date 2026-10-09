@@ -123,7 +123,7 @@ def test_a_failed_write_never_leaves_the_next_events_after_a_torn_line(tmp_path,
 
 def test_a_stop_event_says_why_the_watch_stopped_the_process(tmp_path):  # step 7c.1
     stop = threading.Event()
-    stop.reason = "supervisor_gone"  # as worker.watch sets it
+    stop.reason = "supervisor_gone"  # as entry's watch sets it
     with events.stopping(EventLog(tmp_path, "export"), stop):
         pass
     [stop_event] = events.read(tmp_path)

@@ -49,7 +49,7 @@ def wrap(target: str, when: str, n: int) -> None:
 
     setattr(module, name, wrapped)
     if when == "hang":
-        worker.watch = functools.partial(worker.watch, deadline=1)
+        entry._watch = functools.partial(entry._watch, deadline=1)
 
 
 if __name__ == "__main__":

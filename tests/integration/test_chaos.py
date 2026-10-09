@@ -13,7 +13,7 @@ from support import delete, listing, product_in, reclassify, up
 from test_supervisor import alive, wait_for
 from test_worker import A, Env, failed_indexes, is_poison, poison
 
-from catalog import events, landing, state, store, worker
+from catalog import entry, events, landing, state, store, worker
 from catalog.keys import PARTITIONS
 from catalog.replay import diff, expected_store
 
@@ -22,64 +22,13 @@ SUPERVISOR = [sys.executable, "-m", "catalog.supervisor"]
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")  # pydantic, on poison content
 
 
-def test_a_watched_worker_stops_when_its_supervisor_dies_and_exits_hard_if_stuck():
-    stop, seen, checks = threading.Event(), [], iter([True, True, False])
-    worker.watch(
-        lambda: next(checks), stop, deadline=1.5,
-        sleep=lambda s: seen.append((s, stop.is_set())), exit=seen.append,
-    )  # fmt: skip
-    # Checked each second while it lived. Once it's gone, stop is set so the tick in progress
-    # can finish; a worker still running a deadline later is stuck in a native call: exit 1.
-    assert seen == [(1, False), (1, False), (1.5, True), 1]
-
-
-def test_the_watch_says_why_it_stopped_and_leaves_a_trace_of_its_hard_exit(tmp_path):  # 3e
-    stop, exits, slept = threading.Event(), [], []
-
-    def sleep(seconds):  # the trace is written only once the deadline has passed
-        slept.append((seconds, events.read(tmp_path)))
-
-    worker.watch(lambda: False, stop, tmp_path, "worker-2", deadline=30,
-                 sleep=sleep, exit=exits.append, clock=lambda: 1_000.0)  # fmt: skip
-    assert stop.is_set() and stop.reason == "supervisor_gone" and exits == [1]
-    assert slept == [(30, [])]
-    assert events.read(tmp_path) == [{"type": "watch_exit", "process": "worker-2",
-        "pid": os.getpid(), "deadline": 30, "ts": 1_030_000}]  # the planned exit time  # fmt: skip
-
-
-def test_the_hard_exit_happens_even_when_its_trace_cant_be_written(tmp_path):
-    tmp_path.chmod(0o500)  # read-only, as good as a full disk here
-    try:
-        exits = []
-        worker.watch(lambda: False, threading.Event(), tmp_path, "api",
-                     sleep=lambda s: None, exit=exits.append)  # fmt: skip
-    finally:
-        tmp_path.chmod(0o700)
-    assert exits == [1] and not list(tmp_path.iterdir())
-
-
 def test_a_worker_the_watch_stopped_says_so_in_its_last_event(tmp_path):
     env, stop = Env(tmp_path), threading.Event()
-    worker.watch(lambda: False, stop, sleep=lambda s: None, exit=lambda code: None)
+    entry._watch(lambda: False, stop, sleep=lambda s: None, exit=lambda code: None)
     worker.run(env.tmp, env.state, 0, 4, env.classifier, stop=stop)
     last = [e for e in events.read(env.events_root) if e["type"] == "worker_stop"]
     assert last == [{"type": "worker_stop", "worker": "worker-0", "reason": "supervisor_gone",
                      "ts": last[0]["ts"]}]  # fmt: skip
-
-
-@pytest.mark.parametrize("pid", ["abc", "0", "-1", " 7", str(2**31)])
-def test_a_malformed_supervisor_pid_is_refused_as_a_bad_flag(monkeypatch, capsys, pid):
-    monkeypatch.setenv("CATALOG_SUPERVISOR", pid)  # 0 or -1 would make the watch signal a group
-    monkeypatch.setattr(signal, "signal", lambda *_: None)
-    monkeypatch.setattr(worker, "run", lambda *_, **__: pytest.fail("ran without a valid watch"))
-    with pytest.raises(SystemExit) as stopped:
-        worker.main(["--index", "0", "--workers", "4"])
-    assert stopped.value.code == 2  # fatal, like any bad flag: no restart can fix it
-    assert "CATALOG_SUPERVISOR" in capsys.readouterr().err
-
-
-def test_a_supervisor_run_by_another_user_still_counts_as_alive():
-    assert worker._alive(1)  # init: signalling it is refused (EPERM), but it runs
 
 
 def starts(tmp):

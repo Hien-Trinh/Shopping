@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from deltalake import DeltaTable
+from deltalake.exceptions import CommitFailedError
 
 from catalog import delta, entry, export, landing, snapshots, state, store, worker
 from catalog import events as event_files
@@ -223,12 +224,25 @@ def _clean(
 ) -> dict:
     """Remove the history no unread version needs; the change feed's files stay `feed` at least."""
     if unread == GONE:  # how far back it reads is unknown: nothing is safe to remove
-        return {"history_gone": True, "vacuumed": 0, "change_data": 0, "logs_cleaned": False}
+        return {
+            "history_gone": True,
+            "vacuumed": 0,
+            "vacuum_commit_failed": False,
+            "change_data": 0,
+            "logs_cleaned": False,
+        }
     lag = timedelta() if unread is None else now - unread
     # Whole hours (delta-rs), at least the floor: vacuum also removes untracked files older than
     # this, which could be a commit still being written.
     hours = max(math.ceil(floor / HOUR), math.ceil(lag / HOUR))
-    removed = dt.vacuum(retention_hours=hours, dry_run=False, enforce_retention_duration=False)
+    due = dt.vacuum(retention_hours=hours, enforce_retention_duration=False)  # a dry run
+    commit_failed = False
+    try:
+        removed = dt.vacuum(retention_hours=hours, dry_run=False, enforce_retention_duration=False)
+    except CommitFailedError:  # its VACUUM END lost to a MERGE that landed during the deletion
+        commit_failed = True  # (7f.2's run: 165 restarts); the files it got to are gone
+        root = delta.local(dt.table_uri)
+        removed = [p for p in due if not (root / p).exists()]
     # Vacuum skips paths starting with "_", so the change feed's own files are ours to remove.
     # One is written before its commit: an hour more keeps one whose commit is still landing.
     cutoff = (now - max((hours + 1) * HOUR, feed)).timestamp()
@@ -243,6 +257,7 @@ def _clean(
     return {
         "history_gone": False,
         "vacuumed": len(removed),
+        "vacuum_commit_failed": commit_failed,
         "change_data": len(old),
         "logs_cleaned": logs_cleaned,
     }

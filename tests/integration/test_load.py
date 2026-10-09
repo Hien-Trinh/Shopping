@@ -23,6 +23,20 @@ def test_the_same_seed_gives_the_same_changes():
     assert changes(20) != changes(20, seed=8)
 
 
+def test_unique_text_gives_every_listing_its_own_description_ending_in_its_key():
+    # 2,000 keys each once: the labeled set has about 1,000 texts, so without the flag many
+    # Listings share one; with it each description ends in the Listing's key and is its own.
+    plain = changes(2000, keys=2000, order="sequential")
+    unique = changes(2000, keys=2000, order="sequential", unique_text=True)
+    assert len({c["listing"]["description"] for c in plain}) < 2000
+    assert len({c["listing"]["description"] for c in unique}) == 2000
+    assert all(c["listing"]["description"].endswith(" " + c["merchant_product_id"]) for c in unique)
+    checked = envelope.check_batch(
+        {"changes": unique[:1000]}, merchant_id="m_a", currency="USD", now_ms=START_MS
+    )
+    assert checked.rejected == []  # still inside the description limit
+
+
 def test_a_change_is_pinned_so_every_process_and_run_agrees():
     # Not just equal twice in one process: a hash-randomized seed would pass that.
     got = load.change(0, seed=7, start_ms=1, keys=50, order="random", texts=[("t", "d")],

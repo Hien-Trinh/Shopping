@@ -11,8 +11,9 @@ from deltalake.exceptions import TableNotFoundError
 LOG_RETENTION_HOURS = 1  # Delta log files kept; maintenance's guard uses the same hour
 
 
-def ensure(path: str, schema: pa.Schema) -> DeltaTable:
-    """Open the table, creating it first if it does not exist.
+def ensure(path: str, schema: pa.Schema, **configuration: str) -> DeltaTable:
+    """Open the table, creating it first if it does not exist, with `configuration` as extra
+    table properties.
 
     Creation is serialized by a lock file: processes started together would otherwise race to
     create it, and the losers either crash or land a second CREATE with a new table id.
@@ -34,7 +35,8 @@ def ensure(path: str, schema: pa.Schema) -> DeltaTable:
                     # own cleanup goes by age alone (docs/specs/step-5d.md, decision 4).
                     "delta.enableExpiredLogCleanup": "false",
                     "delta.logRetentionDuration": f"interval {LOG_RETENTION_HOURS} hours",
-                },
+                }
+                | configuration,
             )
 
 

@@ -163,10 +163,14 @@ def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system
         PARTITIONS: "rejected"
     }
     assert system.outcomes(second) == {0: "written", 1: "already_applied", 2: "stale"}
+    # After those Outcomes, so this one lands in a tick of its own: a MERGE that replaces the
+    # file holding the Listing, which maintenance's store vacuum then removes (step 7f).
+    third = system.post(upsert(skus[1], sv=4))
+    assert system.outcomes(third) == {0: "written"}
     data = system.tmp / "data"
     log = landing.ensure(str(data / "landing_log"))
     landed = landing.read(log, dict.fromkeys(range(PARTITIONS), START), 10_000).changes
-    assert len(landed) == PARTITIONS + 3
+    assert len(landed) == PARTITIONS + 4
     listings = store.ensure(str(data / "listing_store"))
     assert diff(expected_store([x.change for x in landed]), store.fingerprints(listings)) == []
     rows = listings.to_pyarrow_dataset().to_table().to_pylist()
@@ -186,6 +190,12 @@ def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system
     for path in snapshots.existing(data / "snapshots"):
         copy = store.fingerprints(DeltaTable(str(path)))
         assert diff(store.fingerprints(listings, snapshots.pinned(path)), copy) == []
+
+    # Maintenance's store vacuum (step 7f): the second batch replaced files the first wrote, and
+    # the scratch system vacuums them within seconds; the oracles above still held.
+    wait_for(lambda: [e for e in events.read(data / "events") if e["type"] == "store_vacuum"])
+    (vacuumed,) = [e for e in events.read(data / "events") if e["type"] == "store_vacuum"][:1]
+    assert vacuumed["removed"] >= 1 and vacuumed["errors"] == 0 and not vacuumed["pin_stale"]
 
     pids = [*worker_pids(system.tmp), *export_pids(system.tmp), *snapshot_pids(system.tmp)]
     pids += [*maintenance_pids(system.tmp), *backfill_pids(system.tmp), *api_pids(system.port)]

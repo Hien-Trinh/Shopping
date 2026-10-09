@@ -52,7 +52,10 @@ def procfile(text: str, port: int, *, workers=4, classifier="fake", min_free=0) 
 
     sub(r"^api: python -m catalog\.api$", rf"\g<0> --port {port} --min-free {min_free}", 1)
     sub(r"^export: python -m catalog\.export$", r"\g<0> --interval 0.2", 1)
-    sub(r"^maintenance: python -m catalog\.maintenance$", r"\g<0> --interval 0.2", 1)
+    # The store's dead files go within seconds, not minutes, so the oracles run over a vacuumed
+    # store and a short run shows a store_vacuum event (step 7f).
+    sub(r"^maintenance: python -m catalog\.maintenance$",
+        r"\g<0> --interval 0.2 --store-vacuum 0.2 --grace 1", 1)  # fmt: skip
     # Every second at least, so consecutive snapshots never share a second's name.
     sub(r"^snapshots: python -m catalog\.snapshots$", r"\g<0> --every 1", 1)
     sub(r"^((?:worker-\d|backfill): .*)--classifier student$", rf"\1--classifier {classifier}", 5)

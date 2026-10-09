@@ -2,10 +2,13 @@
 
 import os
 import threading
+import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pyarrow as pa
 import pytest
+from deltalake import DeltaTable
 from support import classified, listing, product_in, up
 from test_supervisor import wait_for
 
@@ -58,6 +61,16 @@ class Env:
 
     def rows(self):
         return landing.ensure(self.log.table_uri).to_pyarrow_table().num_rows
+
+    def vacuum_store(self, later=timedelta()):
+        now = datetime.now(UTC) + later
+        return maintenance.vacuum_store(self.store, self.state, self.events, now)
+
+    def store_files(self):
+        return sorted((self.tmp / "data" / "listing_store").rglob("part-*.parquet"))
+
+    def store_events(self):
+        return [e for e in events.read(self.tmp / "data" / "events") if e["type"] == "store_vacuum"]
 
     def reports(self):
         return [e for e in events.read(self.tmp / "data" / "events") if e["type"] == "maintenance"]
@@ -151,15 +164,207 @@ def test_the_listing_stores_vacuum_removes_replaced_files_once_exported(env):
     assert env.reports()[-1]["listing_store"]["vacuumed"] > 0
 
 
+# The Listing Store's own vacuum (step 7f): every minute, dead files older than the grace go.
+
+
+def test_the_store_vacuum_removes_a_file_replaced_before_the_grace(env):
+    env.merge(1)
+    head = env.merge(2)  # replaces the file holding the Listing
+    env.watermark(head)
+    before = env.store_files()
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert len(env.store_files()) < len(before)
+
+
+def test_the_store_vacuum_keeps_the_files_of_a_version_committed_inside_the_grace(env):
+    env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    before = env.store_files()
+    report = env.vacuum_store()  # both versions are seconds old
+    assert env.store_files() == before
+    assert report["removed"] == 0
+    assert env.store_events() == []  # nothing removed, nothing said
+
+
+def test_the_store_vacuum_keeps_what_change_export_has_not_read(env):
+    exported = env.merge(1)
+    for sv in range(2, 5):
+        env.merge(sv)  # versions 2 to 4 unread by Change Export; each replaces the last's file
+    env.watermark(exported)
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    feed = pa.table(env.store.load_cdf(starting_version=exported + 1).read_all())
+    assert feed.num_rows > 0  # the feed from the first unread version still reads
+    assert len(env.change_data()) == 4  # its files are the feed's, never a sweep's business
+
+
+def test_the_store_vacuum_never_removes_an_untracked_file(env):
+    env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    stray = env.tmp / "data" / "listing_store" / "partition=3" / "part-inflight.parquet"
+    stray.write_bytes(b"a MERGE still writing its output")
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert stray.exists()
+
+
+def test_the_store_vacuum_says_what_it_removed(env):
+    env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    (event,) = env.store_events()
+    assert event["removed"] >= 1 and event["bytes"] > 0 and event["ms"] >= 0
+
+
+def test_the_store_vacuum_keeps_the_version_a_snapshots_pass_has_pinned(env):
+    pinned = env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    state.save_pin(env.state, pinned, datetime.now(UTC))  # a Snapshots pass copying version 1
+    before = env.store_files()
+    report = env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert env.store_files() == before
+    assert report["pin_stale"] is False
+    state.clear_pin(env.state)  # the pass finished
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert len(env.store_files()) < len(before)
+
+
+def test_the_store_vacuum_ignores_a_pin_older_than_an_hour(env):
+    pinned = env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    state.save_pin(env.state, pinned, datetime.now(UTC) - timedelta(hours=1, seconds=1))
+    before = env.store_files()
+    report = env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert len(env.store_files()) < len(before)
+    assert report["pin_stale"] is True
+
+
+def test_a_reader_inside_the_grace_still_reads_every_row_across_a_vacuum(env):
+    env.merge(1)
+    reader = DeltaTable(env.store.table_uri)  # loaded now, at this version
+    before = reader.to_pyarrow_table().num_rows
+    head = env.merge(2)  # replaces the file the reader's version holds
+    env.watermark(head)
+    env.vacuum_store()  # the reader's version is seconds old
+    assert reader.to_pyarrow_table().num_rows == before
+
+
+def test_a_pinned_reader_still_reads_every_row_across_a_vacuum_after_the_grace(env):
+    pinned = env.merge(1)
+    reader = DeltaTable(env.store.table_uri, version=pinned)
+    before = reader.to_pyarrow_table().num_rows
+    head = env.merge(2)
+    env.watermark(head)
+    state.save_pin(env.state, pinned, datetime.now(UTC))
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert reader.to_pyarrow_table().num_rows == before
+
+
+def test_without_the_grace_that_reader_loses_its_file(env):
+    env.merge(1)
+    reader = DeltaTable(env.store.table_uri)
+    head = env.merge(2)
+    env.watermark(head)
+    env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    with pytest.raises(Exception, match="not found|No such file"):
+        reader.to_pyarrow_table()
+
+
+def test_the_grace_runs_from_the_removal_not_the_commit(env):
+    # An idle store: version 1 is old, but its file was only just replaced, and a reader that
+    # loaded version 1 up to a grace ago may still hold it.
+    env.merge(1)
+    time.sleep(0.3)
+    head = env.merge(2)
+    env.watermark(head)
+    before = env.store_files()
+    maintenance.vacuum_store(
+        env.store, env.state, env.events, datetime.now(UTC), grace=timedelta(seconds=0.15)
+    )
+    assert env.store_files() == before  # removed 0.0 s ago, inside a 0.15 s grace
+    time.sleep(0.2)
+    maintenance.vacuum_store(
+        env.store, env.state, env.events, datetime.now(UTC), grace=timedelta(seconds=0.15)
+    )
+    assert len(env.store_files()) < len(before)
+
+
+def test_a_malformed_or_impossible_pin_keeps_nothing_and_kills_nothing(env):
+    env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    before = env.store_files()
+    (env.state / "snapshot_pin.json").write_text("{not json")
+    report = env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert len(env.store_files()) < len(before) and report["pin_stale"] is False
+    state.save_pin(env.state, head + 50, datetime.now(UTC))  # a version the log doesn't have
+    report = env.vacuum_store(later=maintenance.GRACE + timedelta(seconds=1))
+    assert report["errors"] == 0
+
+
+def test_a_file_that_cannot_be_removed_is_reported_and_retried(env, monkeypatch):
+    env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    real = Path.unlink
+    calls = []
+
+    def flaky(self, *a, **k):
+        calls.append(self)
+        if len(calls) == 1:
+            raise PermissionError("busy")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", flaky)
+    seen = {}
+    now = datetime.now(UTC) + maintenance.GRACE + timedelta(seconds=1)
+    first = maintenance.vacuum_store(env.store, env.state, env.events, now, seen=seen)
+    assert first["errors"] == 1 and first["removed"] == 0 and first["pending"] == 1
+    second = maintenance.vacuum_store(env.store, env.state, env.events, now, seen=seen)
+    assert second["errors"] == 0 and second["removed"] == 1 and second["pending"] == 0
+    assert [e["errors"] for e in env.store_events()] == [1, 0]
+
+
+def test_the_sweep_remembers_where_it_read_the_log_to(env):
+    env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    seen = {}
+    later = datetime.now(UTC) + maintenance.GRACE + timedelta(seconds=1)
+    maintenance.vacuum_store(env.store, env.state, env.events, later, seen=seen)
+    assert seen["version"] == head and seen["pending"] == {}
+    head = env.merge(3)
+    maintenance.vacuum_store(env.store, env.state, env.events, later, seen=seen)
+    assert seen["version"] == head  # only the new commit was read
+
+
 def test_change_data_files_go_once_exported(env):
     for sv in range(1, 5):
         head = env.merge(sv)
     assert env.change_data()  # the MERGEs' updates; vacuum never removes these
     env.watermark(head)
     env.offsets()
-    env.tick(later=timedelta(hours=2), floor=timedelta())  # an hour past the retention and more
+    env.tick(later=maintenance.FEED_RETENTION + timedelta(hours=2), floor=timedelta())
     assert env.change_data() == []
     assert env.reports()[-1]["listing_store"]["change_data"] > 0
+
+
+def test_the_stores_feed_stays_as_long_as_the_snapshots_so_old_versions_still_rebuild(env):
+    # The oracles rebuild an old version from the feed (step 7f); a snapshot is kept 7 days, so
+    # the feed is too, however long ago Change Export read it.
+    env.merge(1)
+    want = store.fingerprints(env.store, 1)  # read from version 1's own files, which exist now
+    head = env.merge(2)
+    files = env.change_data()
+    env.watermark(head)
+    env.offsets()
+    env.tick(later=timedelta(days=6, hours=23), floor=timedelta())  # version 1's files go
+    assert env.change_data() == files  # the feed stays
+    assert store.fingerprints(env.store, 1) == want  # so an old version still rebuilds
+    assert timedelta(days=7) == maintenance.FEED_RETENTION  # the snapshots' lifetime
 
 
 def test_change_data_files_stay_an_hour_past_the_retention(env):
@@ -239,6 +444,27 @@ def test_run_cleans_until_stopped(env):
     stop.set()
     runner.join(timeout=10)
     assert not runner.is_alive()  # the wait for the next pass ends at once
+
+
+def test_run_vacuums_the_store_on_its_own_faster_clock(env, monkeypatch):
+    env.offsets()
+    passes = []
+    swept = {"removed": 2, "bytes": 10, "errors": 0}
+    monkeypatch.setattr(maintenance, "vacuum_store", lambda *a, **k: passes.append(a[3]) or swept)
+    stop = threading.Event()
+    runner = threading.Thread(
+        target=maintenance.run,
+        args=(env.tmp / "data", env.state),
+        kwargs={"stop": stop, "interval": 0.4, "store_vacuum": 0.05},
+    )
+    runner.start()
+    wait_for(lambda: len(env.reports()) >= 2, timeout=10)
+    stop.set()
+    runner.join(timeout=10)
+    assert not runner.is_alive()
+    assert len(passes) >= 3  # several vacuums inside one pass's interval
+    totals = env.reports()[1]["store_vacuum"]  # the pass reports the sweeps since the last one
+    assert totals["passes"] >= 2 and totals["removed"] == 2 * totals["passes"]
 
 
 def test_a_second_maintenance_is_refused_before_touching_anything(env):

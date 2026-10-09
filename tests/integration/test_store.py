@@ -1,3 +1,4 @@
+import os
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -134,6 +135,26 @@ def test_fingerprints_now_and_then(db):
     assert store.fingerprints(db, version=v1) == {K: (5, content_hash(listing()), False)}
 
 
+def test_fingerprints_at_an_old_version_survive_the_vacuum_of_its_files(db):
+    # The oracles read the store at older versions; maintenance's vacuum (step 7f) removes those
+    # versions' files, so fingerprints rebuild them from the change feed instead.
+    k2 = ("m_1", product_in(5, prefix="other"))
+    store.merge(db, [write(1, listing(title="first")), write(1, listing(), key=k2)], NOW)
+    then = DeltaTable(db.table_uri, version=db.version())
+    want = {
+        (r["merchant_id"], r["merchant_product_id"]): store.fingerprint(r)
+        for r in then.to_pyarrow_dataset().to_table().to_pylist()
+    }  # read straight from the old version's files, while they exist
+    k3 = ("m_1", product_in(5, prefix="third"))
+    store.merge(db, [write(2, listing(title="second")), write(1, listing(), key=k3)], NOW)
+    store.merge(db, [write(3)], NOW)  # a Tombstone, so K changed twice after version 1
+    assert store.fingerprints(db, 1) == want
+    db.vacuum(retention_hours=0, dry_run=False, enforce_retention_duration=False)
+    assert store.fingerprints(db, 1) == want
+    with pytest.raises(Exception, match="not found|No such file"):
+        DeltaTable(db.table_uri, version=1).to_pyarrow_dataset().to_table()  # the files are gone
+
+
 def test_compact_merges_small_files_without_changing_data_or_feed(db):
     keys = [("m_1", product_in(5, prefix=f"c{i}")) for i in range(6)]
     for i, k in enumerate(keys):  # one new file per MERGE
@@ -153,6 +174,24 @@ def test_merge_rewrites_only_the_file_holding_the_listing(db):
     store.merge(db, [write(2, listing(price=9), key=keys[0])], NOW)
     ops = DeltaTable(db.table_uri).history(1)[0]["operationMetrics"]
     assert ops["num_target_files_removed"] == 1
+
+
+def test_a_partition_is_written_as_small_files_so_a_merge_rewrites_one_of_them(db):
+    # One MERGE lands 2,500 Listings of about 1.2 KB in partition 5: about 3 MB, so more than
+    # one file at the 1 MiB target; a later update of one Listing then rewrites its file alone.
+    keys = [("m_1", product_in(5, prefix=f"s{i}")) for i in range(2500)]
+    text = {k: os.urandom(600).hex() for k in keys}  # 1.2 KB that does not compress away
+    store.merge(db, [write(1, listing(description=text[k]), key=k) for k in keys], NOW)
+    files = len(files_in(db, 5))
+    assert files > 1
+    store.merge(db, [write(2, listing(description=text[keys[7]], price=9), key=keys[7])], NOW)
+    ops = DeltaTable(db.table_uri).history(1)[0]["operationMetrics"]
+    assert ops["num_target_files_removed"] == 1
+    assert len(files_in(db, 5)) == files
+
+
+def test_ensure_creates_the_store_with_the_compaction_target_as_its_file_size(db):
+    assert db.metadata().configuration["delta.targetFileSize"] == str(store.COMPACT_TARGET)
 
 
 def test_a_handle_sees_other_writers(db):

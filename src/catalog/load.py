@@ -41,12 +41,15 @@ def texts(path: Path = LABELS) -> list[tuple[str, str]]:
 
 
 def change(i: int, *, seed, start_ms: int, keys: int, order: str, texts, currency: str,
-           deletes: float = 0) -> dict:  # fmt: skip
+           deletes: float = 0, unique_text: bool = False) -> dict:  # fmt: skip
     """Change `i` of a run: the same `(seed, i, start_ms)` always gives the same Change, a delete
-    with chance `deletes`."""
+    with chance `deletes`. With `unique_text` the description ends in the Listing's key, so no
+    two Listings share a text and the store compresses them like real ones (step 7f)."""
     rng = random.Random(f"{seed}:{i}")  # a str seed is hashed with SHA-512: stable across runs
     n = i % keys if order == "sequential" else rng.randrange(keys)
     title, description = texts[i % len(texts)]
+    if unique_text:
+        description = f"{description} p{n}"
     listing = {"title": title, "description": description, "currency": currency}
     listing |= {"price_micros": rng.randint(1, 10**9), "availability": rng.choice(AVAILABILITY)}
     # A later Change of a key is newer. A later run is newer only once it starts after the
@@ -190,6 +193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.add_argument("--seed", type=int, default=0)
     args.add_argument("--currency", default="USD", help="the Merchant's currency")
     args.add_argument("--deletes", type=float, default=0, help="the fraction of deletes")
+    args.add_argument("--unique-text", action="store_true", help="no two Listings share a text")
     args.add_argument("--start-ms", type=int, help="the first source_version; default now")
     a = args.parse_args(argv)
     if not os.environ.get("CATALOG_API_KEY"):

@@ -36,12 +36,16 @@ def run(
 ) -> None:
     """Snapshot when due until `stop` is set. Any error propagates: the supervisor restarts it."""
     with state.claim_snapshots(state_dir):  # first: a second one dies before deleting anything
+        state.clear_pin(state_dir)  # a pin left by a killed pass pins nothing
         dt = store.ensure(str(data / "listing_store"))
         events = EventLog(data / "events", "snapshots")
         events.emit([{"type": "snapshots_start", "pid": os.getpid()}])
         with stopping(events, stop):
             while not stop.is_set():
-                wait = tick(dt, data / "snapshots", events, clock(), every=every, keep=keep)
+                wait = tick(
+                    dt, data / "snapshots", events, clock(), every=every, keep=keep,
+                    state_dir=state_dir,
+                )  # fmt: skip
                 stop.wait(wait.total_seconds())
 
 
@@ -53,6 +57,7 @@ def tick(
     *,
     every: timedelta,
     keep: timedelta,
+    state_dir: Path,
 ) -> timedelta:
     """Take a snapshot if the newest is `every` old (or none exists); the wait until the next.
 
@@ -62,7 +67,7 @@ def tick(
     started = time.monotonic()
     newest = max((_taken(p) for p in existing(snapshot_dir)), default=None)
     if newest is None or now - newest >= every:
-        path = take(dt, snapshot_dir, now)
+        path = take(dt, snapshot_dir, now, state_dir=state_dir)
         rows = DeltaTable(str(path)).to_pyarrow_dataset().count_rows()
         ms = round((time.monotonic() - started) * 1000)
         event = {"type": "snapshot", "name": path.name, "version": pinned(path), "rows": rows}
@@ -78,15 +83,20 @@ def existing(snapshot_dir: Path) -> list[Path]:
     return sorted(p for p in snapshot_dir.glob("*") if re.fullmatch(r"\d{8}T\d{6}Z", p.name))
 
 
-def take(dt: DeltaTable, snapshot_dir: Path, now: datetime) -> Path:
-    """Copy the Listing Store's current version to snapshot_dir/<now>; the new folder."""
+def take(dt: DeltaTable, snapshot_dir: Path, now: datetime, *, state_dir: Path) -> Path:
+    """Copy the Listing Store's current version to snapshot_dir/<now>; the new folder.
+
+    The version is pinned in `state_dir` for the copy, so the store's vacuum keeps its files
+    however long the copy takes (step 7f); the pin goes when the copy ends, either way.
+    """
     dt.update_incremental()
     version = dt.version()
-    pinned = DeltaTable(dt.table_uri, version=version)
     path = snapshot_dir / now.astimezone(UTC).strftime(NAME)
     tmp = snapshot_dir / f".{path.name}.{uuid.uuid4().hex}.tmp"
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
     try:
+        state.save_pin(state_dir, version, now)
+        pinned = DeltaTable(dt.table_uri, version=version)
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
         write_deltalake(
             str(tmp),
             pinned.to_pyarrow_dataset().scanner().to_reader(),  # streamed: no table in memory
@@ -99,6 +109,8 @@ def take(dt: DeltaTable, snapshot_dir: Path, now: datetime) -> Path:
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)  # else every retry on a full disk leaves one more
         raise
+    finally:
+        state.clear_pin(state_dir)
     return path
 
 

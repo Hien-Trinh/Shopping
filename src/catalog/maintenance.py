@@ -17,7 +17,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from deltalake import DeltaTable
-from deltalake.exceptions import CommitFailedError
 
 from catalog import delta, entry, export, landing, state, store, worker
 from catalog import events as event_files
@@ -60,13 +59,22 @@ def run(
         events.emit([{"type": "maintenance_start", "pid": os.getpid()}])
         with stopping(events, stop):
             next_pass = next_vacuum = time.monotonic()
+            seen: dict = {}  # the sweep's memory; totals go into the pass's report
+            totals = {"passes": 0, "removed": 0, "bytes": 0, "errors": 0}
             while not stop.is_set():
                 now = time.monotonic()
                 if now >= next_pass:
-                    tick(landing_dt, store_dt, data, state_dir, events, datetime.now(UTC))
+                    tick(landing_dt, store_dt, data, state_dir, events, datetime.now(UTC),
+                         store_vacuum=dict(totals))  # fmt: skip
+                    totals = dict.fromkeys(totals, 0)
                     next_pass = now + interval
                 if now >= next_vacuum:
-                    vacuum_store(store_dt, state_dir, events, datetime.now(UTC), grace=grace)
+                    swept = vacuum_store(
+                        store_dt, state_dir, events, datetime.now(UTC), grace=grace, seen=seen
+                    )
+                    totals["passes"] += 1
+                    for k in ("removed", "bytes", "errors"):
+                        totals[k] += swept[k]
                     next_vacuum = now + store_vacuum
                 stop.wait(max(0.0, min(next_pass, next_vacuum) - time.monotonic()))
 
@@ -80,7 +88,10 @@ def tick(
     now: datetime,
     *,
     floor: timedelta = timedelta(hours=delta.LOG_RETENTION_HOURS),
+    store_vacuum: dict | None = None,
 ) -> None:
+    """One full pass; `store_vacuum` is the store sweeps' totals since the last pass, so the
+    10-minute report shows the vacuum ran even when its passes had nothing to say."""
     started = time.monotonic()
     landing_dt.update_incremental()
     store_dt.update_incremental()
@@ -92,6 +103,7 @@ def tick(
     }
     report: dict = {
         "type": "maintenance",
+        "store_vacuum": store_vacuum or {"passes": 0, "removed": 0, "bytes": 0, "errors": 0},
         "event_hours": event_files.prune(data / "events", now),
         "export_files": export.prune(data / "export", now, watermark),
     }
@@ -118,55 +130,85 @@ def vacuum_store(
     now: datetime,
     *,
     grace: timedelta = GRACE,
+    seen: dict | None = None,
 ) -> dict:
     """Remove the Listing Store's dead files no reader can still need; the pass's report, which
-    is also emitted as a `store_vacuum` event when anything was removed."""
+    is also emitted as a `store_vacuum` event when anything was removed or went wrong.
+
+    A sweep over the log's own `remove` actions, not delta-rs's vacuum: a file goes once its
+    removal is older than `grace` (a reader that loaded a version while the file was live did so
+    before the removal, so it has had the whole grace) and no Catalog Snapshots pass has pinned
+    the version that holds it. `seen` is the sweep's memory across passes (the last log version
+    read and the removals still pending), owned by the caller; None starts from the oldest log.
+    """
     started = time.monotonic()
     store_dt.update_incremental()
-    head = store_dt.version()
-    watermark = state.load_watermark(state_dir, store_dt.metadata().id)
-    keep = set(range(watermark + 1, head + 1))  # what Change Export has not read yet
-    version = head
-    while version >= 0:
-        since = _unread_since(store_dt, version)
-        if since is None or since < now - grace:
-            break
-        keep.add(version)  # a reader that loaded it may still be reading
-        version -= 1
-    pin, pin_stale = state.load_pin(state_dir), False
-    if pin is not None:  # a Catalog Snapshots pass is copying that version
-        pinned, since = pin
-        pin_stale = now - since > PIN_TTL
-        if not pin_stale:
-            keep.add(pinned)
-    kept = sorted(keep) or None
-    dead = store_dt.vacuum(retention_hours=0, enforce_retention_duration=False, keep_versions=kept)
     root = delta.local(store_dt.table_uri)
-    sizes = {p: f.stat().st_size for p in dead if (f := root / p).exists()}
-    commit_failed = False
-    if dead:
+    memory = seen if seen is not None else {}
+    pending: dict[str, tuple[int, int]] = memory.setdefault("pending", {})  # path: (ms, size)
+    _read_removes(root, memory, pending)
+    cutoff = (now - grace).timestamp() * 1000
+    pin, pin_stale = state.load_pin(state_dir), False
+    pinned: set[str] = set()
+    if pin is not None:  # a Catalog Snapshots pass is copying that version: keep its files
+        pinned_version, since = pin
+        pin_stale = now - since > PIN_TTL  # left by a killed pass
+        if not pin_stale:
+            pinned = _files_of(store_dt, pinned_version)
+    removed = size = errors = 0
+    for path, (ms, bytes_) in list(pending.items()):
+        if ms >= cutoff or path in pinned:
+            continue
         try:
-            store_dt.vacuum(
-                retention_hours=0,
-                dry_run=False,
-                enforce_retention_duration=False,
-                keep_versions=kept,
-            )
-        except CommitFailedError:  # a MERGE landed meanwhile: the files it deleted are gone
-            commit_failed = True  # either way; what it didn't delete goes next pass
-    removed = [p for p in sizes if not (root / p).exists()]
+            (root / path).unlink()
+            removed, size = removed + 1, size + bytes_
+        except FileNotFoundError:  # delta-rs's own vacuum (the hourly pass) got there first
+            pass
+        except OSError:  # kept pending: retried next pass
+            errors += 1
+            continue
+        del pending[path]
     report = {
         "type": "store_vacuum",
-        "removed": len(removed),
-        "bytes": sum(sizes[p] for p in removed),
-        "commit_failed": commit_failed,
-        "kept_versions": len(keep),
+        "removed": removed,
+        "bytes": size,
+        "errors": errors,
+        "pending": len(pending),
         "pin_stale": pin_stale,
         "ms": round((time.monotonic() - started) * 1000),
     }
-    if removed:
+    if removed or errors or pin_stale:
         events.emit([report])
     return report
+
+
+def _read_removes(root: Path, memory: dict, pending: dict[str, tuple[int, int]]) -> None:
+    """Add the `remove` actions of the log files past `memory["version"]` to `pending`."""
+    # ponytail: one JSON file per commit since the last pass (about 155 a minute at 50/s); a
+    # restart rereads what the hourly log cleanup left, and removes older than that are the
+    # hourly delta-rs vacuum's. Upgrade path: the checkpoint's remove actions.
+    last = memory.get("version", -1)
+    for log in sorted((root / "_delta_log").glob("*.json")):
+        version = int(log.stem)
+        if version <= last:
+            continue
+        with log.open() as f:
+            for action in map(json.loads, f):
+                if "remove" in action:
+                    r = action["remove"]
+                    pending[r["path"]] = (r.get("deletionTimestamp") or 0, r.get("size") or 0)
+        memory["version"] = version
+
+
+def _files_of(dt: DeltaTable, version: int) -> set[str]:
+    """The data files a version holds, relative to the table root; empty if the log can't give
+    that version (a pin past the head or past the cleaned history: nothing to protect)."""
+    try:
+        at = DeltaTable(dt.table_uri, version=version)
+    except Exception:  # delta-rs raises its own DeltaError for an unknown version
+        return set()
+    root = delta.local(dt.table_uri)
+    return {str(delta.local(u).relative_to(root)) for u in at.file_uris()}
 
 
 def _clean(dt: DeltaTable, unread: datetime | None, now: datetime, floor: timedelta) -> dict:

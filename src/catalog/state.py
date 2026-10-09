@@ -131,10 +131,16 @@ def save_pin(state: Path, version: int, started: datetime) -> None:
 
 
 def load_pin(state: Path) -> tuple[int, datetime] | None:
-    saved = load(state / "snapshot_pin.json", None)
-    if saved is None:
+    """The pin, or None when there is none or it is malformed (the vacuum then keeps nothing
+    for it, as for a stale one, rather than dying on a file only Snapshots writes)."""
+    try:
+        saved = load(state / "snapshot_pin.json", None)
+        since = datetime.fromisoformat(saved["started"])
+        if since.utcoffset() is None:
+            return None
+        return int(saved["version"]), since
+    except CorruptState, TypeError, KeyError, ValueError:
         return None
-    return saved["version"], datetime.fromisoformat(saved["started"])
 
 
 def clear_pin(state: Path) -> None:

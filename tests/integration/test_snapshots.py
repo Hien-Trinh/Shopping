@@ -58,7 +58,7 @@ def test_a_snapshot_equals_the_store_at_its_pinned_version(env):
     env.merge(write(C, 1, listing(), classified("Home > Mugs")))  # a reclassify
     store.compact(env.dt, range(64))
     head = env.dt.version()
-    path = snapshots.take(env.dt, env.out, NOW)
+    path = snapshots.take(env.dt, env.out, NOW, state_dir=env.state)
     assert path == env.out / "20261003T120000Z"
     assert snapshots.pinned(path) == head
     assert env.oracle(path)
@@ -72,7 +72,7 @@ def test_a_snapshot_equals_the_store_at_its_pinned_version(env):
 
 
 def test_an_empty_store_snapshots_to_an_empty_table(env):
-    path = snapshots.take(env.dt, env.out, NOW)
+    path = snapshots.take(env.dt, env.out, NOW, state_dir=env.state)
     assert snapshots.pinned(path) == env.dt.version()
     assert env.oracle(path)
     assert env.rows(DeltaTable(str(path))) == []
@@ -83,14 +83,14 @@ def test_a_failed_copy_leaves_no_folder(env):
     lost = next(p for p in (env.tmp / "data" / "listing_store").rglob("*.parquet"))
     lost.unlink()  # the copy's read fails inside delta-rs, after it has started writing
     with pytest.raises(Exception, match="not found|No such file"):
-        snapshots.take(env.dt, env.out, NOW)
+        snapshots.take(env.dt, env.out, NOW, state_dir=env.state)
     assert os.listdir(env.out) == []
 
 
 def test_a_second_snapshot_in_the_same_second_is_refused_and_leaves_nothing(env):
-    snapshots.take(env.dt, env.out, NOW)
+    snapshots.take(env.dt, env.out, NOW, state_dir=env.state)
     with pytest.raises(OSError):
-        snapshots.take(env.dt, env.out, NOW)
+        snapshots.take(env.dt, env.out, NOW, state_dir=env.state)
     assert os.listdir(env.out) == ["20261003T120000Z"]
 
 
@@ -112,6 +112,31 @@ def test_a_pass_pins_the_version_it_copies_and_unpins_after(env, monkeypatch):
     assert state.load_pin(env.state) is None  # removed after it
 
 
+def test_a_pass_through_tick_pins_as_well(env, monkeypatch):
+    env.merge(write(A, 1, listing()))
+    seen = []
+    real = snapshots.write_deltalake
+    monkeypatch.setattr(
+        snapshots,
+        "write_deltalake",
+        lambda *a, **k: (seen.append(state.load_pin(env.state)), real(*a, **k))[1],
+    )
+    tick(env, NOW)
+    assert seen == [(env.dt.version(), NOW)]
+
+
+def test_a_failure_before_the_copy_unpins_too(env, monkeypatch):
+    env.merge(write(A, 1, listing()))
+
+    def broken(*a, **k):
+        raise RuntimeError("no table today")
+
+    monkeypatch.setattr(snapshots, "DeltaTable", broken)
+    with pytest.raises(RuntimeError):
+        snapshots.take(env.dt, env.out, NOW, state_dir=env.state)
+    assert state.load_pin(env.state) is None
+
+
 def test_a_failed_copy_unpins_too(env):
     env.merge(write(A, 1, listing()), write(B, 1, listing()))
     next(p for p in (env.tmp / "data" / "listing_store").rglob("*.parquet")).unlink()
@@ -121,7 +146,9 @@ def test_a_failed_copy_unpins_too(env):
 
 
 def test_a_pin_left_by_a_killed_pass_is_removed_at_start(env):
-    snapshots.take(env.dt, env.out, datetime.now(UTC))  # fresh: the run takes none
+    snapshots.take(
+        env.dt, env.out, datetime.now(UTC), state_dir=env.state
+    )  # fresh: the run takes none
     state.save_pin(env.state, 0, NOW)
     stop = threading.Event()
     runner = threading.Thread(
@@ -138,7 +165,9 @@ H = timedelta(hours=1)
 
 
 def tick(env, now):
-    return snapshots.tick(env.dt, env.out, env.events, now, every=6 * H, keep=7 * 24 * H)
+    return snapshots.tick(
+        env.dt, env.out, env.events, now, every=6 * H, keep=7 * 24 * H, state_dir=env.state
+    )
 
 
 def names(env):
@@ -148,7 +177,7 @@ def names(env):
 def test_the_next_snapshot_is_due_six_hours_after_the_newest(env):
     assert tick(env, NOW) == 6 * H  # none yet: at once
     assert tick(env, NOW + 2 * H) == 4 * H  # a restart doesn't add one
-    snapshots.take(env.dt, env.out, NOW - 8 * 24 * H)
+    snapshots.take(env.dt, env.out, NOW - 8 * 24 * H, state_dir=env.state)
     assert tick(env, NOW + 2 * H) == 4 * H  # an old one is pruned even when none is due
     assert tick(env, NOW + 6 * H) == 6 * H
     assert names(env) == ["20261003T120000Z", "20261003T180000Z"]  # the 8-day one is gone
@@ -165,7 +194,7 @@ def test_a_long_outage_takes_one_snapshot_not_a_burst(env):
 def test_snapshots_older_than_seven_days_are_pruned(env):
     day = 24 * H
     for age in (8, 6, 1):
-        snapshots.take(env.dt, env.out, NOW - age * day)
+        snapshots.take(env.dt, env.out, NOW - age * day, state_dir=env.state)
     tick(env, NOW)
     assert names(env) == ["20260927T120000Z", "20261002T120000Z", "20261003T120000Z"]
     pruned = [
@@ -178,13 +207,13 @@ def test_snapshots_older_than_seven_days_are_pruned(env):
 
 def test_the_newest_snapshot_is_kept_however_old(env):
     for age in (9, 8):
-        snapshots.take(env.dt, env.out, NOW - age * 24 * H)
+        snapshots.take(env.dt, env.out, NOW - age * 24 * H, state_dir=env.state)
     snapshots.prune(env.out, NOW, keep=7 * 24 * H, events=env.events)
     assert names(env) == ["20260925T120000Z"]
 
 
 def test_hidden_leftovers_of_a_crash_are_deleted_and_never_listed(env):
-    snapshots.take(env.dt, env.out, NOW)
+    snapshots.take(env.dt, env.out, NOW, state_dir=env.state)
     for leftover in (".20261003T180000Z.ab.tmp", ".20260920T120000Z.cd.deleting"):
         (env.out / leftover / "_delta_log").mkdir(parents=True)
     assert names(env) == ["20261003T120000Z"]
@@ -205,7 +234,7 @@ def test_run_snapshots_until_stopped(env):
 
 
 def test_a_second_snapshotter_is_refused_before_touching_anything(env):
-    snapshots.take(env.dt, env.out, NOW - 30 * 24 * H)
+    snapshots.take(env.dt, env.out, NOW - 30 * 24 * H, state_dir=env.state)
     (env.out / ".20261003T180000Z.ab.tmp").mkdir()  # another snapshotter's copy in progress
     before = sorted(os.listdir(env.out))
     with (
@@ -217,9 +246,9 @@ def test_a_second_snapshotter_is_refused_before_touching_anything(env):
 
 
 def test_a_snapshot_exactly_seven_days_old_is_kept(env):
-    snapshots.take(env.dt, env.out, NOW - 7 * 24 * H - timedelta(seconds=1))
-    snapshots.take(env.dt, env.out, NOW - 7 * 24 * H)
-    snapshots.take(env.dt, env.out, NOW)
+    snapshots.take(env.dt, env.out, NOW - 7 * 24 * H - timedelta(seconds=1), state_dir=env.state)
+    snapshots.take(env.dt, env.out, NOW - 7 * 24 * H, state_dir=env.state)
+    snapshots.take(env.dt, env.out, NOW, state_dir=env.state)
     snapshots.prune(env.out, NOW, keep=7 * 24 * H, events=env.events)
     assert names(env) == ["20260926T120000Z", "20261003T120000Z"]
 

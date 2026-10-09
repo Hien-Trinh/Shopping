@@ -57,7 +57,7 @@ def tick(
     *,
     every: timedelta,
     keep: timedelta,
-    state_dir: Path | None = None,
+    state_dir: Path,
 ) -> timedelta:
     """Take a snapshot if the newest is `every` old (or none exists); the wait until the next.
 
@@ -83,23 +83,20 @@ def existing(snapshot_dir: Path) -> list[Path]:
     return sorted(p for p in snapshot_dir.glob("*") if re.fullmatch(r"\d{8}T\d{6}Z", p.name))
 
 
-def take(
-    dt: DeltaTable, snapshot_dir: Path, now: datetime, *, state_dir: Path | None = None
-) -> Path:
+def take(dt: DeltaTable, snapshot_dir: Path, now: datetime, *, state_dir: Path) -> Path:
     """Copy the Listing Store's current version to snapshot_dir/<now>; the new folder.
 
-    With `state_dir`, the version is pinned there for the copy, so the store's vacuum keeps its
-    files however long the copy takes (step 7f); the pin goes when the copy ends, either way.
+    The version is pinned in `state_dir` for the copy, so the store's vacuum keeps its files
+    however long the copy takes (step 7f); the pin goes when the copy ends, either way.
     """
     dt.update_incremental()
     version = dt.version()
-    if state_dir is not None:
-        state.save_pin(state_dir, version, now)
-    pinned = DeltaTable(dt.table_uri, version=version)
     path = snapshot_dir / now.astimezone(UTC).strftime(NAME)
     tmp = snapshot_dir / f".{path.name}.{uuid.uuid4().hex}.tmp"
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
     try:
+        state.save_pin(state_dir, version, now)
+        pinned = DeltaTable(dt.table_uri, version=version)
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
         write_deltalake(
             str(tmp),
             pinned.to_pyarrow_dataset().scanner().to_reader(),  # streamed: no table in memory
@@ -113,8 +110,7 @@ def take(
         shutil.rmtree(tmp, ignore_errors=True)  # else every retry on a full disk leaves one more
         raise
     finally:
-        if state_dir is not None:
-            state.clear_pin(state_dir)
+        state.clear_pin(state_dir)
     return path
 
 

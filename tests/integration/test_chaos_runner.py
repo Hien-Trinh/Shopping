@@ -4,15 +4,18 @@ import json
 import re
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from deltalake import CommitProperties, DeltaTable
+from support import classified, listing, product_in
 
-from catalog import chaos, export, landing, merchants, snapshots
+from catalog import chaos, export, landing, maintenance, merchants, snapshots, store
 from catalog.envelope import Change
+from catalog.events import EventLog
+from catalog.plan import Write
 
 
 @pytest.fixture
@@ -196,3 +199,32 @@ def test_the_stress_smoke_gate_fails_unless_every_leg_passed():
     assert "needs: stress-smoke-leg" in gate
     assert "if: always()" in gate
     assert 'test "${{ needs.stress-smoke-leg.result }}" = success' in gate
+
+
+def test_flagged_rereads_when_the_vacuum_took_a_file_its_snapshot_listed(tmp_path, monkeypatch):
+    # The harness runs maintenance with a 1 s grace, so a snapshot loaded just before a MERGE
+    # can list a file the vacuum deletes before the scan reaches it.
+    path, key = str(tmp_path / "listing_store"), ("m_1", product_in(3))
+    dt = store.ensure(path)
+
+    def merge(sv):
+        write = Write(key, sv, listing(), classified(needs_reclassify=True), False)
+        store.merge(dt, [write], datetime.now(UTC))
+
+    merge(1)
+    stale = DeltaTable(path)  # loaded before the MERGE that rewrites its file
+    merge(2)
+    events = EventLog(tmp_path / "events", "maintenance")
+    swept = maintenance.vacuum_store(dt, tmp_path / "state", events, datetime.now(UTC),
+                                     grace=timedelta(0))  # fmt: skip
+    assert swept["removed"] >= 1
+    with pytest.raises(FileNotFoundError):  # the CI failure
+        stale.to_pyarrow_dataset().to_table()
+    opened = iter([stale])
+    monkeypatch.setattr(store, "ensure", lambda p: next(opened, None) or DeltaTable(p))
+    assert chaos.flagged(tmp_path) == 1
+    opens = []  # a file missing on every open is a real loss: three tries, then it raises
+    monkeypatch.setattr(store, "ensure", lambda p: opens.append(p) or stale)
+    with pytest.raises(FileNotFoundError):
+        chaos.flagged(tmp_path)
+    assert len(opens) == 3

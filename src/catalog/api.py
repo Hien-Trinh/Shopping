@@ -23,7 +23,7 @@ from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from catalog import entry, envelope, landing, merchants, state, status, worker
+from catalog import entry, envelope, landing, merchants, state, status
 from catalog import events as event_files
 from catalog.events import EventLog
 from catalog.keys import partition
@@ -184,10 +184,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--port", type=int, default=8000)
     args.add_argument("--min-free", type=int, default=MIN_FREE, help="bytes; 0 turns the guard off")
     a = args.parse_args(argv)
-    try:
-        supervisor = worker.supervisor_pid()
-    except ValueError as e:
-        args.error(str(e))  # exit 2, as for a worker
+    supervisor = entry.supervisor_pid(args)  # first: create_app writes to disk
     try:
         app = create_app(a.data, a.db, min_free=a.min_free)
     except sqlite3.Error as e:
@@ -197,7 +194,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     # So a kill -9ed supervisor leaves no API holding the port: uvicorn finishes the requests in
     # flight and stops (step 4e).
     stop = SimpleNamespace(set=lambda: setattr(server, "should_exit", True), reason=None)
-    worker.watch_supervisor(supervisor, stop, a.data / "events", "api")
+    entry.watch_supervisor(supervisor, a.data / "events", "api", stop=stop)
     # uvicorn handles these while it serves, then restores these handlers and re-raises the
     # signal: with Python's defaults the process would die by it before api_stop is logged.
     # So the first one stops the server (that re-raise, or a signal before uvicorn's handlers

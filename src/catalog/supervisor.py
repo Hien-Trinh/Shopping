@@ -32,11 +32,11 @@ class Group(subprocess.Popen):
     Its signals go to the whole process group, so a wrapper command's own child (sh -c, uv run)
     is stopped too, and never left holding partition locks. Its environment carries this
     process's pid, so a worker stops by itself if the supervisor dies without stopping it
-    (worker.watch).
+    (entry's watch).
     """
 
     def __init__(self, argv: list[str]):
-        env = os.environ | {worker.SUPERVISOR: str(os.getpid())}
+        env = os.environ | {entry.SUPERVISOR: str(os.getpid())}
         super().__init__(argv, start_new_session=True, env=env)
 
     def send_signal(self, sig: int) -> None:  # terminate() and kill() come through here

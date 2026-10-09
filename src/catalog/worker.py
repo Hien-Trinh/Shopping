@@ -10,10 +10,8 @@ history they still needed (step-5e.md); `python -m catalog.worker` starts it.
 import argparse
 import contextlib
 import os
-import signal
 import sys
 import threading
-import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -23,7 +21,7 @@ from deltalake import DeltaTable
 
 from catalog import classify, delta, entry, jev, landing, state, store, taxonomy
 from catalog.decide import decide
-from catalog.events import EventLog, prepared
+from catalog.events import EventLog
 from catalog.keys import owned, partition
 from catalog.landing import Batch, Landed, Position
 
@@ -126,7 +124,6 @@ FATAL = {
     classify.ModelMissing: 6,
     jev.KeyMissing: 7,
 }
-SUPERVISOR = "CATALOG_SUPERVISOR"  # set to the supervisor's pid in its children's environment
 
 
 def run(
@@ -219,87 +216,10 @@ def run(
             failures = 0
             if min(v for v, _ in offsets.values()) > landing_dt.version():  # caught up
                 stop.wait(POLL)
-        reason = getattr(stop, "reason", None)  # set by watch()
+        reason = getattr(stop, "reason", None)  # set by entry's watch
         events.emit(
             [{"type": "worker_stop", "worker": name} | ({"reason": reason} if reason else {})]
         )
-
-
-def watch(
-    alive: Callable[[], bool],
-    stop,
-    events_root: Path | None = None,
-    process: str = "",
-    deadline: float = 30.0,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-    exit: Callable[[int], None] = os._exit,
-    clock: Callable[[], float] = time.time,
-) -> None:
-    """Check `alive()` every second; once it's False, set `stop` (with `stop.reason`), so the tick
-    in progress finishes and the claims are released, and exit 1 if the process still runs
-    `deadline` seconds later.
-
-    Run it in a daemon thread: a worker that stops in time has exited by then. One that hasn't is
-    stuck in a native call, and would otherwise hold its partition locks forever. So `exit` is
-    os._exit with no flush, after a `watch_exit` event written by events.prepared: anything more
-    could block on what the stuck thread holds.
-    """
-    while alive():
-        sleep(1)
-    stop.reason = "supervisor_gone"  # before set(): the stopped thread reads it once set
-    stop.set()
-    event = {"type": "watch_exit", "process": process, "pid": os.getpid(), "deadline": deadline}
-    # stamped with the planned exit time; skipped when there's no events dir (tests)
-    trace = events_root and prepared(events_root, process, event, clock() + deadline)
-    sleep(deadline)
-    if trace:
-        trace()
-    exit(1)
-
-
-def supervisor_pid() -> int | None:
-    """The pid of the supervisor that started this process, or None if none did."""
-    pid = os.environ.get(SUPERVISOR, "")
-    if pid and not (pid.isdecimal() and 0 < int(pid) < 2**31):  # 0 or -1 would name a group
-        raise ValueError(
-            f"{SUPERVISOR} must be the pid of the supervisor that started it, got {pid!r}"
-        )
-    return int(pid) if pid else None
-
-
-def watch_supervisor(pid: int | None, stop, events_root: Path, process: str) -> None:
-    """Run watch() on supervisor `pid` in a daemon thread; nothing when no supervisor started us.
-
-    `stop` needs only a set() method and to take a `reason` attribute.
-    """
-    if pid:
-        args = (lambda: _alive(pid), stop, events_root, process)
-        threading.Thread(target=watch, args=args, daemon=True).start()
-
-
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)  # a killed supervisor exists until reaped, which a shell does at once
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # it exists, as another user's: a wrapper dropped our privileges
-        pass
-    return True
-
-
-def stop_on_signals() -> threading.Event:
-    """An Event set by SIGTERM (the supervisor's stop) or SIGINT."""
-    stop, stopping = threading.Event(), []
-
-    def on_signal(*_):  # Event.set takes a lock the interrupted thread may hold: set it elsewhere
-        if not stopping:  # once: a second signal mid-Thread.start would re-enter its lock
-            stopping.append(True)
-            threading.Thread(target=stop.set).start()
-
-    signal.signal(signal.SIGTERM, on_signal)
-    signal.signal(signal.SIGINT, on_signal)
-    return stop
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -315,13 +235,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         owned(a.index, a.workers)
     except ValueError as e:
         args.error(str(e))  # exit 2: fatal, so the supervisor doesn't restart a bad flag forever
-    try:
-        supervisor = supervisor_pid()
-    except ValueError as e:
-        args.error(str(e))
-    stop = stop_on_signals()
-    # so a kill -9ed supervisor leaves no worker behind
-    watch_supervisor(supervisor, stop, a.data / "events", f"{state.WORKER}{a.index}")
+    supervisor = entry.supervisor_pid(args)
+    stop = entry.watch_supervisor(supervisor, a.data / "events", f"{state.WORKER}{a.index}")
     if a.classifier == "jev":
         call = jev.http(attempts=1)  # first: a missing key stops it before the model loads
         tax = taxonomy.load()

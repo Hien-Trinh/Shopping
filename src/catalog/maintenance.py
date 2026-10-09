@@ -19,7 +19,7 @@ from pathlib import Path
 from deltalake import DeltaTable
 from deltalake.exceptions import CommitFailedError
 
-from catalog import delta, entry, export, landing, snapshots, state, store, worker
+from catalog import delta, entry, export, landing, snapshots, state, store
 from catalog import events as event_files
 from catalog.events import EventLog, stopping
 from catalog.keys import PARTITIONS
@@ -290,13 +290,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--store-vacuum", type=float, default=STORE_VACUUM)
     args.add_argument("--grace", type=float, default=GRACE.total_seconds(), help="seconds")
     a = args.parse_args(argv)
-    try:
-        supervisor = worker.supervisor_pid()
-    except ValueError as e:
-        args.error(str(e))
-    stop = worker.stop_on_signals()
-    # so a kill -9ed supervisor leaves none behind
-    worker.watch_supervisor(supervisor, stop, a.data / "events", "maintenance")
+    supervisor = entry.supervisor_pid(args)
+    stop = entry.watch_supervisor(supervisor, a.data / "events", "maintenance")
     run(
         a.data, a.state, stop=stop, interval=a.interval, store_vacuum=a.store_vacuum,
         grace=timedelta(seconds=a.grace),

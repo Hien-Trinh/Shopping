@@ -18,7 +18,7 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from catalog import delta, entry, export, landing, state, store, worker
+from catalog import delta, entry, export, landing, snapshots, state, store, worker
 from catalog import events as event_files
 from catalog.events import EventLog, stopping
 from catalog.keys import PARTITIONS
@@ -38,6 +38,10 @@ GONE = datetime.min.replace(tzinfo=UTC)  # the first unread version's log was cl
 STORE_VACUUM = 60.0  # seconds between the Listing Store's vacuums
 GRACE = timedelta(minutes=2)
 PIN_TTL = HOUR  # a Snapshots pin older than this was left by a crashed pass
+# The Listing Store's change feed lives as long as the snapshots: an old version is rebuilt from
+# it (store.fingerprints), so every snapshot stays checkable against the store at its pinned
+# version (step 7f). About 10 GB a day at 50 Changes a second on real rows.
+FEED_RETENTION = snapshots.KEEP
 
 
 def run(
@@ -111,7 +115,10 @@ def tick(
     for name, (dt, next_version) in readers.items():  # only deletes, so a full disk still frees
         unread[name] = _unread_since(dt, next_version)
         when = None if unread[name] is None else unread[name].isoformat()  # how far behind
-        report[name] = {"next": next_version, "unread": when} | _clean(dt, unread[name], now, floor)
+        feed = FEED_RETENTION if name == "listing_store" else timedelta()
+        report[name] = {"next": next_version, "unread": when} | _clean(
+            dt, unread[name], now, floor, feed=feed
+        )
     report["landing_log"]["slowest"] = min(offsets, key=offsets.__getitem__)
     landing_dt.optimize.compact()  # beside the API's appends (spike B2)
     report["deleted_rows"] = 0
@@ -211,8 +218,10 @@ def _files_of(dt: DeltaTable, version: int) -> set[str]:
     return {str(delta.local(u).relative_to(root)) for u in at.file_uris()}
 
 
-def _clean(dt: DeltaTable, unread: datetime | None, now: datetime, floor: timedelta) -> dict:
-    """Remove the history no unread version needs."""
+def _clean(
+    dt: DeltaTable, unread: datetime | None, now: datetime, floor: timedelta, *, feed: timedelta
+) -> dict:
+    """Remove the history no unread version needs; the change feed's files stay `feed` at least."""
     if unread == GONE:  # how far back it reads is unknown: nothing is safe to remove
         return {"history_gone": True, "vacuumed": 0, "change_data": 0, "logs_cleaned": False}
     lag = timedelta() if unread is None else now - unread
@@ -222,7 +231,7 @@ def _clean(dt: DeltaTable, unread: datetime | None, now: datetime, floor: timede
     removed = dt.vacuum(retention_hours=hours, dry_run=False, enforce_retention_duration=False)
     # Vacuum skips paths starting with "_", so the change feed's own files are ours to remove.
     # One is written before its commit: an hour more keeps one whose commit is still landing.
-    cutoff = (now - (hours + 1) * HOUR).timestamp()
+    cutoff = (now - max((hours + 1) * HOUR, feed)).timestamp()
     change_data = delta.local(dt.table_uri) / "_change_data"
     old = [f for f in change_data.rglob("*.parquet") if f.stat().st_mtime < cutoff]
     for f in old:

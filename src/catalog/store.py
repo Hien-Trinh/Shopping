@@ -140,7 +140,8 @@ def fingerprints(dt: DeltaTable, version: int | None = None) -> dict[Key, Finger
 
     An older version is the current rows rewound through the change feed, newest commit first:
     maintenance's vacuum removes an old version's files within minutes (step 7f) but keeps the
-    feed's files for over an hour, and the feed carries every inserted and replaced row whole.
+    feed's files as long as the snapshots, and the feed carries every inserted and replaced row
+    whole.
     """
     dt.update_incremental()
     head = dt.version()

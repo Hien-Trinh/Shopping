@@ -347,9 +347,24 @@ def test_change_data_files_go_once_exported(env):
     assert env.change_data()  # the MERGEs' updates; vacuum never removes these
     env.watermark(head)
     env.offsets()
-    env.tick(later=timedelta(hours=2), floor=timedelta())  # an hour past the retention and more
+    env.tick(later=maintenance.FEED_RETENTION + timedelta(hours=2), floor=timedelta())
     assert env.change_data() == []
     assert env.reports()[-1]["listing_store"]["change_data"] > 0
+
+
+def test_the_stores_feed_stays_as_long_as_the_snapshots_so_old_versions_still_rebuild(env):
+    # The oracles rebuild an old version from the feed (step 7f); a snapshot is kept 7 days, so
+    # the feed is too, however long ago Change Export read it.
+    env.merge(1)
+    want = store.fingerprints(env.store, 1)  # read from version 1's own files, which exist now
+    head = env.merge(2)
+    files = env.change_data()
+    env.watermark(head)
+    env.offsets()
+    env.tick(later=timedelta(days=6, hours=23), floor=timedelta())  # version 1's files go
+    assert env.change_data() == files  # the feed stays
+    assert store.fingerprints(env.store, 1) == want  # so an old version still rebuilds
+    assert timedelta(days=7) == maintenance.FEED_RETENTION  # the snapshots' lifetime
 
 
 def test_change_data_files_stay_an_hour_past_the_retention(env):

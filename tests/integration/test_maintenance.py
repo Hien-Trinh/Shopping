@@ -162,6 +162,7 @@ def test_the_listing_stores_vacuum_removes_replaced_files_once_exported(env):
     env.offsets()
     env.tick(floor=timedelta())
     assert env.reports()[-1]["listing_store"]["vacuumed"] > 0
+    assert env.reports()[-1]["listing_store"]["vacuum_commit_failed"] is False
 
 
 # The Listing Store's own vacuum (step 7f): every minute, dead files older than the grace go.
@@ -342,14 +343,21 @@ def test_the_sweep_remembers_where_it_read_the_log_to(env):
 
 
 def test_the_hourly_vacuums_commit_conflict_is_reported_not_fatal(env, monkeypatch):
-    # delta-rs's vacuum commits a VACUUM END after deleting; a MERGE landing meanwhile makes
-    # that commit fail after the files are gone (7f.2's run: 165 maintenance restarts).
+    """delta-rs's vacuum commits a VACUUM END after deleting; a MERGE landing meanwhile makes
+    that commit fail after the files are gone (7f.2's run: 165 maintenance restarts).
+
+    A deliberate exception to the plan's "no mocks of delta-rs": the race cannot be forced from
+    Python, so the real vacuum runs and the real exception class is raised after it, which the
+    review's race script confirmed is what delta-rs raises (round 1 of #111).
+    """
     from deltalake.exceptions import CommitFailedError
 
     env.merge(1)
-    head = env.merge(2)
+    head = env.merge(2)  # version 1's file is due for the vacuum
     env.watermark(head)
     env.offsets()
+    due = env.store.vacuum(retention_hours=0, enforce_retention_duration=False)
+    assert len(due) == 1
     real = type(env.store).vacuum
 
     def conflicting(self, *a, **k):
@@ -359,9 +367,12 @@ def test_the_hourly_vacuums_commit_conflict_is_reported_not_fatal(env, monkeypat
         return out
 
     monkeypatch.setattr(type(env.store), "vacuum", conflicting)
-    env.tick(later=timedelta(hours=2), floor=timedelta())  # completes
+    env.tick(later=timedelta(hours=2), floor=timedelta())  # completes: the pass carried on
     report = env.reports()[-1]["listing_store"]
     assert report["vacuum_commit_failed"] is True
+    assert report["vacuumed"] == 1  # what the vacuum deleted before its commit failed
+    assert not (env.tmp / "data" / "listing_store" / due[0]).exists()
+    assert report["logs_cleaned"] is True and "change_data" in report  # the rest of the pass ran
 
 
 def test_change_data_files_go_once_exported(env):

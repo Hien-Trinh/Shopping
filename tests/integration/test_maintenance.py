@@ -341,6 +341,29 @@ def test_the_sweep_remembers_where_it_read_the_log_to(env):
     assert seen["version"] == head  # only the new commit was read
 
 
+def test_the_hourly_vacuums_commit_conflict_is_reported_not_fatal(env, monkeypatch):
+    # delta-rs's vacuum commits a VACUUM END after deleting; a MERGE landing meanwhile makes
+    # that commit fail after the files are gone (7f.2's run: 165 maintenance restarts).
+    from deltalake.exceptions import CommitFailedError
+
+    env.merge(1)
+    head = env.merge(2)
+    env.watermark(head)
+    env.offsets()
+    real = type(env.store).vacuum
+
+    def conflicting(self, *a, **k):
+        out = real(self, *a, **k)
+        if not k.get("dry_run", True):
+            raise CommitFailedError("a concurrent transaction deleted data this operation read")
+        return out
+
+    monkeypatch.setattr(type(env.store), "vacuum", conflicting)
+    env.tick(later=timedelta(hours=2), floor=timedelta())  # completes
+    report = env.reports()[-1]["listing_store"]
+    assert report["vacuum_commit_failed"] is True
+
+
 def test_change_data_files_go_once_exported(env):
     for sv in range(1, 5):
         head = env.merge(sv)

@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from deltalake import DeltaTable
+from deltalake.exceptions import CommitFailedError
 
 from catalog import delta, entry, export, landing, snapshots, state, store, worker
 from catalog import events as event_files
@@ -228,7 +229,11 @@ def _clean(
     # Whole hours (delta-rs), at least the floor: vacuum also removes untracked files older than
     # this, which could be a commit still being written.
     hours = max(math.ceil(floor / HOUR), math.ceil(lag / HOUR))
-    removed = dt.vacuum(retention_hours=hours, dry_run=False, enforce_retention_duration=False)
+    commit_failed = False
+    try:
+        removed = dt.vacuum(retention_hours=hours, dry_run=False, enforce_retention_duration=False)
+    except CommitFailedError:  # its VACUUM END lost to a MERGE after the files were deleted:
+        removed, commit_failed = [], True  # the next pass finds nothing left to do (7f.2)
     # Vacuum skips paths starting with "_", so the change feed's own files are ours to remove.
     # One is written before its commit: an hour more keeps one whose commit is still landing.
     cutoff = (now - max((hours + 1) * HOUR, feed)).timestamp()
@@ -243,6 +248,7 @@ def _clean(
     return {
         "history_gone": False,
         "vacuumed": len(removed),
+        "vacuum_commit_failed": commit_failed,
         "change_data": len(old),
         "logs_cleaned": logs_cleaned,
     }

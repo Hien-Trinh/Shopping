@@ -229,7 +229,7 @@ src/catalog/
   events.py       JSONL writer, event types
   worker.py       loop + error policy (A6); a batch is read → decide → MERGE → events
   supervisor.py   runs the Procfile: restarts, heartbeat watchdog, fatal exits
-  entry.py        how every standalone entry point exits (flush, os._exit)
+  entry.py        how a standalone entry point starts and stops: supervisor watch, signals, exit
   api.py          FastAPI app, auth, body cap, disk guard
   export.py       Change Export + gap recovery
   snapshots.py    pinned copy + pruning

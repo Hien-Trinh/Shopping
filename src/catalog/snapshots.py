@@ -18,7 +18,7 @@ from pathlib import Path
 
 from deltalake import CommitProperties, DeltaTable, write_deltalake
 
-from catalog import entry, state, store, worker
+from catalog import entry, state, store
 from catalog.events import EventLog, stopping
 
 NAME = "%Y%m%dT%H%M%SZ"  # UTC; name order is time order
@@ -146,13 +146,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     a = args.parse_args(argv)
     if a.every < 1:  # names have a second's resolution: two in one second would collide
         args.error("--every must be at least 1 second")
-    try:
-        supervisor = worker.supervisor_pid()
-    except ValueError as e:
-        args.error(str(e))
-    stop = worker.stop_on_signals()
-    # so a kill -9ed supervisor leaves no snapshotter
-    worker.watch_supervisor(supervisor, stop, a.data / "events", "snapshots")
+    supervisor = entry.supervisor_pid(args)
+    stop = entry.watch_supervisor(supervisor, a.data / "events", "snapshots")
     run(a.data, a.state, stop=stop, every=timedelta(seconds=a.every))
 
 

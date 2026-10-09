@@ -21,7 +21,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from deltalake import DeltaTable
 
-from catalog import delta, entry, state, store, worker
+from catalog import delta, entry, state, store
 from catalog.collapse import collapse
 from catalog.events import EventLog, stopping
 
@@ -143,13 +143,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--state", type=Path, default=state.STATE)
     args.add_argument("--interval", type=float, default=INTERVAL)
     a = args.parse_args(argv)
-    try:
-        supervisor = worker.supervisor_pid()
-    except ValueError as e:
-        args.error(str(e))
-    stop = worker.stop_on_signals()
-    # so a kill -9ed supervisor leaves no exporter
-    worker.watch_supervisor(supervisor, stop, a.data / "events", "export")
+    supervisor = entry.supervisor_pid(args)
+    stop = entry.watch_supervisor(supervisor, a.data / "events", "export")
     run(a.data, a.state, stop=stop, interval=a.interval)
 
 

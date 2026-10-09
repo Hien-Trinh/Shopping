@@ -48,7 +48,7 @@ class EventLog:
 @contextlib.contextmanager
 def stopping(log: EventLog, stop):
     """Log `<process>_stop` as the block ends: with the error that ended it (re-raised), and why
-    the watch stopped it (worker.watch sets `stop.reason`). Best effort: the error matters more."""
+    the watch stopped it (entry's watch sets `stop.reason`). Best effort: the error matters more."""
     event = {"type": f"{log.process}_stop"}
     try:
         yield

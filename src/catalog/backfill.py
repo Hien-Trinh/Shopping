@@ -22,7 +22,7 @@ from pathlib import Path
 import pyarrow.compute as pc
 from deltalake import DeltaTable
 
-from catalog import api, classify, delta, entry, landing, state, store, worker
+from catalog import api, classify, delta, entry, landing, state, store
 from catalog.envelope import Change, Key
 from catalog.events import EventLog, stopping
 from catalog.keys import PARTITIONS
@@ -158,13 +158,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.error("--limit must be at least 1")
     if not a.interval > 0:  # 0 or nan would rescan the Listing Store in a tight loop
         args.error("--interval must be more than 0")
-    try:
-        supervisor = worker.supervisor_pid()
-    except ValueError as e:
-        args.error(str(e))
-    stop = worker.stop_on_signals()
-    # so a kill -9ed supervisor leaves none behind
-    worker.watch_supervisor(supervisor, stop, a.data / "events", "backfill")
+    supervisor = entry.supervisor_pid(args)
+    stop = entry.watch_supervisor(supervisor, a.data / "events", "backfill")
     version = classify.taxonomy_version(a.classifier)
     run(a.data, a.state, version, stop=stop, interval=a.interval, limit=a.limit)
 

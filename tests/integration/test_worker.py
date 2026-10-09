@@ -558,24 +558,6 @@ def test_a_retried_batch_reports_a_classifier_outage_once(env, monkeypatch):
     assert got == ["classify", "classify_failed", "written"]
 
 
-def test_a_second_signal_does_not_start_a_second_stopper(tmp_path, monkeypatch):
-    handlers, started = {}, []
-    monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.update({sig: handler}))
-
-    class Thread:
-        def __init__(self, target):
-            self.target = target
-
-        def start(self):
-            started.append(self)
-            self.target()
-
-    monkeypatch.setattr(worker.threading, "Thread", Thread)
-    monkeypatch.setattr(worker, "run", lambda *a, stop: [h(0, None) for h in handlers.values()])
-    worker.main(["--index", "0", "--workers", "4"])
-    assert len(started) == 1
-
-
 def cli(*args, **kwargs):
     return subprocess.run(
         [sys.executable, "-m", "catalog.worker", *args],

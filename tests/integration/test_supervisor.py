@@ -10,7 +10,17 @@ from pathlib import Path
 
 import pytest
 
-from catalog import events, state, supervisor, worker
+from catalog import (
+    backfill,
+    entry,
+    events,
+    export,
+    maintenance,
+    snapshots,
+    state,
+    supervisor,
+    worker,
+)
 from catalog.supervisor import GRACE, STALE, parse_procfile, run, verdict
 
 REPO = Path(__file__).parents[2]
@@ -415,3 +425,33 @@ def test_a_closed_terminal_stops_everything_even_a_wrappers_child(tmp_path):
     finally:
         sup.kill()
     wait_for(lambda: not alive(grandchild))  # signalled with its group, not left holding locks
+
+
+@pytest.mark.parametrize(
+    "program, argv, process",
+    [
+        (worker, ["--index", "0", "--workers", "4"], "worker-0"),
+        (export, [], "export"),
+        (snapshots, [], "snapshots"),
+        (backfill, ["--classifier", "fake"], "backfill"),
+        (maintenance, [], "maintenance"),
+    ],
+)
+def test_each_program_refuses_a_bad_supervisor_pid_and_watches_a_good_one(
+    program, argv, process, tmp_path, monkeypatch, capsys
+):
+    ran, watched = [], []
+    monkeypatch.setattr(signal, "signal", lambda *_: None)
+    monkeypatch.setattr(program, "run", lambda *_, stop, **__: ran.append(stop))  # no tables
+    monkeypatch.setattr(entry, "_watch", lambda *a: watched.append(a))
+    argv = [*argv, "--data", str(tmp_path)]
+    monkeypatch.setenv(entry_var := "CATALOG_SUPERVISOR", "abc")
+    with pytest.raises(SystemExit) as stopped:
+        program.main(argv)
+    assert stopped.value.code == 2 and entry_var in capsys.readouterr().err and ran == []
+    monkeypatch.setenv(entry_var, str(os.getpid()))
+    program.main(argv)
+    wait_for(lambda: watched)  # it runs in its own thread
+    [(alive, stop, events_root, name)] = watched
+    assert name == process and events_root == tmp_path / "events" and ran == [stop]
+    assert alive()  # it watches our pid: this process

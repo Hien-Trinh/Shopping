@@ -113,8 +113,17 @@ def pending(data: Path) -> int:
 
 def flagged(data: Path) -> int:
     """Live Listings still waiting for the Backfill to reclassify them."""
-    rows = store.ensure(str(data / "listing_store")).to_pyarrow_dataset().to_table(
-        columns=["needs_reclassify", "is_tombstone"]).to_pylist()  # fmt: skip
+    # Maintenance runs here with a 1 s grace, so a file the snapshot lists can be vacuumed
+    # before the scan reads it: open the store again. A file still missing on the third try is
+    # a real loss, not the race.
+    for attempt in range(3):
+        try:
+            rows = store.ensure(str(data / "listing_store")).to_pyarrow_dataset().to_table(
+                columns=["needs_reclassify", "is_tombstone"]).to_pylist()  # fmt: skip
+            break
+        except FileNotFoundError:
+            if attempt == 2:
+                raise
     return sum(r["needs_reclassify"] and not r["is_tombstone"] for r in rows)
 
 

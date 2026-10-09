@@ -1,12 +1,12 @@
 # v1 Build Plan — Commerce Ingestion
 
-Sep 29, 2026 · Architecture review of [design-commerce-ingestion-pipeline.md](design-commerce-ingestion-pipeline.md), [ADR-0001](adr/0001-partition-by-listing-key.md), [ADR-0002](adr/0002-local-first-delta-no-queue.md). Terms are defined in [CONTEXT.md](../CONTEXT.md).
+Sep 29, 2026 · Architecture review of [design-commerce-ingestion-pipeline.md](design-commerce-ingestion-pipeline.md), [ADR-0001](adr/0001-partition-by-listing-key.md), [ADR-0002](adr/0002-local-first-delta-no-queue.md). Terms are defined in [GLOSSARY.md](../GLOSSARY.md).
 
 ## Verdict
 
 The shape is sound: single-writer partitions, a conditional write, and a replay check that acts as the correctness oracle. **The doc has 19 holes, and 8 of them would ship bugs** (section A). Section B lists risks to prove early, and section C lists scope gaps we accept for v1.
 
-**Status (Sep 30):** every decision is resolved, and A1–A19 are folded into the design doc, CONTEXT.md and both ADRs.
+**Status (Sep 30):** every decision is resolved, and A1–A19 are folded into the design doc, GLOSSARY.md and both ADRs.
 
 ## Is it Python only?
 
@@ -254,6 +254,8 @@ tests/unit  tests/integration  tests/stress
 ## Review process (from Oct 1)
 
 Every step PR (under about 300 changed lines) goes through `/lean-review` (`.claude/skills/lean-review`): deterministic gates first (`make check`, plus `make mutate` for pure modules), then Sonnet finder agents scaled to the diff (`.claude/agents/reviewer-*.md`, run by `.claude/workflows/lean-review.js`): 1 for docs or tooling, 4 up to 50 changed lines, 6 up to 150, all 11 above that. A spec lane runs at every size and a standards lane from 51 lines, both after Matt Pocock's two-axis `/code-review` (compared on PR #15: it found the same top three bugs for a quarter of the tokens, plus rule breaches and scope decisions the bug finders never ask about). Their scope decisions and smell judgement calls are reported apart from the defects. Candidates are deduped, at most 5 unreproduced medium- or high-severity ones go to a Sonnet verifier, and I verify every candidate in-context. One round, with a second in-context round only if correctness bugs were found. An earlier max-effort fan-out (11 Opus agents, about 1.7M tokens for one PR) hit the usage limit. A fixed 10-finder pass with 3 verifiers per candidate spent 2.4M tokens on a 21-line PR with no code findings, hence the scaling. The deterministic gates found most of the real bugs anyway. Reuse, simplification and altitude reviews run once at the end of the project.
+
+From Oct 7 (mattpocock-skills 1.3.1): every PR body follows Matt's `pr` skill (a Summary visual, before-and-after Evidence, and a Merge Danger call: one-way or two-way door, blast radius), written through `--body-file`. After each `/lean-review` round, `/retro` runs on the session; it proposes environment changes (an automated check, a reviewer rule, a navigation pointer), which land in their own docs-or-tooling PR.
 
 **Mutation baseline** (`make mutate`, after step 2r): 373 of 382 mutants killed. The 9 survivors are equivalent mutants, so a new survivor outside this list is a real gap:
 - `keys.partition`: `from_bytes(..., "big")` without the byte order (big is the default)

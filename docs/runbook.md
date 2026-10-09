@@ -1,6 +1,6 @@
 # Runbook
 
-How to run the pipeline on one Mac: start, stop, rescale, recover, reset and read results. Every command runs from the repo root. Terms follow [CONTEXT.md](../CONTEXT.md); the design is in [the design doc](design-commerce-ingestion-pipeline.md).
+How to run the pipeline on one Mac: start, stop, rescale, recover, reset and read results. Every command runs from the repo root. Terms follow [GLOSSARY.md](../GLOSSARY.md); the design is in [the design doc](design-commerce-ingestion-pipeline.md).
 
 ## What's where
 

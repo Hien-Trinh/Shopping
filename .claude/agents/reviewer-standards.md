@@ -12,6 +12,7 @@ You check one PR diff against the repo's documented coding rules. You never modi
 - docs/plan-v1.md "Testing rules": the coverage gates and the 100% PURE list, property tests, no mocks of delta-rs, inject clock/classifier/paths, no `sleep` in unit tests
 - docs/plan-v1.md, the Phase 3 "Rules carried" list (e.g. every standalone entry point exits through `entry.exit_with`)
 - conventions the ADRs set
+- any other file in the repo that states how code should be written: search for one before you start (a `CODING_STANDARDS.md` or `CONTRIBUTING.md`, if one ever appears, is always on the list)
 Skip anything tooling already enforces (ruff, coverage, the CI gates).
 
 Report every breach of a documented rule as a candidate: `file:line`, the rule (file and the rule's words), what the diff does instead, and why it matters. A documented rule always wins over the baseline below.

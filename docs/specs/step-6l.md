@@ -1,6 +1,6 @@
 # Step 6l: the student prototype, a softmax head and kNN over bge-small vectors (mini PRD)
 
-Status: done Oct 6 (see Outcome); approved Oct 6. Question 1: the bar switched (below). Question 2: Jev on the 2,000 Shopify Listings OK. Question 3: the Opus line on the curve, yes. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6l](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher), [step-6k.md](step-6k.md) (the training and eval data) and [step-6e.md](step-6e.md) (the eval harness). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 6 (see Outcome); approved Oct 6. Question 1: the bar switched (below). Question 2: Jev on the 2,000 Shopify Listings OK. Question 3: the Opus line on the curve, yes. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6l](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher), [step-6k.md](step-6k.md) (the training and eval data) and [step-6e.md](step-6e.md) (the eval harness). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

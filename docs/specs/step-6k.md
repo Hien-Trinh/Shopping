@@ -1,6 +1,6 @@
 # Step 6k: Shopify's benchmark as eval and training data, plus 2k Amazon Listings labeled by Opus (mini PRD)
 
-Status: done Oct 6 (see the two Outcomes); approved Oct 6. Question 1: the fetch OK. Question 2: commit `train/shopify.jsonl.gz`, credited in the README. Question 3: 22 Opus agents OK. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6k](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher; [eval/teacher.md](../../eval/teacher.md)), [step-6e.md](step-6e.md) (`evaluate sample`, the label format) and [docs/labeling.md](../labeling.md) (the labeling method). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 6 (see the two Outcomes); approved Oct 6. Question 1: the fetch OK. Question 2: commit `train/shopify.jsonl.gz`, credited in the README. Question 3: 22 Opus agents OK. Question 4: the test points OK. Plan row: [plan-v1.md, PR steps, 6k](../plan-v1.md). Builds on [step-6j.md](step-6j.md) (Opus is the teacher; [eval/teacher.md](../../eval/teacher.md)), [step-6e.md](step-6e.md) (`evaluate sample`, the label format) and [docs/labeling.md](../labeling.md) (the labeling method). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

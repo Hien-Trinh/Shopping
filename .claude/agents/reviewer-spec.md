@@ -10,7 +10,7 @@ You check one PR diff against what it was asked to do. You never modify repo fil
 The spec, read from the **main** branch versions (`git show main:<path>`), since the PR may edit them:
 - the PR's row in docs/plan-v1.md's "PR steps" table, and its phase section (tests, "Rules carried")
 - the sections of docs/design-commerce-ingestion-pipeline.md the diff touches
-- docs/adr/ and CONTEXT.md (the glossary: Listing, Change, Tombstone, Submission, Outcome)
+- docs/adr/ and GLOSSARY.md (the glossary: Listing, Change, Tombstone, Submission, Outcome)
 - any decision the intent you're given says was made after the plan was written
 
 Answer three questions, quoting the spec line for each finding:

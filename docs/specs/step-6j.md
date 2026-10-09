@@ -1,6 +1,6 @@
 # Step 6j: Opus 5.5 against Jev on the 1,020 labeled Listings (mini PRD)
 
-Status: done Oct 6 (see Outcome); approved Oct 6. Question 1: Jev on the 822 OK. Question 2: about 11 Opus agents OK. Question 3: the third bias guard, yes. Question 4: `docs/labeling.md`, yes. No project code, so no test points. Plan row: new, [plan-v1.md, PR steps, 6j](../plan-v1.md). The first of four steps toward a local classifier distilled from a teacher (6j to 6m, below). Builds on [step-6e.md](step-6e.md) (the 198 and the report), [step-6h.md](step-6h.md) (Jev with the deeper texts) and [step-6i.md](step-6i.md) (the 822 and the in-session labeling method). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: done Oct 6 (see Outcome); approved Oct 6. Question 1: Jev on the 822 OK. Question 2: about 11 Opus agents OK. Question 3: the third bias guard, yes. Question 4: `docs/labeling.md`, yes. No project code, so no test points. Plan row: new, [plan-v1.md, PR steps, 6j](../plan-v1.md). The first of four steps toward a local classifier distilled from a teacher (6j to 6m, below). Builds on [step-6e.md](step-6e.md) (the 198 and the report), [step-6h.md](step-6h.md) (Jev with the deeper texts) and [step-6i.md](step-6i.md) (the 822 and the in-session labeling method). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

@@ -1,6 +1,6 @@
 # Step 3e: crash, rescale and supervisor-death tests (mini PRD)
 
-Status: approved Oct 3: the test points, the watch design, the restart race and the time budget are confirmed. Plan row: [plan-v1.md, PR steps, 3e](../plan-v1.md). Terms follow [CONTEXT.md](../../CONTEXT.md).
+Status: approved Oct 3: the test points, the watch design, the restart race and the time budget are confirmed. Plan row: [plan-v1.md, PR steps, 3e](../plan-v1.md). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 

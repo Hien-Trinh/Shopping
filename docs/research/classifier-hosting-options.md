@@ -1,6 +1,6 @@
 # A cheap, fast classifier: local on the Mac, then on Azure and Databricks
 
-> Research of Oct 6, 2026, by three web-research agents (local models; Azure Databricks; Azure). Kept as written for the 6m spec and the later port. Prices are list prices read on Oct 6, 2026; accuracy ranges for models we have not trained are extrapolations from the cited papers, not measurements. Terms follow [CONTEXT.md](../../CONTEXT.md).
+> Research of Oct 6, 2026, by three web-research agents (local models; Azure Databricks; Azure). Kept as written for the 6m spec and the later port. Prices are list prices read on Oct 6, 2026; accuracy ranges for models we have not trained are extrapolations from the cited papers, not measurements. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## The short version
 

@@ -159,6 +159,7 @@ def run(
         gap = False  # the last read found history cleanup removed: bootstrap instead of reading
         while not stop.is_set():
             started = clock()
+            stage = "bootstrap"  # what tick_failed names: which part of the tick raised
             try:
                 if gap:
                     bootstrap(
@@ -169,6 +170,7 @@ def run(
                     gap = False
                     continue  # never resets `failures`: only a good read does, so a gap that
                     # a bootstrap can't cure still ends the worker after ATTEMPTS
+                stage = "batch"
                 batch = process_batch(
                     landing_dt, store_dt, classifier, events, state_dir, offsets, limit=limit
                 )
@@ -191,8 +193,10 @@ def run(
                     reported = spent
                 # Only this thread beats, after the batch: a hung MERGE stops the beats (B1).
                 # Before compacting, so a long compaction gets the watchdog's full budget.
+                stage = "beat"
                 state.beat(state_dir, name, clock())
                 if busy >= compact_every:  # owner-only (ADR-0001); a failure retries next tick
+                    stage = "compact"
                     try:
                         store.compact(store_dt, mine)
                         busy = 0
@@ -206,9 +210,8 @@ def run(
                 gap = gap or delta.history_gone(e)  # a failed bootstrap is retried
                 failures += 1
                 error = repr(e)[:500]
-                logged = [
-                    {"type": "tick_failed", "worker": name, "attempt": failures, "error": error}
-                ]
+                failed = {"type": "tick_failed", "worker": name, "attempt": failures}
+                logged = [failed | {"stage": stage, "error": error}]
                 if gave_up := failures >= ATTEMPTS or type(e) in FATAL:  # no retry fixes those
                     logged.append({"type": "worker_stop", "worker": name, "error": error})
                 with contextlib.suppress(OSError):  # best effort: the error itself matters more

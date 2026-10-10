@@ -159,3 +159,7 @@ uv run python -m catalog.chaos kill-worker     # or steady, bulk, out-of-order, 
 ```
 
 Each run builds a scratch system in a temp folder, runs 60 s of load at 20/s with its fault in the middle, waits for every Change to settle, checks the three oracles, and prints one JSON line with the result and its `metrics`. Exit 0 means every oracle held. Exit 1 means one failed or the system never settled; the line names the differing keys, and the scratch dir is kept. Exit 2 means a bad flag or a non-empty `--dir`, and 130 means Ctrl-C.
+
+## Stress runs
+
+Start every stress run with `scripts/stress-preflight.sh [volume]` (default `/Volumes/T9`). It exits 1 with one line if the volume is not mounted, its USB link is under 10 Gb/s, Spotlight indexes it, swap is 8 GB or more, or the internal volume or the data volume has under 7 GiB free (the API's 5 GiB `low_disk` guard plus 2). The runs and their results are in [the stress report](stress.md).

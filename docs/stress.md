@@ -13,6 +13,8 @@ The full runs of [step 7d.2](specs/step-7d.md) on one Mac. Part 7d.2a (Oct 7): t
 
 The API refuses writes under 5 GiB free (`low_disk`), so free space was sampled every 30 s beside `du data/`. It never fell under 6.0 GiB and nothing was refused.
 
+Since Oct 10, every run starts with `scripts/stress-preflight.sh` ([the runbook](runbook.md#stress-runs)): 7f.2's runs 1 and 3 and the Oct 9 rerun were held to 4.7 to 7.5 Changes a second by the T9 on a USB 2.0 link with Spotlight indexing it (see the 7f.2 section), and one start during 7f.2 found `/Volumes/T9` an empty mount point with the T9 not mounted. The preflight refuses all three before a run starts.
+
 ## 7d.2a, point 1: the 1M initial load
 
 `catalog.load --changes 1000000 --keys 1000000 --order sequential --batch 1000 --rate 0`, 16 generator processes, under `/usr/bin/time -p`. Every Change is a new key, so the run measures storage, not the classifier.

@@ -171,7 +171,7 @@ def summary(tallies: Sequence[dict], elapsed: float, start_ms: int, failed=(),
     for t in tallies:
         statuses.update(t["statuses"])
     sent = sum(t["sent"] for t in tallies)
-    ended_by = "changes"  # every process sent its share, unless something below ended it first
+    ended_by = "changes"  # every process sent its share; each check below outranks the ones above
     if 401 in statuses:
         ended_by = "401"
     if any(t["timed_out"] for t in tallies):

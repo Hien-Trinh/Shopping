@@ -542,6 +542,23 @@ def test_a_compaction_conflict_is_reported_and_retried_without_failing_the_tick(
     assert stored(env, A).source_version == 2
 
 
+def test_a_failed_tick_names_the_stage_that_raised(env, monkeypatch):
+    # 7f.2: from `error` alone a CommitFailedError tick could be the MERGE or the compaction.
+    merges = iter([CommitFailedError("merge lost a race")])
+    process_batch = worker.process_batch
+
+    def merge_once(*a, **kw):
+        _raise(next(merges, None))
+        return process_batch(*a, **kw)
+
+    monkeypatch.setattr(worker, "process_batch", merge_once)
+    monkeypatch.setattr(store, "compact", lambda dt, partitions: _raise(OSError("compact")))
+    env.land(up(A, 1))
+    run(env, Ticks(3), compact_every=1)
+    failed = [e for e in events.read(env.events_root) if e["type"] == "tick_failed"]
+    assert [e["stage"] for e in failed] == ["batch", "compact", "compact"]
+
+
 def test_a_compaction_conflict_whose_event_cannot_be_written_still_fails_no_tick(env, monkeypatch):
     conflicts = iter([CommitFailedError("a concurrent transaction deleted data")] * 6)
     monkeypatch.setattr(store, "compact", lambda dt, partitions: _raise(next(conflicts, None)))

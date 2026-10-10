@@ -129,7 +129,7 @@ cat data/events/*/supervisor-*.jsonl | grep process_exit | tail
 | `worker_stop`, `api_stop`, `export_stop`, `snapshots_stop`, `maintenance_stop`, `backfill_stop` | how it stopped: `error` if one ended it, `reason: supervisor_gone` if its supervisor died. |
 | `watch_exit` | a process stuck after its supervisor died, force-exited |
 | `tick_failed` | a worker's failed tick, retried with backoff (5 in a row and it exits 1) |
-| `compact_conflict` | a worker's compaction lost its commit to another worker's MERGE (step 7f.3); not a failed tick, retried on the next tick |
+| `compact_conflict` | a worker's compaction lost its commit to another worker's MERGE (step 7f.3), with its `error`; not a failed tick, retried on the next tick. Many in a row with no compaction committing means small files pile up in that worker's partitions |
 | `store_vacuum` | maintenance removed the Listing Store's dead files (step 7f): `removed` and `bytes`; `errors`, files it could not remove (retried next pass); `pending`, removals younger than the grace or pinned; `pin_stale` if a Snapshots pin older than an hour was ignored. Only when something was removed or went wrong; the 10-minute `maintenance` event's `store_vacuum` carries the totals since the last one |
 | `classify_failed` | Listings left Uncategorized: `reason` budget or error |
 | `refused`, `rejected` | a request or a Change the API turned away |

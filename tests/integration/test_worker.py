@@ -537,8 +537,33 @@ def test_a_compaction_conflict_is_reported_and_retried_without_failing_the_tick(
     ] == [("worker_stop", None)]
     conflicted = [e for e in logged if e["type"] == "compact_conflict"]
     assert [e["worker"] for e in conflicted] == ["worker-0"] * 6
+    assert all("concurrent transaction deleted data" in e["error"] for e in conflicted)
     assert set(ticks.waits) == {worker.POLL}  # no failure backoff
     assert stored(env, A).source_version == 2
+
+
+def test_a_compaction_conflict_whose_event_cannot_be_written_still_fails_no_tick(env, monkeypatch):
+    conflicts = iter([CommitFailedError("a concurrent transaction deleted data")] * 6)
+    monkeypatch.setattr(store, "compact", lambda dt, partitions: _raise(next(conflicts, None)))
+    emit = EventLog.emit
+
+    def full_disk(self, logged):
+        if any(e["type"] == "compact_conflict" for e in logged):
+            raise OSError(28, "No space left on device")
+        emit(self, logged)
+
+    monkeypatch.setattr(EventLog, "emit", full_disk)
+    env.land(up(A, 1), up(A, 2))
+    ticks = Ticks(9)
+    run(env, ticks, limit=1, compact_every=2)  # would give up after 5 if the OSError escaped
+    logged = events.read(env.events_root)
+    assert [e["type"] for e in logged if e["type"] == "tick_failed"] == []
+    assert set(ticks.waits) == {worker.POLL}
+
+
+def _raise(error):
+    if error:
+        raise error
 
 
 def test_main_wires_the_flags_and_stops_on_sigterm_or_sigint(tmp_path, monkeypatch):

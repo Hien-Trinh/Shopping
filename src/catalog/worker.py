@@ -196,10 +196,12 @@ def run(
                     try:
                         store.compact(store_dt, mine)
                         busy = 0
-                    except CommitFailedError:  # delta-rs 1.6.6 checks an OPTIMIZE against every
-                        # partition's removals, so another worker's MERGE can fail ours: no
+                    except CommitFailedError as e:  # delta-rs 1.6.6 checks an OPTIMIZE against
+                        # every partition's removals, so another worker's MERGE can fail ours: no
                         # failed tick, it retries next tick (7f.2's run 4: 6 restarts from this)
-                        events.emit([{"type": "compact_conflict", "worker": name}])
+                        conflict = {"type": "compact_conflict", "worker": name}
+                        with contextlib.suppress(OSError):  # a lost event fails no tick
+                            events.emit([conflict | {"error": repr(e)[:500]}])
             except Exception as e:
                 gap = gap or delta.history_gone(e)  # a failed bootstrap is retried
                 failures += 1

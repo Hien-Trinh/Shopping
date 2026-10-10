@@ -3,6 +3,7 @@ processes, then prints one JSON summary line. The Merchant's key comes from CATA
 is never printed.
 
     python -m catalog.load --rate 50 --changes 30000                    # steady
+    python -m catalog.load --rate 50 --seconds 1800                     # steady, for 30 min
     python -m catalog.load --changes 10000 --batch 10000                # bulk
     python -m catalog.load --changes 1000000 --keys 1000000 --order sequential --batch 1000
 """
@@ -69,21 +70,27 @@ def batches(j: int, processes: int, *, changes: int, batch: int, **options) -> I
 
 
 def send(bodies: Iterable[dict], post: Callable[[dict], tuple[int, dict]], *, rate: float,
-         clock=time.monotonic, sleep=time.sleep, stop=lambda: False) -> dict:  # fmt: skip
+         clock=time.monotonic, sleep=time.sleep, stop=lambda: False,
+         deadline=math.inf) -> dict:  # fmt: skip
     """Post each body when due: `t0 + changes sent before it / rate`, at once if late (open
     loop, so a slow API shows as latency, not a lower rate). Counts every answer; raises none.
-    A 401 ends the loop: every later request would get one too.
+    A 401 ends the loop: every later request would get one too. So does `deadline` (a `clock`
+    time): no body due at or after it is sent, and the tally says `timed_out`.
 
     ponytail: a process blocks on each POST, so a slow API caps the rate at processes / latency
     (4 processes at 156 ms: 25/s, step-7a.md); the summary's late_s shows it. Async sends if
     one Mac's processes can't keep up."""
-    tally = {"sent": 0, "accepted": 0, "errors": 0, "late": 0.0, "latencies": []}
+    tally = {"sent": 0, "accepted": 0, "errors": 0, "late": 0.0, "latencies": [],
+             "timed_out": False}  # fmt: skip
     statuses, t0 = Counter(), clock()
     for body in bodies:
         if stop():
             break
+        due = t0 + tally["sent"] / rate if rate else clock()
+        if due >= deadline:
+            tally["timed_out"] = True
+            break
         if rate:
-            due = t0 + tally["sent"] / rate
             if (wait := due - clock()) > 0:
                 sleep(wait)
             tally["late"] = max(tally["late"], clock() - due)
@@ -129,9 +136,10 @@ def http(url: str, key: str):
 def _process(j: int, options: dict, stop: Callable[[], bool]) -> dict:
     o = dict(options)
     url, rate, processes = o.pop("url"), o.pop("rate"), o.pop("processes")
+    deadline = o.pop("deadline")
     bodies = batches(j, processes, texts=texts(), **o)
     post = http(url, os.environ["CATALOG_API_KEY"])
-    return send(bodies, post, rate=rate / processes, stop=stop)
+    return send(bodies, post, rate=rate / processes, stop=stop, deadline=deadline)
 
 
 def _child(j: int, options: dict, stopping, results) -> None:
@@ -177,6 +185,7 @@ def summary(tallies: Sequence[dict], elapsed: float, start_ms: int, failed=()) -
         "changes_per_s": round(sent / elapsed, 1) if elapsed else None,
         "latency_ms": {"p50": ms(0.5), "p99": ms(0.99), "max": ms(1)} if latencies else None,
         "late_s": round(max((t["late"] for t in tallies), default=0.0), 3),
+        "ended_by": "seconds" if any(t["timed_out"] for t in tallies) else "changes",
     }
 
 
@@ -184,7 +193,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = argparse.ArgumentParser(prog="python -m catalog.load")
     args.add_argument("--url", default="http://127.0.0.1:8000")
     args.add_argument("--rate", type=float, default=50, help="Changes/s in all; 0: no pacing")
-    args.add_argument("--changes", type=int, default=3000)
+    args.add_argument("--changes", type=int, help=f"default 3000, or {MAX_CHANGES} with --seconds")
+    args.add_argument("--seconds", type=float, help="stop sending after this long")
     args.add_argument("--batch", type=int, default=1)
     args.add_argument("--keys", type=int, default=10_000)
     args.add_argument("--order", choices=("random", "sequential"), default="random")
@@ -198,6 +208,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     a = args.parse_args(argv)
     if not os.environ.get("CATALOG_API_KEY"):
         args.error("CATALOG_API_KEY is not set: export the Merchant's key first")
+    if a.seconds is not None and not 0 < a.seconds < math.inf:  # nan fails too
+        args.error("--seconds must be over 0")
+    if a.changes is None:
+        a.changes = 3000 if a.seconds is None else MAX_CHANGES
     if not 1 <= a.changes <= MAX_CHANGES:
         args.error(f"--changes must be 1 to {MAX_CHANGES}")
     if not 1 <= a.batch <= envelope.MAX_BATCH:
@@ -210,9 +224,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.error("--url must be http:// or https://")
     a.processes = min(a.processes, -(-a.changes // a.batch))  # an idle one's rate share is lost
     start_ms = a.start_ms if a.start_ms is not None else time.time_ns() // 1_000_000
-    options = vars(a) | {"start_ms": start_ms}
     ctx = multiprocessing.get_context("spawn")
     stopping, results, began = ctx.Event(), ctx.Queue(), time.monotonic()
+    # monotonic is system-wide on macOS and Linux, so every child reads the same deadline
+    deadline = began + a.seconds if a.seconds else math.inf
+    options = {k: v for k, v in vars(a).items() if k != "seconds"}
+    options |= {"start_ms": start_ms, "deadline": deadline}
     procs = [ctx.Process(target=_child, args=(j, options, stopping, results))
              for j in range(a.processes)]  # fmt: skip
     for p in procs:

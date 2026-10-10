@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pyarrow as pa
 import pytest
 from deltalake import DeltaTable, write_deltalake
+from deltalake.exceptions import CommitFailedError
 from support import TAX, classified, listing, product_in, race
 
 from catalog import store
@@ -165,6 +166,23 @@ def test_compact_merges_small_files_without_changing_data_or_feed(db):
     assert len(files_in(db, 5)) == 1
     assert store.fingerprints(db) == before
     assert pa.table(db.load_cdf(starting_version=v + 1).read_all()).num_rows == 0
+
+
+def test_delta_rs_fails_a_compaction_when_another_partitions_merge_removes_a_file(db):
+    # The contract the worker's compact_conflict relies on (step 7f.3): delta-rs 1.6.6 records no
+    # read predicate for an OPTIMIZE, so a MERGE in partition 6 that landed after the compaction
+    # read its snapshot fails a compaction of partition 5 with CommitFailedError. When a delta-rs
+    # release scopes the check to the compacted partitions, this test fails: update it.
+    for i in range(2):  # two files in partition 5 for the compaction to replace
+        store.merge(db, [write(1, key=("m_1", product_in(5, prefix=f"c{i}")))], NOW)
+    other = ("m_1", product_in(6))
+    store.merge(db, [write(1, key=other)], NOW)
+    compacting = DeltaTable(db.table_uri)  # the snapshot store.compact reads before its commit
+    store.merge(db, [write(2, listing(price=9), key=other)], NOW)  # removes partition 6's file
+    with pytest.raises(CommitFailedError, match="concurrent transaction deleted data"):
+        compacting.optimize.compact(
+            partition_filters=[("partition", "in", ["5"])], target_size=store.COMPACT_TARGET
+        )
 
 
 def test_merge_rewrites_only_the_file_holding_the_listing(db):

@@ -375,6 +375,7 @@ Each phase ends green on `make check`, and its exit criteria are the tests.
   - never fork while holding partition claims; use spawn
   - mark a classifier failure with `Classification(..., needs_reclassify=True)`, never by leaving `needs_classify` set
   - every standalone entry point (the worker and supervisor CLIs, and later export, snapshot and chaos runners) exits through `entry.exit_with`, which flushes and calls `os._exit`: Arrow can hang at process exit after a Delta scan ([spikes/NOTES.md](../spikes/NOTES.md), "Exit hang")
+  - an event that reports a handled error, a retry, a refusal or a skip is best effort: catch the emit's `OSError` (`contextlib.suppress(OSError)`, as the worker's failed tick does), so a lost event never turns the handled case into a failure
 - **Exit:** all of the above pass.
 - Result: 295 tests in about 45 s, 99.6% branch coverage across the package and the six pure modules at 100%. The chaos tests run real processes. A worker killed with `kill -9` at each step of a batch, during compaction or at a random moment leaves the store equal to the replay oracle, with no Change pending. A rescale from 4 to 3 workers rereads nothing. The workers of a `kill -9`ed supervisor stop on their own. Reviews caught real bugs before merge, each now with a test:
   - bisecting a batch on a data error also caught a corrupt store file's error, failing valid Changes and advancing the offset (3b); a storability check before planning replaced it

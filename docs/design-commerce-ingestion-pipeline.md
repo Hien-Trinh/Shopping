@@ -142,8 +142,8 @@ The Listing Store is compacted to about 1 MiB files. A copy-on-write MERGE rewri
 ## Observability and testing
 
 - **Events:** one JSONL line per stage per change, carrying `submission_id`, `change_index`, the Listing key, `partition`, the Listing Store version where relevant, and a timestamp. Each process writes its own files. Workers also write batch-level events (`batch`, `classify_failed`) only after their MERGE commits, so a retried batch doesn't repeat them; a tick that moves no offset writes nothing.
-- **Process events** (start, stop, failed tick, exit) are written as they happen. The supervisor's own events are best effort: a full disk never stops it. Only a fatal `process_exit` isn't followed by a restart.
-- **Event fields** are listed once, in the runbook's event table ([runbook.md, Read results](runbook.md#read-results)); add a new event or field there.
+- **Process events** (start, stop, exit, and a failed tick before its retry) are written as they happen. The supervisor's own events are best effort: a full disk never stops it. Only a fatal `process_exit` isn't followed by a restart.
+- **Event fields:** the runbook's event table ([runbook.md, Read results](runbook.md#read-results)) lists the events an operator reads; give a new one or a new field a row there. The `emit` calls in `src/catalog` are the full list.
 - **Reading events:** each process run writes its own file (`<process>-<pid>-<nonce>.jsonl`), so a restarted process never appends after its predecessor's torn last line. The reader streams files and trusts only complete lines, skipping a line still being written or one torn by a crash. (DuckDB's `read_json` with `ignore_errors` returns a *partial* event instead, which could look real, so it isn't used for events that drive status.)
 - **DuckDB is a read-only query engine** for metrics and ad-hoc SQL. Each query uses a throwaway in-memory connection over Delta (via `to_pyarrow_dataset()`) and Parquet. The pipeline never writes to DuckDB.
 - **Metrics (saved SQL):** freshness p50/p99, worker lag per partition, classify latency, rates of stale, conflict, failed and Uncategorized changes, worker utilization.

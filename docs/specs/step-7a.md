@@ -25,7 +25,7 @@ Both give the same answers. 0.40 s is a third of the review's guess, and it isn'
 ## Solution
 
 1. **`python -m catalog.load`**, a new module. It posts generated Changes to a running API and prints one JSON summary line.
-   - Flags: `--url` (default `http://127.0.0.1:8000`, http or https only), `--rate` (Changes/s, 0 = as fast as the API answers), `--changes` (total), `--batch` (Changes per request, up to 10,000), `--keys` (the key space), `--order {random,sequential}`, `--processes` (default 16; 4 at approval, see Outcome), `--seed`, and `--currency` (default USD, the Merchant's; added in the PR).
+   - Flags: `--url` (default `http://127.0.0.1:8000`, http or https only), `--rate` (Changes/s, 0 = as fast as the API answers), `--changes` (total), `--batch` (Changes per request, up to 10,000), `--keys` (the key space), `--order {random,sequential}`, `--processes` (default 16; 4 at approval, see Outcome), `--seed`, and `--currency` (default USD, the Merchant's; added in the PR). Added for step 7f's 30-minute run: `--seconds`, a time limit; with both, whichever comes first ends the run, and without `--changes` it sends until the limit (up to 10M). The summary's `ended_by` says which: `changes`, `seconds`, `401` or `ctrl_c`.
    - The Merchant's key comes from `CATALOG_API_KEY`, never a flag (a flag shows in `ps`), and is never printed.
    - The three Phase 7 load shapes are flag sets, not code:
      - steady: `--rate 50 --changes 30000 --batch 1`

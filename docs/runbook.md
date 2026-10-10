@@ -163,3 +163,15 @@ Each run builds a scratch system in a temp folder, runs 60 s of load at 20/s wit
 ## Stress runs
 
 Start every stress run with `scripts/stress-preflight.sh [volume]` (default `/Volumes/T9`). It exits 1 with one line if the volume is not mounted, its USB link is under 10 Gb/s, Spotlight indexes it, swap is 8 GB or more, or the internal volume or the data volume has under 7 GiB free (the API's 5 GiB `low_disk` guard plus 2). The runs and their results are in [the stress report](stress.md).
+
+The 30-minute SLO run (step 7f) sends for a fixed time, not a fixed count, so a slow machine still stops at 30 minutes:
+
+```bash
+CATALOG_API_KEY=$KEY uv run python -m catalog.load --rate 50 --keys 1000000 --seconds 1800 --unique-text --processes 8
+```
+
+Its summary's `ended_by` is `seconds`; `changes` if `--changes` was also given and came first, `401` or `ctrl_c` if those ended it. Right after the run, copy the store's commit history, which a run's commit conflicts are diagnosed from; the store keeps only an hour of it (`delta.LOG_RETENTION_HOURS`):
+
+```bash
+cp -R data/listing_store/_delta_log <run dir>/delta-log
+```

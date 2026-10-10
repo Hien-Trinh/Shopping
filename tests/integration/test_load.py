@@ -1,7 +1,9 @@
 """The load generator's Changes and one process's send loop (docs/specs/step-7a.md)."""
 
+import math
 import queue
 import threading
+import time
 from http.client import IncompleteRead
 from types import SimpleNamespace
 
@@ -91,6 +93,40 @@ def test_start_ms_fixes_every_source_version(monkeypatch, capsys):
     (options,) = seen["options"]
     assert (options["start_ms"], options["deletes"]) == (123, 0.25)
     assert '"start_ms": 123' in capsys.readouterr().out
+
+
+def test_seconds_alone_sends_until_the_time_limit(monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setenv("CATALOG_API_KEY", "k")
+    monkeypatch.setattr(load, "collect", lambda procs, *_: seen.setdefault("procs", procs)
+                        and ({}, []))  # fmt: skip
+    monkeypatch.setattr(load.multiprocessing, "get_context", lambda _: Context(seen))
+    clock = SimpleNamespace(monotonic=lambda: 1000.0, time_ns=time.time_ns)
+    monkeypatch.setattr(load, "time", clock)  # load's clock only, not pytest's
+    load.main(["--seconds", "1800", "--processes", "2"])
+    options = seen["options"][0]
+    assert (options["changes"], options["deadline"]) == (load.MAX_CHANGES, 2800.0)
+    assert "seconds" not in options  # batches() takes every other option
+
+
+def test_no_seconds_means_no_deadline_and_3000_changes(monkeypatch, capsys):
+    seen = {}
+    monkeypatch.setenv("CATALOG_API_KEY", "k")
+    monkeypatch.setattr(load, "collect", lambda procs, *_: seen.setdefault("procs", procs)
+                        and ({}, []))  # fmt: skip
+    monkeypatch.setattr(load.multiprocessing, "get_context", lambda _: Context(seen))
+    load.main(["--processes", "1"])
+    (options,) = seen["options"]
+    assert (options["changes"], options["deadline"]) == (3000, math.inf)
+
+
+@pytest.mark.parametrize("seconds", ["0", "-1", "nan", "inf"])
+def test_a_seconds_that_isnt_positive_and_finite_is_refused(seconds, monkeypatch, capsys):
+    monkeypatch.setenv("CATALOG_API_KEY", "k")
+    with pytest.raises(SystemExit) as stopped:
+        load.main(["--seconds", seconds])
+    assert stopped.value.code == 2
+    assert "--seconds" in capsys.readouterr().err
 
 
 class Context:
@@ -197,9 +233,52 @@ def test_a_stop_ends_the_loop_before_the_next_send():
     assert calls == []
 
 
-def tally(*latencies):
+def test_the_deadline_ends_the_loop_before_a_send_due_at_or_after_it():
+    clock, sent = Clock(), []
+    post = lambda body: sent.append(clock.now) or (202, {"accepted": 1})  # noqa: E731
+    tally = load.send(batches_of(1, 1, 1, 1, 1), post, rate=1, clock=clock, sleep=clock.sleep,
+                      deadline=102.5)  # fmt: skip
+    assert sent == [100, 101, 102]  # the 4th is due at 103: not slept toward, not sent
+    assert clock.slept == [1, 1]
+    assert (tally["sent"], tally["timed_out"]) == (3, True)
+
+
+def test_an_unpaced_loop_checks_the_deadline_on_the_clock():
+    clock = Clock()
+
+    def post(body):
+        clock.now += 1
+        return 202, {"accepted": 1}
+
+    tally = load.send(batches_of(1, 1, 1, 1), post, rate=0, clock=clock, deadline=102)
+    assert (tally["sent"], tally["timed_out"]) == (2, True)
+    assert load.send(batches_of(1), post, rate=0, clock=clock)["timed_out"] is False
+
+
+def test_a_late_loop_stops_at_the_deadline_though_its_sends_were_due_before_it():
+    clock = Clock()
+
+    def post(body):
+        clock.now += 5  # each answer takes 5 s at 1/s: every send after the first is late
+        return 202, {"accepted": 1}
+
+    tally = load.send(batches_of(1, 1, 1, 1), post, rate=1, clock=clock, sleep=clock.sleep,
+                      deadline=107)  # fmt: skip
+    assert (tally["sent"], tally["timed_out"]) == (2, True)  # sends at 100 and 105, not 110
+
+
+def tally(*latencies, timed_out=False):
     return {"sent": 1, "accepted": 1, "errors": 0, "late": 0.0, "latencies": list(latencies),
-            "statuses": {202: 1}}  # fmt: skip
+            "statuses": {202: 1}, "timed_out": timed_out}  # fmt: skip
+
+
+def test_the_summary_says_whether_the_time_limit_or_the_changes_ended_the_run():
+    assert load.summary([tally(0.1), tally(0.1)], 1.0, START_MS)["ended_by"] == "changes"
+    timed = load.summary([tally(0.1), tally(0.1, timed_out=True)], 1.0, START_MS)
+    assert timed["ended_by"] == "seconds"
+    refused = tally(0.1) | {"statuses": {401: 1}}
+    assert load.summary([tally(0.1), refused], 1.0, START_MS)["ended_by"] == "401"
+    assert load.summary([tally(0.1)], 1.0, START_MS, stopped=True)["ended_by"] == "ctrl_c"
 
 
 def test_latency_percentiles_are_nearest_rank():

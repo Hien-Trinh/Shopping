@@ -111,3 +111,15 @@ Three runs on the T9 ([stress.md](../stress.md), 7f.2). The 1M load with unique 
 ## Outcome, 7f.2 rerun (Oct 10)
 
 The rerun of run 3 found the drive first: the T9 had negotiated USB 2.0 (34 MB/s writes, fsync p50 48 ms under the run's writes) with Spotlight indexing it, and a run with swap at 2 to 6 GB still took only 5.4 Changes a second (cancelled after 41,911). On a 10 Gb/s port with Spotlight off (1,000 MB/s), run 4 took all 90,000 Changes at 21.3 a second, the CPU's ceiling with four student workers and the Backfill: freshness p99 24.2 s over every one, 0 stale, conflict or failed, lag 0, no refusal, 87.6 GB swept in 71 minutes with no error, 8 hourly-vacuum conflicts reported and carried on. **Decided Oct 10: the Phase 7 exit passes**, with the rate recorded as this Mac's; 50 a second is a run for a larger machine. Carried forward: the workers' commit conflicts (94 in 13,318 batches), with run 4's store log kept to name the conflicting commit.
+
+## 7f.3: the workers' compaction conflicts (Oct 10)
+
+**Problem.** Run 4 had 94 `tick_failed` (`CommitFailedError: a concurrent transaction deleted data this operation read`) and six worker restarts. All 88 tracebacks in the supervisor log end in `store.compact`, the worker's compaction after every 100 busy batches, not in its MERGE. A worker merges and compacts in one thread, so it never races itself.
+
+**Cause.** delta-rs 1.6.6 (the latest release) records no read predicate for an OPTIMIZE (`DeltaOperation::read_predicate()` in `protocol/mod.rs`, a `TODO`), so it counts the compaction as reading every file in the table, and any commit that removes a data file in any partition conflicts with it. Every MERGE does that. Repro (deltalake only, partition 1 compacted while partition 0 is MERGEd): 5 of 5 runs fail; with an append-only writer, 0 of 21 compactions fail. Delta Lake on Spark scopes an OPTIMIZE to its partitions.
+
+**Decision (Oct 10, the user's option 1 with the upstream report).** A `CommitFailedError` from the worker's compaction is not a failed tick: the worker emits `compact_conflict` and tries again on the next tick (its busy count stays), so it never counts toward the five failed ticks that end a worker. Any other compaction error still fails the tick. The gap is reported to delta-rs; when a release fixes it, the event stops appearing and nothing here needs to change.
+
+**Test.** `test_a_compaction_conflict_is_reported_and_retried_without_failing_the_tick`: six conflicts in a row (more than the five that end a worker), then a commit; no `tick_failed`, six `compact_conflict`, no backoff waits. Red before the fix (the worker gave up), green after. The seam is the worker's call to `store.compact`; the race itself lives in delta-rs and in the repro, not in a test, because it needs seconds of concurrent writing.
+
+**Out of scope.** Committing the compaction in pieces (`min_commit_interval`) until a measurement shows compactions starving.

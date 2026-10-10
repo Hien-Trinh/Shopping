@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from deltalake import DeltaTable
+from deltalake.exceptions import CommitFailedError
 
 from catalog import classify, delta, entry, jev, landing, state, store, taxonomy
 from catalog.decide import decide
@@ -192,8 +193,13 @@ def run(
                 # Before compacting, so a long compaction gets the watchdog's full budget.
                 state.beat(state_dir, name, clock())
                 if busy >= compact_every:  # owner-only (ADR-0001); a failure retries next tick
-                    store.compact(store_dt, mine)
-                    busy = 0
+                    try:
+                        store.compact(store_dt, mine)
+                        busy = 0
+                    except CommitFailedError:  # delta-rs 1.6.6 checks an OPTIMIZE against every
+                        # partition's removals, so another worker's MERGE can fail ours: no
+                        # failed tick, it retries next tick (7f.2's run 4: 6 restarts from this)
+                        events.emit([{"type": "compact_conflict", "worker": name}])
             except Exception as e:
                 gap = gap or delta.history_gone(e)  # a failed bootstrap is retried
                 failures += 1

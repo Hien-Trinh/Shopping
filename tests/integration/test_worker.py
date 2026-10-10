@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 import pyarrow as pa
 import pytest
+from deltalake.exceptions import CommitFailedError
 from support import delete, listing, poison, product_in, reclassify, up
 
 from catalog import events, jev, landing, state, store, supervisor, worker
@@ -513,6 +514,31 @@ def test_it_compacts_every_k_busy_batches_and_retries_a_failed_compaction(env, m
     assert ops == ["beat", "beat", "beat", "compact", "beat", "beat", "compact", "beat",
                    "compact", "beat"]  # fmt: skip
     assert [e["changes"] for e in events.read(env.events_root) if e["type"] == "batch"] == [1] * 4
+
+
+def test_a_compaction_conflict_is_reported_and_retried_without_failing_the_tick(env, monkeypatch):
+    # delta-rs 1.6.6 checks an OPTIMIZE against every partition's removals, so another worker's
+    # MERGE fails this worker's compaction (7f.2's run 4: 94 failed ticks, 6 restarts).
+    calls, conflicts = [], iter([CommitFailedError("a concurrent transaction deleted data")] * 6)
+
+    def compact(dt, partitions):
+        calls.append(list(partitions))
+        if error := next(conflicts, None):
+            raise error
+
+    monkeypatch.setattr(store, "compact", compact)
+    env.land(up(A, 1), up(A, 2))
+    ticks = Ticks(9)
+    run(env, ticks, limit=1, compact_every=2)  # more conflicts in a row than ATTEMPTS
+    assert len(calls) == 7  # after batch 2, then every tick until one commits, then none
+    logged = events.read(env.events_root)
+    assert [
+        (e["type"], e.get("error")) for e in logged if e["type"] in ("tick_failed", "worker_stop")
+    ] == [("worker_stop", None)]
+    conflicted = [e for e in logged if e["type"] == "compact_conflict"]
+    assert [e["worker"] for e in conflicted] == ["worker-0"] * 6
+    assert set(ticks.waits) == {worker.POLL}  # no failure backoff
+    assert stored(env, A).source_version == 2
 
 
 def test_main_wires_the_flags_and_stops_on_sigterm_or_sigint(tmp_path, monkeypatch):

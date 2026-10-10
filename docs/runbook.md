@@ -170,7 +170,7 @@ The 30-minute SLO run (step 7f) sends for a fixed time, not a fixed count, so a 
 CATALOG_API_KEY=$KEY uv run python -m catalog.load --rate 50 --keys 1000000 --seconds 1800 --unique-text --processes 8
 ```
 
-Its summary's `ended_by` is `seconds`, or `changes` if `--changes` was also given and came first. Right after the run, copy the store's commit history, which a run's commit conflicts are diagnosed from; the store keeps only an hour of it (`delta.LOG_RETENTION_HOURS`):
+Its summary's `ended_by` is `seconds`; `changes` if `--changes` was also given and came first, `401` or `ctrl_c` if those ended it. Right after the run, copy the store's commit history, which a run's commit conflicts are diagnosed from; the store keeps only an hour of it (`delta.LOG_RETENTION_HOURS`):
 
 ```bash
 cp -R data/listing_store/_delta_log <run dir>/delta-log

@@ -82,3 +82,9 @@ def test_a_url_that_isnt_http_is_refused(monkeypatch, capsys):
         load.main(["--url", "file:///etc/passwd"])
     assert stopped.value.code == 2
     assert "--url" in capsys.readouterr().err
+
+
+def test_a_run_that_reaches_its_time_limit_ends_by_seconds_and_exits_0(stub, monkeypatch, capsys):
+    # The limit has passed before a spawned process starts, so it sends nothing.
+    code, summary = run(stub, monkeypatch, capsys, "--processes", "1", "--seconds", "0.001")
+    assert (code, summary["sent"], summary["ended_by"]) == (0, 0, "seconds")

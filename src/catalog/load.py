@@ -86,8 +86,8 @@ def send(bodies: Iterable[dict], post: Callable[[dict], tuple[int, dict]], *, ra
     for body in bodies:
         if stop():
             break
-        due = t0 + tally["sent"] / rate if rate else clock()
-        if due >= deadline:
+        due = t0 + tally["sent"] / rate if rate else 0
+        if max(due, clock()) >= deadline:  # due after it, or so late it's past it now
             tally["timed_out"] = True
             break
         if rate:
@@ -165,11 +165,19 @@ def collect(procs, results, stopping, poll: float = 0.2) -> tuple[dict[int, dict
     return tallies, sorted(set(range(len(procs))) - tallies.keys())
 
 
-def summary(tallies: Sequence[dict], elapsed: float, start_ms: int, failed=()) -> dict:
+def summary(tallies: Sequence[dict], elapsed: float, start_ms: int, failed=(),
+            stopped=False) -> dict:  # fmt: skip
     statuses, latencies = Counter(), sorted(x for t in tallies for x in t["latencies"])
     for t in tallies:
         statuses.update(t["statuses"])
     sent = sum(t["sent"] for t in tallies)
+    ended_by = "changes"  # every process sent its share, unless something below ended it first
+    if 401 in statuses:
+        ended_by = "401"
+    if any(t["timed_out"] for t in tallies):
+        ended_by = "seconds"
+    if stopped:
+        ended_by = "ctrl_c"
 
     def ms(q):  # nearest rank, in milliseconds
         return round(1000 * latencies[max(math.ceil(q * len(latencies)) - 1, 0)], 1)
@@ -185,7 +193,7 @@ def summary(tallies: Sequence[dict], elapsed: float, start_ms: int, failed=()) -
         "changes_per_s": round(sent / elapsed, 1) if elapsed else None,
         "latency_ms": {"p50": ms(0.5), "p99": ms(0.99), "max": ms(1)} if latencies else None,
         "late_s": round(max((t["late"] for t in tallies), default=0.0), 3),
-        "ended_by": "seconds" if any(t["timed_out"] for t in tallies) else "changes",
+        "ended_by": ended_by,
     }
 
 
@@ -241,7 +249,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(
             f"load: process {j} ended without a tally (exit {procs[j].exitcode})", file=sys.stderr
         )
-    out = summary(list(tallies.values()), time.monotonic() - began, start_ms, failed)
+    out = summary(
+        list(tallies.values()), time.monotonic() - began, start_ms, failed, stopping.is_set()
+    )
     print(json.dumps(out))
     if stopping.is_set():
         return 130

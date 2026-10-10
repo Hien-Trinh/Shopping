@@ -542,6 +542,44 @@ def test_a_compaction_conflict_is_reported_and_retried_without_failing_the_tick(
     assert stored(env, A).source_version == 2
 
 
+def test_a_failed_tick_names_the_stage_that_raised(env, monkeypatch):
+    # 7f.2: from `error` alone a CommitFailedError tick could be the MERGE or the compaction.
+    merges = iter([CommitFailedError("merge lost a race")])
+    process_batch = worker.process_batch
+
+    def merge_once(*a, **kw):
+        _raise(next(merges, None))
+        return process_batch(*a, **kw)
+
+    monkeypatch.setattr(worker, "process_batch", merge_once)
+    monkeypatch.setattr(store, "compact", lambda dt, partitions: _raise(OSError("compact")))
+    env.land(up(A, 1))
+    run(env, Ticks(3), compact_every=1)
+    failed = [e for e in events.read(env.events_root) if e["type"] == "tick_failed"]
+    assert [e["stage"] for e in failed] == ["batch", "compact", "compact"]
+
+
+def test_a_failed_tick_names_a_failed_bootstrap_or_beat(env, monkeypatch):
+    reads = iter([Exception("Object at location /x not found")])  # history cleanup removed
+    boots, beats = iter([OSError("bootstrap")]), itertools.count()
+    process_batch, beat = worker.process_batch, state.beat
+
+    def read_once(*a, **kw):
+        _raise(next(reads, None))
+        return process_batch(*a, **kw)
+
+    def beat_twice(*a):  # the 1st beat is before the loop; the 2nd, after the first good batch
+        _raise(OSError("beat") if next(beats) == 1 else None)
+        beat(*a)
+
+    monkeypatch.setattr(worker, "process_batch", read_once)
+    monkeypatch.setattr(worker, "bootstrap", lambda *a, **kw: _raise(next(boots, None)))
+    monkeypatch.setattr(state, "beat", beat_twice)
+    run(env, Ticks(4))  # the read fails, the bootstrap fails, then succeeds, the beat fails
+    failed = [e for e in events.read(env.events_root) if e["type"] == "tick_failed"]
+    assert [e["stage"] for e in failed] == ["batch", "bootstrap", "beat"]
+
+
 def test_a_compaction_conflict_whose_event_cannot_be_written_still_fails_no_tick(env, monkeypatch):
     conflicts = iter([CommitFailedError("a concurrent transaction deleted data")] * 6)
     monkeypatch.setattr(store, "compact", lambda dt, partitions: _raise(next(conflicts, None)))

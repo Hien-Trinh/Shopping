@@ -123,15 +123,20 @@ The events behind them are plain JSONL. For example, the last exits:
 cat data/events/*/supervisor-*.jsonl | grep process_exit | tail
 ```
 
+Every event has its `type` and `ts` (ms); a worker's events carry its `worker` name. This table is the one list of event fields (the design doc points here).
+
 | Event | Says |
 |---|---|
-| `process_exit` | a process ended: `reason` exit, stale, fatal, spawn or shutdown, with its `code` |
+| `supervisor_start`, `supervisor_stop` | the supervisor's `processes` and `pid`; at stop, its exit `code` |
+| `process_exit` | a process ended: `process`, `reason` exit, stale, fatal, spawn or shutdown, with its `code` and old `pid`, or the spawn `error`. Only a fatal one isn't followed by a restart |
+| `worker_start` | a worker began: `workers` (how many in all) and `pid` |
+| `batch` | a worker's tick that moved an offset: `changes`, `ms` (the tick, including the MERGE), `head` (the Landing log version read up to), `next` (`{partition: [version, seq]}` per moved partition), and `usd` spent for a paid classifier. A partition's lag in commits is `head + 1 - next[p][0]` |
 | `worker_stop`, `api_stop`, `export_stop`, `snapshots_stop`, `maintenance_stop`, `backfill_stop` | how it stopped: `error` if one ended it, `reason: supervisor_gone` if its supervisor died. |
 | `watch_exit` | a process stuck after its supervisor died, force-exited |
 | `tick_failed` | a worker's failed tick, retried with backoff (5 in a row and it exits 1), with its `error` and the `stage` that raised: `bootstrap` (the gap bootstrap), `batch` (read, classify, MERGE, offsets), `beat`, or `compact` (a compaction error other than a `compact_conflict`) |
 | `compact_conflict` | a worker's compaction lost its commit to another worker's MERGE (step 7f.3), with its `error`; not a failed tick, retried on the next tick. Many in a row with no compaction committing means small files pile up in that worker's partitions |
 | `store_vacuum` | maintenance removed the Listing Store's dead files (step 7f): `removed` and `bytes`; `errors`, files it could not remove (retried next pass); `pending`, removals younger than the grace or pinned; `pin_stale` if a Snapshots pin older than an hour was ignored. Only when something was removed or went wrong; the 10-minute `maintenance` event's `store_vacuum` carries the totals since the last one |
-| `classify_failed` | Listings left Uncategorized: `reason` budget or error |
+| `classify_failed` | Listings left Uncategorized: `reason` budget or error, `listings` and `partitions` missed out of a `batch` of that many, and the `error` |
 | `refused`, `rejected` | a request or a Change the API turned away |
 
 ## Exit codes

@@ -13,7 +13,7 @@ lint:
 	uv run ruff format --check .
 
 test:
-	uv run pytest --cov --cov-report=term-missing
+	uv run pytest -n auto --cov --cov-report=term-missing  # one worker per core (pytest-xdist)
 	uv run coverage report --include='$(PURE)' --fail-under=100
 
 hooks:

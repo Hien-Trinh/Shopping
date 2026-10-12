@@ -1,3 +1,12 @@
 #!/bin/sh
 # Same gate as CI. Enable once per clone: make hooks
-exec make check
+# A push that changes only Markdown skips it: no test or lint reads those files.
+zero=0000000000000000000000000000000000000000
+while read -r _ local _ remote; do
+  [ "$local" = "$zero" ] && continue  # deleting a branch
+  base=$remote
+  [ "$base" = "$zero" ] && base=$(git merge-base origin/main "$local")  # a new branch
+  files=$(git diff --name-only --no-renames "$base" "$local") || exec make check  # a rename: both names
+  echo "$files" | grep -qv '\.md$' && exec make check
+done
+exit 0

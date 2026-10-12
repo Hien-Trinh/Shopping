@@ -468,7 +468,7 @@ def test_another_merchants_submission_gets_the_same_404_as_an_unknown_one(client
     "raw",
     [
         "nope",
-        str(uuid.uuid4()),
+        "f0806a23-7b5b-41bd-949b-856b4ff15de9",  # a uuid4, fixed: xdist workers must collect alike
         "00000000-0000-0000-0000-000000000000",
         "ffffffff-ffff-7fff-bfff-ffffffffffff",
     ],

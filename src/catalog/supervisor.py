@@ -80,8 +80,8 @@ def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=state.CLO
         spawn=Group) -> int:  # fmt: skip
     """Run `procs` until `stopping` is non-empty (returns 0) or a worker fails fatally (its code).
 
-    Every exit is logged: the rest of the pass that saw a fatal one, and each child stopped at
-    shutdown. `clock` must be the workers' beat clock.
+    Every start is logged with its pid, and every exit: the rest of the pass that saw a fatal
+    one, and each child stopped at shutdown. `clock` must be the workers' beat clock.
     """
     live, due, killed = {}, {}, set()  # name -> (child, start); name -> restart time; stale kills
     fatal = None
@@ -103,6 +103,9 @@ def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=state.CLO
             due[name] = started + RETRY  # e.g. EAGAIN under memory pressure: try again later
             error = repr(e)[:500]
             note({"type": "process_exit", "process": name, "reason": "spawn", "error": error})
+            return
+        # Its pid, before it logs anything itself: a caller finds and stops it from here on.
+        note({"type": "process_start", "process": name, "pid": live[name][0].pid})
 
     note({"type": "supervisor_start", "processes": list(procs), "pid": os.getpid()})
     try:

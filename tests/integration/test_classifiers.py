@@ -76,7 +76,8 @@ def test_a_classifier_is_free_and_silent_unless_it_says_otherwise():
 def test_each_fatal_error_has_its_own_code_and_stops_the_supervisor():
     for module in ("state", "classify", "jev"):  # every module that defines one
         importlib.import_module(f"catalog.{module}")
-    codes = {e: e.code for e in entry.Fatal.__subclasses__()}
+    # the catalog's own: a test's refused class can linger until garbage collected
+    codes = {e: e.code for e in entry.Fatal.__subclasses__() if e.__module__.startswith("catalog.")}
     assert codes == {
         state.PartitionTaken: 3,
         state.OffsetsMismatch: 4,
@@ -84,8 +85,8 @@ def test_each_fatal_error_has_its_own_code_and_stops_the_supervisor():
         classify.ModelMissing: 6,
         jev.KeyMissing: 7,
     }
-    assert set(codes.values()) <= supervisor.FATAL_CODES
-    assert {2, 3, 4, 5, 6, 7} == supervisor.FATAL_CODES
+    assert set(codes.values()) <= set(entry.FATAL_CODES)
+    assert {2, *entry.FATAL_CODES} == supervisor.FATAL_CODES  # a new code needs no edit there
 
 
 # --- the loader -----------------------------------------------------------------------------

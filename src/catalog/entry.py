@@ -20,13 +20,29 @@ from pathlib import Path
 from catalog.events import prepared
 
 SUPERVISOR = "CATALOG_SUPERVISOR"  # set to the supervisor's pid in its children's environment
+FATAL_CODES = range(3, 16)  # a worker exiting with one stops the supervisor (2 is a bad flag)
+_taken: dict[int, str] = {}  # code -> the Fatal that has it
 
 
 class Fatal(RuntimeError):
     """An error no restart fixes. A worker exits with its `code`, so the supervisor stops
-    everything instead (supervisor.FATAL_CODES); any other process exits 1 on it."""
+    everything instead; any other process exits 1 on it.
+
+    Each subclass names its own code in FATAL_CODES, checked when it's defined; a subclass of
+    one shares its parent's."""
 
     code: int
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if "code" not in vars(cls) and hasattr(cls, "code"):
+            return  # a narrower kind of its parent's error
+        name = f"{cls.__module__}.{cls.__qualname__}"
+        code = getattr(cls, "code", None)
+        if code not in FATAL_CODES:
+            raise TypeError(f"{name} needs a code in entry.FATAL_CODES, not {code!r}")
+        if _taken.setdefault(code, name) != name:  # the same name: a module reloaded
+            raise TypeError(f"{name}: code {code} is taken by {_taken[code]}")
 
 
 def exit_with(main: Callable[[], int | None], *, fatal: bool = False) -> None:

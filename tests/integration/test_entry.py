@@ -37,6 +37,22 @@ def test_exit_with_exits_with_a_fatal_errors_code_only_when_asked_else_1(exits, 
     assert capsys.readouterr().err.count("Traceback") == 4
 
 
+@pytest.mark.parametrize("code", [None, 2, 16, 3], ids=["none", "below", "above", "taken"])
+def test_a_fatal_error_needs_its_own_code_in_the_band(code):
+    # the supervisor stops on any code in entry.FATAL_CODES, so a code outside it, or one
+    # another error already has, would be restarted forever or misread: refused at import
+    body = {} if code is None else {"code": code}
+    with pytest.raises(TypeError, match="FATAL_CODES|taken"):
+        type("NewError", (entry.Fatal,), body)
+
+
+def test_a_narrower_fatal_error_shares_its_parents_code():
+    class Taken(state.PartitionTaken):
+        pass
+
+    assert Taken.code == state.PartitionTaken.code
+
+
 def test_exit_with_keeps_argparses_code_and_survives_closed_streams(exits, monkeypatch):
     def bad_flag():
         raise SystemExit(2)

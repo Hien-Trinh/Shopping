@@ -158,7 +158,8 @@ class System:
 
     def start(self, **options) -> None:
         # ponytail: a restart rebinds the same port, so a load's URL holds; another program could
-        # take it in the moment between the old API's exit and the new one's bind.
+        # take it in the moment between the old API's exit and the new one's bind. An API the
+        # supervisor restarts alone fails the run (check).
         (self.root / "Procfile").write_text(procfile(PROCFILE.read_text(), self.port, **options))
         argv = [sys.executable, "-m", "catalog.supervisor"]
         # Its own session: a Ctrl-C reaches only the runner, which stops it in order. Its logs
@@ -211,6 +212,10 @@ class System:
     def check(self) -> None:
         if self.supervisor.poll() is not None:
             raise Failed(f"the supervisor exited with {self.supervisor.returncode}")
+        # The supervisor restarts a crashed API from the Procfile it read, so the first start's
+        # --port 0 picks a new port: the loads' URL would be dead.
+        if self.port and api_port(self.data) not in (0, self.port):
+            raise Failed("the API restarted on another port")
 
     def load(self, *flags) -> subprocess.Popen:
         """catalog.load in the background; its key goes through the environment, never argv."""

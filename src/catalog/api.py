@@ -189,7 +189,8 @@ class _Server(uvicorn.Server):
     async def startup(self, sockets=None) -> None:
         await super().startup(sockets)
         port = self.servers[0].sockets[0].getsockname()[1]
-        self.log.emit([{"type": "api_start", "pid": os.getpid(), "port": port}])
+        with contextlib.suppress(OSError):  # best effort: a full disk at boot still serves
+            self.log.emit([{"type": "api_start", "pid": os.getpid(), "port": port}])
 
 
 def main(argv: Sequence[str] | None = None) -> None:

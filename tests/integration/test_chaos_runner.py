@@ -228,3 +228,20 @@ def test_flagged_rereads_when_the_vacuum_took_a_file_its_snapshot_listed(tmp_pat
     with pytest.raises(FileNotFoundError):
         chaos.flagged(tmp_path)
     assert len(opens) == 3
+
+
+def test_the_api_port_is_the_newest_api_starts(tmp_path):  # PR #143 review
+    assert chaos.api_port(tmp_path) == 0
+    for at, port in [(2.0, 2), (1.0, 1)]:
+        log = EventLog(tmp_path / "events", "api", clock=lambda at=at: at)
+        log.emit([{"type": "api_start", "pid": port, "port": port}])
+    assert chaos.api_port(tmp_path) == 2
+
+
+def test_an_api_restarted_on_another_port_fails_the_run(tmp_path):  # PR #143 review
+    system = chaos.System(tmp_path)
+    system.supervisor, system.port = SimpleNamespace(poll=lambda: None), 1
+    system.check()  # no api_start yet
+    EventLog(system.data / "events", "api").emit([{"type": "api_start", "pid": 1, "port": 2}])
+    with pytest.raises(chaos.Failed, match="another port"):
+        system.check()

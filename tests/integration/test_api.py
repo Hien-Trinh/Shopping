@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import signal
@@ -10,11 +11,12 @@ from datetime import UTC, datetime, timedelta
 from itertools import count
 
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 from support import delete, up
 from test_supervisor import wait_for
 
-from catalog import api, chaos, events, landing, merchants
+from catalog import api, events, landing, merchants
 from catalog.events import EventLog
 from catalog.keys import PARTITIONS
 from catalog.landing import START
@@ -546,19 +548,34 @@ def test_a_404_goes_out_even_if_its_event_cant_be_written(client, monkeypatch):
 
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
 def test_a_plain_stop_is_logged_and_exits_0_like_the_others(tmp_path, sig):  # after step 7c.3
-    db, port = tmp_path / "data" / "merchants.sqlite", chaos._free_port()
+    db = tmp_path / "data" / "merchants.sqlite"
     merchants.create(db, "USD")
+    # --port 0: it binds a free port itself and logs which, so no other process can take it first
     argv = [sys.executable, "-m", "catalog.api", "--data", str(tmp_path / "data"), "--db", str(db),
-            "--port", str(port), "--min-free", "0"]  # fmt: skip
+            "--port", "0", "--min-free", "0"]  # fmt: skip
     proc = subprocess.Popen(argv, stderr=subprocess.DEVNULL)
     try:
-        wait_for(lambda: socket.socket().connect_ex(("127.0.0.1", port)) == 0)
+        logged = tmp_path / "data" / "events"
+        [started] = wait_for(lambda: [e for e in events.read(logged) if e["type"] == "api_start"])
+        assert started["pid"] == proc.pid
+        socket.create_connection(("127.0.0.1", started["port"]), 5).close()  # it already listens
         proc.send_signal(sig)
         assert proc.wait(timeout=30) == 0  # uvicorn used to re-raise it and die by it: -15
     finally:
         proc.kill()
     stops = [e for e in events.read(tmp_path / "data" / "events") if e["type"] == "api_stop"]
     assert len(stops) == 1 and "error" not in stops[0] and "reason" not in stops[0]
+
+
+def test_an_api_that_cant_log_its_start_still_serves(tmp_path, monkeypatch):  # PR #143 review
+    db = tmp_path / "data" / "merchants.sqlite"
+    merchants.create(db, "USD")
+    app = api.create_app(tmp_path / "data", db, min_free=0)
+    server = api._Server(uvicorn.Config(app, host="127.0.0.1", port=0), EventLog(tmp_path, "api"))
+    monkeypatch.setattr(EventLog, "emit", fail)  # a full disk at boot
+    server.should_exit = True  # stop right after startup
+    asyncio.run(server.serve())
+    assert server.started
 
 
 def test_a_second_signal_still_stops_a_stuck_api(tmp_path, monkeypatch):  # PR #82 review

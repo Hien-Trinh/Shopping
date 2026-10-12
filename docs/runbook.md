@@ -19,7 +19,7 @@ How to run the pipeline on one Mac: start, stop, rescale, recover, reset and rea
 ```bash
 uv sync
 uv run python -m catalog.student --download              # once: the workers' classifier (step 6m), the encoder and its index, about 10 min the first time, into models/
-uv run python -m catalog.classify --download             # only for `--classifier jev` or `embedding` and the eval: bge-small and the shortlist, about 2 min
+uv run python -m catalog.classifiers --download          # only for `--classifier jev` or `embedding` and the eval: bge-small and the shortlist, about 2 min
 uv run python -m catalog.merchants create --currency USD # prints merchant_id and key, once
 ```
 
@@ -153,9 +153,11 @@ Every event has its `type` and `ts` (ms); a worker's own events (start, stop, `b
 | worker | 3 | its partitions are locked by another worker | wait for the old workers (see Recover) |
 | worker | 4 | its offsets belong to another Landing log | reset both `state/` and the tables |
 | worker | 5 | a state file is corrupt | read the error; restore or reset |
-| worker | 6 | a model, its vectors or the student's index is missing or stale | the download the message names: `catalog.student --download` for the student, `catalog.classify --download` for bge-small and the shortlist |
+| worker | 6 | a model, its vectors or the student's index is missing or stale | the download the message names: `catalog.student --download` for the student, `catalog.classifiers --download` for bge-small and the shortlist |
 | worker | 7 | `--classifier jev` only: `TYPESAFE_API_KEY` is unset, or Jev refused it (401 or 403) | export a working key |
 | others | 1 | any error; restarted by the supervisor | read its `<process>_stop` event |
+
+Codes 3–15 are reserved for a worker's fatal errors (`entry.FATAL_CODES`): a worker exiting with one stops the supervisor. A new fatal error takes a free code in that band. The supervisor's own codes are read only from the supervisor, so its 3 doesn't clash with a worker's; a new supervisor code still goes outside the band, so the two never read alike.
 
 ## Chaos runs
 

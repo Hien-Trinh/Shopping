@@ -8,13 +8,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from time import monotonic
 
-from catalog import jev, store
-from catalog.classify import UNCATEGORIZED
+from catalog import entry, store
 from catalog.envelope import Key
 from catalog.keys import partition
 from catalog.landing import Landed
 from catalog.plan import Classification, Outcome, Stored, Write, plan
 from catalog.status import FAILED
+from catalog.taxonomy import UNCATEGORIZED
 
 _WRITES = {Outcome.WRITTEN, Outcome.RECLASSIFIED}
 
@@ -87,9 +87,9 @@ def _classify(writes: Sequence[Write], classifier, clock) -> tuple[list[Write], 
             None if a is None else _answer(a, version) for _, a in zip(todo, results, strict=True)
         ]
         # for the Listings it answered None: a classifier may say why (jev.JevClassifier.error)
-        error = getattr(classifier, "error", None)
+        error = classifier.error
         reason, error = ("error", error) if error else ("budget", "budget spent")
-    except jev.KeyMissing:  # a refused key: no batch can succeed, so stop (exit 7)
+    except entry.Fatal:  # e.g. a refused key: no batch can succeed, so stop (its exit code)
         raise
     except Exception as e:  # an outage or a bad answer: never stall the partition
         found, reason = [None] * len(todo), "error"

@@ -3,12 +3,13 @@ import itertools
 import pytest
 from support import listing, poison, product_in, reclassify, up
 
-from catalog import jev, store
-from catalog.classify import UNCATEGORIZED, FakeClassifier
+from catalog import jev, state, store
+from catalog.classify import Classifier, FakeClassifier
 from catalog.decide import decide
 from catalog.keys import partition
 from catalog.landing import Landed
 from catalog.plan import Classification, Stored
+from catalog.taxonomy import UNCATEGORIZED
 
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")  # pydantic, on poison content
 
@@ -60,7 +61,7 @@ def failed_note(listings, partitions, reason, batch, error):
     }
 
 
-class Stub:
+class Stub(Classifier):
     """A classifier answering `answer(listings)`, and saying why it missed some with `error`."""
 
     taxonomy_version = "fake-1"
@@ -133,11 +134,16 @@ def test_a_huge_classifier_error_is_truncated():
     assert (failed["reason"], failed["batch"]) == ("error", 1)  # step 7c.2: no text matching
 
 
-def test_a_refused_key_is_raised_not_stored_uncategorized():  # the worker exits 7
+@pytest.mark.parametrize(
+    "error",
+    [jev.KeyMissing("TYPESAFE_API_KEY was refused (401)"), state.CorruptState("x")],
+    ids=lambda e: type(e).__name__,
+)
+def test_a_fatal_error_is_raised_not_stored_uncategorized(error):  # the worker exits its code
     def refused(listings):
-        raise jev.KeyMissing("TYPESAFE_API_KEY was refused (401)")
+        raise error
 
-    with pytest.raises(jev.KeyMissing):
+    with pytest.raises(type(error)):
         run([up(A, 1)], classifier=Stub(refused))
 
 

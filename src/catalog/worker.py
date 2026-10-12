@@ -20,7 +20,7 @@ from pathlib import Path
 from deltalake import DeltaTable
 from deltalake.exceptions import CommitFailedError
 
-from catalog import classify, delta, entry, jev, landing, state, store, taxonomy
+from catalog import classifiers, classify, delta, entry, landing, state, store
 from catalog.decide import decide
 from catalog.events import EventLog
 from catalog.keys import owned, partition
@@ -117,14 +117,7 @@ POLL = 0.2  # seconds between reads when caught up: the design doc's "1,000 chan
 ATTEMPTS = 5  # failed ticks in a row before crashing; backoff 1+2+4+8 s stays under 3d's 60 s
 COMPACT_EVERY = 100  # batches with changes between compactions (ponytail: untuned until Phase 7)
 # Exit codes: 0 stopped, 1 gave up on failed ticks (a restart may fix it), over 1 fatal, so the
-# supervisor stops instead: 2 is a bad flag, and these no restart fixes.
-FATAL = {
-    state.PartitionTaken: 3,
-    state.OffsetsMismatch: 4,
-    state.CorruptState: 5,
-    classify.ModelMissing: 6,
-    jev.KeyMissing: 7,
-}
+# supervisor stops instead: 2 is a bad flag, and an entry.Fatal's code is an error no restart fixes.
 
 
 def run(
@@ -155,7 +148,7 @@ def run(
             [{"type": "worker_start", "worker": name, "workers": workers, "pid": os.getpid()}]
         )
         failures = busy = 0
-        reported = getattr(classifier, "usd", None)  # spend already in a batch event
+        reported = classifier.usd  # spend already in a batch event
         gap = False  # the last read found history cleanup removed: bootstrap instead of reading
         while not stop.is_set():
             started = clock()
@@ -186,7 +179,7 @@ def run(
                         "head": landing_dt.version(),  # lag of p = head + 1 - next[p][0]
                         "next": moved,
                     }
-                    spent = getattr(classifier, "usd", None)
+                    spent = classifier.usd
                     if spent is not None:  # a paid classifier: what it spent since the last
                         tick["usd"] = round(spent - reported, 6)  # event, failed ticks too
                     events.emit([tick])
@@ -212,7 +205,8 @@ def run(
                 error = repr(e)[:500]
                 failed = {"type": "tick_failed", "worker": name, "attempt": failures}
                 logged = [failed | {"stage": stage, "error": error}]
-                if gave_up := failures >= ATTEMPTS or type(e) in FATAL:  # no retry fixes those
+                fatal = isinstance(e, entry.Fatal)  # no retry fixes those
+                if gave_up := failures >= ATTEMPTS or fatal:
                     logged.append({"type": "worker_stop", "worker": name, "error": error})
                 with contextlib.suppress(OSError):  # best effort: the error itself matters more
                     events.emit(logged)
@@ -239,7 +233,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--workers", type=int, required=True)
     args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--state", type=Path, default=state.STATE)
-    args.add_argument("--classifier", choices=classify.KINDS, default="fake")
+    args.add_argument("--classifier", choices=classifiers.KINDS, default="fake")
     args.add_argument("--models", type=Path, default=classify.MODELS)
     a = args.parse_args(argv)
     try:
@@ -248,20 +242,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.error(str(e))  # exit 2: fatal, so the supervisor doesn't restart a bad flag forever
     supervisor = entry.supervisor_pid(args)
     stop = entry.watch_supervisor(supervisor, a.data / "events", f"{state.WORKER}{a.index}")
-    if a.classifier == "jev":
-        call = jev.http(attempts=1)  # first: a missing key stops it before the model loads
-        tax = taxonomy.load()
-        shortlist = jev.shortlist(tax, classify.fastembed(a.models), a.models / "texts")
-        # ponytail: a static share of Jev's limit; an idle worker's share goes unused
-        classifier = jev.JevClassifier(tax, shortlist, call, rate=jev.LIMIT / a.workers)
-    elif a.classifier == "student":
-        from catalog import student  # here: it loads the eval module too
-
-        classifier = student.pipeline(taxonomy.load(), a.models)  # step-6m.md: no key, no Jev
-    elif a.classifier == "embedding":
-        classifier = classify.EmbeddingClassifier(taxonomy.load(), classify.fastembed(a.models))
-    else:
-        classifier = classify.FakeClassifier(fail=a.classifier == "down")
+    classifier = classifiers.load(a.classifier, a.models, workers=a.workers)
     run(a.data, a.state, a.index, a.workers, classifier, stop=stop)
 
 
@@ -270,4 +251,4 @@ class Overtaken(RuntimeError):
 
 
 if __name__ == "__main__":
-    entry.exit_with(main, FATAL)  # a fatal startup error's code, or 1 after giving up
+    entry.exit_with(main, fatal=True)  # a fatal error's code, or 1 after giving up

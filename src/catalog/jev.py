@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from catalog import classify, taxonomy
+from catalog import classify, entry, taxonomy
+from catalog.taxonomy import UNCATEGORIZED
 
 URL = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-1.13.0"  # pinned, not jev-latest: an alias would change the answers under a result
@@ -34,8 +35,10 @@ TEXTS = "deeper"  # the shortlist's Category text (step-6h.md; step-6f.md, 6f.3)
 BUDGET = 10.0  # seconds per batch: one call takes about 250 ms (step-6f.md, decision 1)
 
 
-class KeyMissing(RuntimeError):
+class KeyMissing(entry.Fatal):
     """TYPESAFE_API_KEY is unset or empty, or Jev refused it."""
+
+    code = 7
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -47,7 +50,7 @@ _urlopen = build_opener(_NoRedirect).open
 
 
 @dataclass
-class JevClassifier:
+class JevClassifier(classify.Classifier):
     taxonomy: taxonomy.Taxonomy
     shortlist: classify.EmbeddingClassifier
     call: Callable[[dict], dict]  # request body -> response body
@@ -137,9 +140,9 @@ class JevClassifier:
             failed.set()  # no new calls: a 429 means slow down, an outage fails them all
             raise
         if key not in options:
-            return (key, confidence) if not self.threshold else (classify.UNCATEGORIZED, 0.0)
+            return (key, confidence) if not self.threshold else (UNCATEGORIZED, 0.0)
         if confidence < self.threshold:
-            return classify.UNCATEGORIZED, confidence
+            return UNCATEGORIZED, confidence
         return options[key], confidence
 
 
@@ -152,7 +155,7 @@ def version(
     texts: str = TEXTS,
 ) -> str:
     """Every setting that changes an answer, so changing one reclassifies (step-6e.md, 6)."""
-    embedding = classify._version(taxonomy_version, model)
+    embedding = classify.version(taxonomy_version, model)
     return f"{embedding}+{texts}+{MODEL}+k{k}+d{description}+t{threshold:.2f}"
 
 

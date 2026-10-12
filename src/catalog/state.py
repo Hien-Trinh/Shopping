@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
+from catalog.entry import Fatal
 from catalog.landing import START, Position
 
 # Shared by every worker and the supervisor, so they can't disagree:
@@ -32,12 +33,12 @@ DATA, STATE = Path("data"), Path("state")  # default directories of every proces
 WORKER = "worker-"  # a worker's name prefix: its Procfile name, heartbeat file and event log
 
 
-class CorruptState(RuntimeError):
-    pass
+class CorruptState(Fatal):
+    code = 5
 
 
-class OffsetsMismatch(RuntimeError):
-    pass
+class OffsetsMismatch(Fatal):
+    code = 4
 
 
 def load(path: Path, default: Any) -> Any:
@@ -165,8 +166,8 @@ def save_backfill(state: Path, version: int, table: str) -> None:
     save(state / "backfill.json", {"table": table, "version": version})
 
 
-class PartitionTaken(RuntimeError):
-    pass
+class PartitionTaken(Fatal):
+    code = 3
 
 
 @contextmanager

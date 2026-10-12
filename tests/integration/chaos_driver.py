@@ -58,4 +58,4 @@ if __name__ == "__main__":
         target, when, n = sys.argv[1:split]
         wrap(target, when, int(n))
     worker.run = functools.partial(worker.run, compact_every=1)
-    entry.exit_with(lambda: worker.main(sys.argv[split + 1 :]), worker.FATAL)
+    entry.exit_with(lambda: worker.main(sys.argv[split + 1 :]), fatal=True)

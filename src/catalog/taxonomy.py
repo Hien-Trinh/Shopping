@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 
-from catalog.classify import UNCATEGORIZED
 from catalog.entry import exit_with
 
 DEPTH = 3
 SEP = " > "
+UNCATEGORIZED = "Uncategorized"  # the fallback Category: never a path in a taxonomy
 DEFAULT = files("catalog") / "data" / "shopify-taxonomy.txt"
 FULL = files("catalog") / "data" / "shopify-taxonomy-full.txt.gz"  # the release, untrimmed
 _VERSION = re.compile(r"# Shopify Product Taxonomy - Categories: (\S+)$")

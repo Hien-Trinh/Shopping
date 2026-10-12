@@ -22,7 +22,7 @@ def test_exit_with_uses_mains_return_value(exits):
     assert exits == [3, 0]
 
 
-def test_exit_with_maps_an_exception_to_its_code_else_1(exits, capsys):
+def test_exit_with_exits_with_a_fatal_errors_code_only_when_asked_else_1(exits, capsys):
     def taken():
         raise state.PartitionTaken("partition 0")
 
@@ -30,9 +30,34 @@ def test_exit_with_maps_an_exception_to_its_code_else_1(exits, capsys):
         raise KeyError("x")
 
     for main in (taken, bug):
-        entry.exit_with(main, {state.PartitionTaken: 3})
-    assert exits == [3, 1]
-    assert capsys.readouterr().err.count("Traceback") == 2
+        entry.exit_with(main, fatal=True)  # the worker
+    for main in (taken, bug):
+        entry.exit_with(main)  # any other process: the supervisor restarts it
+    assert exits == [3, 1, 1, 1]
+    assert capsys.readouterr().err.count("Traceback") == 4
+
+
+@pytest.mark.parametrize("code", [None, 2, 16, 3], ids=["none", "below", "above", "taken"])
+def test_a_fatal_error_needs_its_own_code_in_the_band(code):
+    # the supervisor stops on any code in entry.FATAL_CODES, so a code outside it, or one
+    # another error already has, would be restarted forever or misread: refused at import
+    body = {} if code is None else {"code": code}
+    with pytest.raises(TypeError, match="FATAL_CODES|taken"):
+        type("NewError", (entry.Fatal,), body)
+
+
+def test_two_fatal_errors_with_the_same_name_cannot_share_a_code(monkeypatch):
+    monkeypatch.setattr(entry, "_taken", dict(entry._taken))  # this test's code isn't kept
+    type("NewError", (entry.Fatal,), {"code": 15})
+    with pytest.raises(TypeError, match="taken"):  # e.g. a class defined in a function, twice
+        type("NewError", (entry.Fatal,), {"code": 15})
+
+
+def test_a_narrower_fatal_error_shares_its_parents_code():
+    class Taken(state.PartitionTaken):
+        pass
+
+    assert Taken.code == state.PartitionTaken.code
 
 
 def test_exit_with_keeps_argparses_code_and_survives_closed_streams(exits, monkeypatch):

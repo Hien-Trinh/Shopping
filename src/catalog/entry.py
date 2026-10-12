@@ -14,17 +14,41 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
 
 from catalog.events import prepared
 
 SUPERVISOR = "CATALOG_SUPERVISOR"  # set to the supervisor's pid in its children's environment
+FATAL_CODES = range(3, 16)  # a worker exiting with one stops the supervisor (2 is a bad flag)
+_taken: dict[int, str] = {}  # code -> the Fatal that has it
 
 
-def exit_with(main: Callable[[], int | None], codes: Mapping[type, int] | None = None) -> None:
-    """Run `main` and exit with its return value: argparse's code for a bad flag, the `codes`
-    entry for an exception, else 1."""
+class Fatal(RuntimeError):
+    """An error no restart fixes. A worker exits with its `code`, so the supervisor stops
+    everything instead; any other process exits 1 on it.
+
+    Each subclass names its own code in FATAL_CODES, checked when it's defined; a subclass of
+    one shares its parent's."""
+
+    code: int
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if "code" not in vars(cls) and hasattr(cls, "code"):
+            return  # a narrower kind of its parent's error
+        name = f"{cls.__module__}.{cls.__qualname__}"
+        code = getattr(cls, "code", None)
+        if code not in FATAL_CODES:
+            raise TypeError(f"{name} needs a code in entry.FATAL_CODES, not {code!r}")
+        if code in _taken:
+            raise TypeError(f"{name}: code {code} is taken by {_taken[code]}")
+        _taken[code] = name
+
+
+def exit_with(main: Callable[[], int | None], *, fatal: bool = False) -> None:
+    """Run `main` and exit with its return value: argparse's code for a bad flag, a Fatal's code
+    if `fatal`, else 1 for an exception."""
     try:
         code = main() or 0
     except SystemExit as e:  # argparse: --help or a bad flag
@@ -34,7 +58,7 @@ def exit_with(main: Callable[[], int | None], codes: Mapping[type, int] | None =
         # which print handles. A ValueError needs our own code to close sys.stderr; none does.
         with contextlib.suppress(OSError):  # a broken pipe: still os._exit, with e's code
             traceback.print_exc()
-        code = (codes or {}).get(type(e), 1)
+        code = e.code if fatal and isinstance(e, Fatal) else 1
     for stream in (sys.stdout, sys.stderr):
         with contextlib.suppress(Exception):  # closed, or a broken pipe: exit anyway
             stream.flush()

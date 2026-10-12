@@ -46,6 +46,13 @@ def test_a_fatal_error_needs_its_own_code_in_the_band(code):
         type("NewError", (entry.Fatal,), body)
 
 
+def test_two_fatal_errors_with_the_same_name_cannot_share_a_code(monkeypatch):
+    monkeypatch.setattr(entry, "_taken", dict(entry._taken))  # this test's code isn't kept
+    type("NewError", (entry.Fatal,), {"code": 15})
+    with pytest.raises(TypeError, match="taken"):  # e.g. a class defined in a function, twice
+        type("NewError", (entry.Fatal,), {"code": 15})
+
+
 def test_a_narrower_fatal_error_shares_its_parents_code():
     class Taken(state.PartitionTaken):
         pass

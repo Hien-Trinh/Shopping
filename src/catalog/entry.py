@@ -41,8 +41,9 @@ class Fatal(RuntimeError):
         code = getattr(cls, "code", None)
         if code not in FATAL_CODES:
             raise TypeError(f"{name} needs a code in entry.FATAL_CODES, not {code!r}")
-        if _taken.setdefault(code, name) != name:  # the same name: a module reloaded
+        if code in _taken:
             raise TypeError(f"{name}: code {code} is taken by {_taken[code]}")
+        _taken[code] = name
 
 
 def exit_with(main: Callable[[], int | None], *, fatal: bool = False) -> None:

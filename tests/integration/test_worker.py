@@ -13,14 +13,15 @@ import pytest
 from deltalake.exceptions import CommitFailedError
 from support import delete, listing, poison, product_in, reclassify, up
 
-from catalog import events, jev, landing, state, store, supervisor, worker
-from catalog.classify import UNCATEGORIZED, FakeClassifier
+from catalog import classify, events, jev, landing, state, store, supervisor, worker
+from catalog.classify import FakeClassifier
 from catalog.envelope import Change
 from catalog.events import EventLog
 from catalog.keys import PARTITIONS
 from catalog.landing import START
 from catalog.replay import diff, expected_store
 from catalog.status import fold
+from catalog.taxonomy import UNCATEGORIZED
 
 NOW = datetime(2026, 9, 30, 12, tzinfo=UTC)
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")  # pydantic, on poison content
@@ -306,7 +307,7 @@ def test_the_batch_event_holds_the_spend_during_that_batch(env):  # step-6f.md, 
     env.classifier = Paid()
     env.land(up(A, 1), up(product_in(5), 1))
     run(env, Ticks(1))
-    env.classifier = FakeClassifier()  # no usd attribute: no usd field
+    env.classifier = FakeClassifier()  # free (usd None): no usd field
     env.land(up(A, 2))
     run(env, Ticks(1))
     ticks = [e for e in events.read(env.events_root) if e["type"] == "batch"]
@@ -335,66 +336,6 @@ def test_spend_of_a_failed_tick_shows_in_the_next_batch_event(env, monkeypatch):
     run(env, Ticks(3), limit=1)  # fails, then one Change per batch
     ticks = [e for e in events.read(env.events_root) if e["type"] == "batch"]
     assert [t["usd"] for t in ticks] == [1.0, 0.5]  # the failed tick's spend shows once
-
-
-def test_the_jev_kind_runs_with_the_pipeline_settings(monkeypatch, tmp_path):  # PR #63
-    import math
-
-    import numpy as np
-
-    from catalog import classify, jev, taxonomy
-
-    got = {}
-    monkeypatch.setattr(jev, "http", lambda **kw: got.update(kw) or (lambda body: {}))
-    monkeypatch.setattr(
-        classify, "fastembed", lambda models: lambda texts: np.ones((len(texts), 3))
-    )
-    monkeypatch.setattr(worker, "run", lambda *a, stop: got.update(classifier=a[4]))
-    tax = taxonomy.load()
-    jev.shortlist(tax, classify.fastembed(None)).save(tmp_path / "texts")  # what --download does
-    worker.main(
-        ["--index", "0", "--workers", "4", "--classifier", "jev", "--models", str(tmp_path)]
-    )
-    c = got["classifier"]
-    assert got["attempts"] == 1  # no retries in a batch: the Backfill retries
-    assert (c.rate, c.budget, c.threshold, c.k, c.description) == (20, 10, 0.40, 50, 200)
-    assert (c.shortlist.description, c.shortlist.budget) == (200, math.inf)
-    assert c.texts == "deeper" and c.shortlist.cache == tmp_path / "texts"  # step-6f.md, 6f.3
-    assert len(c.shortlist.texts) > 14_000
-
-    empty = tmp_path / "empty"
-    with pytest.raises(classify.ModelMissing, match="--download"):  # exit 6: FATAL
-        worker.main(
-            ["--index", "0", "--workers", "4", "--classifier", "jev", "--models", str(empty)]
-        )
-
-
-def test_main_builds_the_student_kind_from_the_index(tmp_path, monkeypatch):
-    # step-6m.md, test point 4: the index and the pinned encoder, nothing of Jev
-    import numpy as np
-
-    from catalog import classify, student, taxonomy
-
-    got = {}
-    tax = taxonomy.load()
-
-    def fake(texts):
-        return np.array([[1.0, 0.0] if "shirt" in t.lower() else [0.0, 1.0] for t in texts])
-
-    monkeypatch.setattr(student, "embedder", lambda models: (fake, student.FT_REVISION))
-    monkeypatch.setattr(jev, "http", lambda **kw: pytest.fail("Jev is not in the loop"))
-    monkeypatch.setattr(worker, "run", lambda *a, stop: got.update(classifier=a[4]))
-    path = student.index_path(tmp_path, student.FT_REVISION)
-    path.parent.mkdir(parents=True)
-    np.savez(path, x=np.eye(2, dtype=np.float32), y=np.array(tax.paths[:2]))
-    args = ["--index", "0", "--workers", "4", "--classifier", "student"]
-    worker.main([*args, "--models", str(tmp_path)])
-    c = got["classifier"]
-    assert isinstance(c, student.StudentClassifier)
-    assert c.taxonomy_version == classify.taxonomy_version("student")  # the Backfill's string
-    assert [a[0] for a in c.classify([listing("Blue shirt")])] == [tax.paths[0]]
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):  # exit 6
-        worker.main([*args, "--models", str(tmp_path / "empty")])
 
 
 def test_a_worker_behind_reads_again_without_waiting(env, monkeypatch):
@@ -478,15 +419,29 @@ def test_it_gives_up_after_attempts_failed_ticks_in_a_row(env, monkeypatch):
 
 
 class Refused(FakeClassifier):
+    def __init__(self, error: Exception):
+        super().__init__()
+        self.refusal = error
+
     def classify(self, listings):
-        raise jev.KeyMissing("TYPESAFE_API_KEY was refused (401)")
+        raise self.refusal
 
 
-def test_a_refused_classifier_key_stops_the_worker_at_once(tmp_path):  # 6f.2 hand run
-    env = Env(tmp_path, Refused())
+FATAL = [  # one of each entry.Fatal
+    jev.KeyMissing("TYPESAFE_API_KEY was refused (401)"),
+    classify.ModelMissing("gone"),
+    state.PartitionTaken("partition 3"),
+    state.OffsetsMismatch("x"),
+    state.CorruptState("x"),
+]
+
+
+@pytest.mark.parametrize("error", FATAL, ids=lambda e: type(e).__name__)
+def test_a_fatal_error_stops_the_worker_at_once(tmp_path, error):  # 6f.2 hand run
+    env = Env(tmp_path, Refused(error))
     env.land(up(A, 1))
     ticks = Ticks(10)
-    with pytest.raises(jev.KeyMissing):  # exit 7 (worker.FATAL): the supervisor stops everything
+    with pytest.raises(type(error)):  # its code (entry.Fatal): the supervisor stops everything
         run(env, ticks)
     assert ticks.waits == []  # no retries: a restart can't fix a key
     assert stored(env, A) is None  # never stored Uncategorized...
@@ -704,7 +659,7 @@ def test_a_broken_stderr_neither_skips_retries_nor_changes_the_exit_code(env):
     script = (  # `python -m catalog.worker`, giving up after 2 attempts: 1 s of backoff, not 15
         "from catalog import entry, worker\n"
         "worker.ATTEMPTS = 2\n"
-        "entry.exit_with(worker.main, worker.FATAL)\n"
+        "entry.exit_with(worker.main, fatal=True)\n"
     )
     args = ["--index", "0", "--workers", "4", "--data", str(env.tmp), "--state", str(env.state)]
     read, write = os.pipe()

@@ -10,11 +10,12 @@ from test_supervisor import REPO, wait_for
 from test_worker import NOW, Env
 
 from catalog import backfill, events, landing, state, store
-from catalog.classify import UNCATEGORIZED, FakeClassifier
+from catalog.classify import FakeClassifier
 from catalog.events import EventLog
 from catalog.keys import PARTITIONS
 from catalog.plan import Classification, Write
 from catalog.supervisor import parse_procfile
+from catalog.taxonomy import UNCATEGORIZED
 
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
 A, B, C, D = (product_in(p) for p in (3, 20, 40, 60))
@@ -263,12 +264,12 @@ def types(data):
 
 def test_main_stamps_the_student_version_without_a_model(tmp_path, monkeypatch):
     # step-6m.md, test point 3: the Backfill's string is the workers' (constants, no model)
-    from catalog import classify
+    from catalog import classifiers
 
     seen = {}
     monkeypatch.setattr(backfill, "run", lambda data, state, version, **kw: seen.update(v=version))
     backfill.main(["--classifier", "student", "--data", str(tmp_path), "--state", str(tmp_path)])
-    assert seen["v"] == classify.taxonomy_version("student") and "+student-ft-knn@" in seen["v"]
+    assert seen["v"] == classifiers.version("student") and "+student-ft-knn@" in seen["v"]
 
 
 @pytest.mark.parametrize("flag", [["--limit", "0"], ["--interval", "0"], ["--interval", "nan"]])

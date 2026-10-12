@@ -22,7 +22,7 @@ def test_exit_with_uses_mains_return_value(exits):
     assert exits == [3, 0]
 
 
-def test_exit_with_maps_an_exception_to_its_code_else_1(exits, capsys):
+def test_exit_with_exits_with_a_fatal_errors_code_only_when_asked_else_1(exits, capsys):
     def taken():
         raise state.PartitionTaken("partition 0")
 
@@ -30,9 +30,11 @@ def test_exit_with_maps_an_exception_to_its_code_else_1(exits, capsys):
         raise KeyError("x")
 
     for main in (taken, bug):
-        entry.exit_with(main, {state.PartitionTaken: 3})
-    assert exits == [3, 1]
-    assert capsys.readouterr().err.count("Traceback") == 2
+        entry.exit_with(main, fatal=True)  # the worker
+    for main in (taken, bug):
+        entry.exit_with(main)  # any other process: the supervisor restarts it
+    assert exits == [3, 1, 1, 1]
+    assert capsys.readouterr().err.count("Traceback") == 4
 
 
 def test_exit_with_keeps_argparses_code_and_survives_closed_streams(exits, monkeypatch):

@@ -5,8 +5,9 @@ import math
 import pytest
 from support import listing
 
-from catalog import evaluate, taxonomy
-from catalog.classify import UNCATEGORIZED, FakeClassifier
+from catalog import classify, evaluate, taxonomy
+from catalog.classify import FakeClassifier
+from catalog.taxonomy import UNCATEGORIZED
 
 SHIRT = "Apparel & Accessories > Clothing > Activewear"
 KIDS = "Apparel & Accessories > Clothing > Baby & Children's Clothing"
@@ -72,7 +73,7 @@ class Clock:
         return self.t
 
 
-class Recording:
+class Recording(classify.Classifier):
     """Answers `answers` in order; each call takes `len(listings)` seconds on `clock`."""
 
     taxonomy_version = "rec-1"
@@ -744,3 +745,40 @@ def test_misses_refuses_a_result_whose_shortlist_used_other_texts():
         evaluate.misses(r, SHORTLISTS, "a" * 64, 200, "deeper")
     one = {"a": SHORTLISTS["a"]}
     assert evaluate.misses(r | {"texts": "deeper"}, one, "a" * 64, 200, "deeper")["k"] == 2
+
+
+@pytest.mark.parametrize("kind", ["jev", "student", "down"])
+def test_a_worker_kind_the_eval_cannot_build_is_a_usage_error(kind, capsys):
+    with pytest.raises(SystemExit) as e:  # it once loaded the Laya model and failed there
+        evaluate.main(["run", "--classifier", kind])
+    assert e.value.code == 2 and "invalid choice" in capsys.readouterr().err
+
+
+def test_each_candidate_reaches_its_own_branch(monkeypatch):
+    from catalog import jev, laya, student
+
+    monkeypatch.setattr(
+        evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
+    )
+    monkeypatch.setattr(jev, "http", lambda: lambda body: {})
+    monkeypatch.setattr(laya, "mlx", lambda models: lambda text, options: [1.0] * len(options))
+    monkeypatch.setattr(student, "finetuned", lambda tax, models, kind: ("finetuned", kind))
+    monkeypatch.setattr(student, "load_training", lambda: [])
+    monkeypatch.setattr(student.StudentClassifier, "train", lambda *a, cache: ("trained", a[3]))
+
+    def built(c):
+        if isinstance(c, tuple):
+            return c
+        return type(c).__name__, getattr(c, "mode", None)
+
+    assert {k: built(evaluate.candidate(k, None)) for k in evaluate.CANDIDATES} == {
+        "fake": ("FakeClassifier", None),
+        "embedding": ("EmbeddingClassifier", None),
+        "laya-hierarchical": ("LayaClassifier", "hierarchical"),
+        "laya-shortlist": ("LayaClassifier", "shortlist"),
+        "jev-shortlist": ("JevClassifier", None),
+        "student-softmax": ("trained", "softmax"),
+        "student-knn": ("trained", "knn"),
+        "student-ft": ("finetuned", "ft"),
+        "student-ft-knn": ("finetuned", "ft-knn"),
+    }

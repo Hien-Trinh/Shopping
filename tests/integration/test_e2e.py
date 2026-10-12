@@ -29,19 +29,6 @@ SUPERVISOR = [sys.executable, "-m", "catalog.supervisor"]
 OUTCOMES = {o.value for o in Outcome} | {"failed"}
 
 
-def free_port() -> int:
-    # ponytail: another program could take it before the API binds; then readiness times out.
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def api_pids(port: int) -> list[int]:
-    """The API serving `port`: it logs no start event, so find it by its command line."""
-    found = subprocess.run(["pgrep", "-f", f"catalog.api --port {port}"], capture_output=True)
-    return [int(pid) for pid in found.stdout.split()]
-
-
 def bindable(port: int) -> bool:
     """Whether a new API could bind `port`: SO_REUSEADDR, as uvicorn sets, so closed
     connections lingering in TIME_WAIT don't count as taking it."""
@@ -75,6 +62,10 @@ def backfill_pids(tmp: Path) -> list[int]:
     return worker_pids(tmp, "backfill_start")
 
 
+def api_pids(tmp: Path) -> list[int]:
+    return worker_pids(tmp, "api_start")
+
+
 def serving(port: int) -> bool:
     with contextlib.suppress(httpx2.TransportError):
         return httpx2.get(f"http://127.0.0.1:{port}/submissions/x").status_code == 401
@@ -82,21 +73,21 @@ def serving(port: int) -> bool:
 
 
 class System:
-    """The repo's Procfile under one supervisor in `tmp`, the API on `port`, one Merchant."""
+    """The repo's Procfile under one supervisor in `tmp`, the API on a free port, one Merchant."""
 
-    def __init__(self, tmp: Path, port: int):
-        self.tmp, self.port, self.supervisors = tmp, port, []
-        # The fake classifier, --min-free 0 and fast passes, as the chaos runner's systems.
-        text = chaos.procfile(PROCFILE.read_text(), port)
-        (tmp / "Procfile").write_text(text)
+    def __init__(self, tmp: Path):
+        self.tmp, self.port, self.supervisors = tmp, 0, []  # the API picks it at the first start
         create = [sys.executable, "-m", "catalog.merchants", "create", "--currency", "USD"]
         out = subprocess.run(create, cwd=tmp, capture_output=True, text=True, check=True).stdout
         self.merchant_id, self.key = re.findall(r"^\w+: (\S+)$", out, flags=re.M)
-        self.http = httpx2.Client(base_url=f"http://127.0.0.1:{port}", timeout=30,
-                                 headers={"Authorization": f"Bearer {self.key}"})  # fmt: skip
+        self.http = httpx2.Client(timeout=30, headers={"Authorization": f"Bearer {self.key}"})
 
     def start(self) -> subprocess.Popen:
+        # The fake classifier, --min-free 0 and fast passes, as the chaos runner's systems.
+        (self.tmp / "Procfile").write_text(chaos.procfile(PROCFILE.read_text(), self.port))
         self.supervisors.append(subprocess.Popen(SUPERVISOR, cwd=self.tmp))
+        self.port = wait_for(lambda: self.port or chaos.api_port(self.tmp / "data"))
+        self.http.base_url = f"http://127.0.0.1:{self.port}"
         wait_for(lambda: serving(self.port))
         return self.supervisors[-1]
 
@@ -123,14 +114,14 @@ class System:
             proc.wait()
         others = [*export_pids(self.tmp), *snapshot_pids(self.tmp), *maintenance_pids(self.tmp)]
         others += backfill_pids(self.tmp)
-        for pid in [*worker_pids(self.tmp), *others, *api_pids(self.port)]:
+        for pid in [*worker_pids(self.tmp), *others, *api_pids(self.tmp)]:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
 
 
 @pytest.fixture
 def system(tmp_path):
-    made = System(tmp_path, free_port())
+    made = System(tmp_path)
     yield made
     made.close()
 
@@ -198,7 +189,7 @@ def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system
     assert vacuumed["removed"] >= 1 and vacuumed["errors"] == 0 and not vacuumed["pin_stale"]
 
     pids = [*worker_pids(system.tmp), *export_pids(system.tmp), *snapshot_pids(system.tmp)]
-    pids += [*maintenance_pids(system.tmp), *backfill_pids(system.tmp), *api_pids(system.port)]
+    pids += [*maintenance_pids(system.tmp), *backfill_pids(system.tmp), *api_pids(system.tmp)]
     assert len(pids) == 9  # 4 workers, Change Export, Snapshots, maintenance, Backfill, the API
     assert not bindable(system.port)  # so the check below can fail
     supervisor.send_signal(signal.SIGTERM)
@@ -210,7 +201,7 @@ def test_a_merchants_batches_travel_http_landing_log_worker_listing_store(system
 def test_killing_the_supervisor_stops_its_api_so_a_new_one_serves_on_its_port(system):
     first = system.start()
     wait_for(lambda: len(worker_pids(system.tmp)) == 4)
-    [api], workers = api_pids(system.port), worker_pids(system.tmp)
+    [api], workers = api_pids(system.tmp), worker_pids(system.tmp)
     first.kill()
     first.wait()  # reaped, as by the shell that started it: until then its pid looks alive
     wait_for(lambda: not alive(api), timeout=5)
@@ -225,7 +216,7 @@ def test_killing_the_supervisor_stops_its_api_so_a_new_one_serves_on_its_port(sy
         (f"{p}_stop", "supervisor_gone") for p in ("export", "maintenance", "snapshots", "backfill")
     }
     second = system.start()  # its API binds the same port: no restart loop
-    assert api_pids(system.port) not in ([], [api])
+    assert chaos.api_port(system.tmp / "data") == system.port and len(api_pids(system.tmp)) == 2
     second.send_signal(signal.SIGTERM)
     assert second.wait(timeout=30) == 0
 

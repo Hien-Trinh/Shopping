@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import shutil
 import signal
 import sqlite3
@@ -177,6 +178,20 @@ def submission_events(submission: str, merchant_id: str, checked: envelope.Check
     ]
 
 
+class _Server(uvicorn.Server):
+    """Logs api_start with the port it bound once it listens: with --port 0 the OS picks a free
+    one, so a caller never chooses a port another process could take before the API binds it."""
+
+    def __init__(self, config: uvicorn.Config, log: EventLog):
+        super().__init__(config)
+        self.log = log
+
+    async def startup(self, sockets=None) -> None:
+        await super().startup(sockets)
+        port = self.servers[0].sockets[0].getsockname()[1]
+        self.log.emit([{"type": "api_start", "pid": os.getpid(), "port": port}])
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m catalog.api")
     args.add_argument("--data", type=Path, default=state.DATA)
@@ -190,7 +205,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     except sqlite3.Error as e:
         args.error(f"no usable merchant registry at {a.db} ({e}): run catalog.merchants create")
     # Never wider than localhost: there is no TLS and no rate limit yet (plan-v1, section C).
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=a.port))
+    log = EventLog(a.data / "events", "api")
+    server = _Server(uvicorn.Config(app, host="127.0.0.1", port=a.port), log)
     # So a kill -9ed supervisor leaves no API holding the port: uvicorn finishes the requests in
     # flight and stops (step 4e).
     stop = SimpleNamespace(set=lambda: setattr(server, "should_exit", True), reason=None)
@@ -210,7 +226,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, on_signal)
-    with event_files.stopping(EventLog(a.data / "events", "api"), stop):  # api_stop
+    with event_files.stopping(log, stop):  # api_stop
         server.run()
 
 

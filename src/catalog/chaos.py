@@ -35,7 +35,8 @@ from catalog.replay import diff, expected_store, live, replay_exports
 
 PROCFILE = Path(__file__).parents[2] / "Procfile"
 OUTCOMES = {o.value for o in Outcome} | {"failed"}
-STARTS = ("worker_start", "export_start", "maintenance_start", "snapshots_start", "backfill_start")
+STARTS = ("worker_start", "export_start", "maintenance_start", "snapshots_start", "backfill_start",
+          "api_start")  # fmt: skip
 KEYS = 1000  # small, so concurrent loads and deletes keep hitting the same Listings
 SHOWN = 20  # differing keys per oracle in the summary
 
@@ -146,12 +147,18 @@ class System:
 
     def __init__(self, root: Path):
         self.root, self.data = root, root / "data"
-        self.port, self.supervisor, self.restarts, self.loads = _free_port(), None, 0, []
+        # 0 until the first start: the API binds a free port itself and logs it (api_start).
+        self.port, self.supervisor, self.restarts, self.loads = 0, None, 0, []
         (root / "data").mkdir(parents=True, exist_ok=True)
         _, self.key = merchants.create(root / merchants.DB, "USD")
-        self.url = f"http://127.0.0.1:{self.port}"
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
 
     def start(self, **options) -> None:
+        # ponytail: a restart rebinds the same port, so a load's URL holds; another program could
+        # take it in the moment between the old API's exit and the new one's bind.
         (self.root / "Procfile").write_text(procfile(PROCFILE.read_text(), self.port, **options))
         argv = [sys.executable, "-m", "catalog.supervisor"]
         # Its own session: a Ctrl-C reaches only the runner, which stops it in order. Its logs
@@ -188,9 +195,7 @@ class System:
     def pids(self) -> list[int]:
         """Every process the supervisors ran, the API included."""
         found = events.read(self.data / "events")
-        api = subprocess.run(["pgrep", "-f", f"catalog.api --port {self.port} "],
-                             capture_output=True).stdout.split()  # fmt: skip
-        return [e["pid"] for e in found if e["type"] in STARTS] + [int(p) for p in api]
+        return [e["pid"] for e in found if e["type"] in STARTS]
 
     def workers(self) -> list[int]:
         found = events.read(self.data / "events")
@@ -198,6 +203,7 @@ class System:
 
     def serving(self) -> bool:
         self.check()
+        self.port = self.port or api_port(self.data)
         with contextlib.suppress(OSError), socket.create_connection(("127.0.0.1", self.port), 1):
             return True
         return False
@@ -259,11 +265,10 @@ def wait(condition: Callable[[], object], timeout: float, why: str | Callable[[]
         time.sleep(0.5)
 
 
-def _free_port() -> int:
-    # ponytail: another program could take it before the API binds; then readiness times out.
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def api_port(data: Path) -> int:
+    """The port the newest API under `data` bound, from its api_start event; 0 before one."""
+    started = [e for e in events.read(data / "events") if e["type"] == "api_start"]
+    return started[-1]["port"] if started else 0
 
 
 def _windowed(**options):

@@ -104,7 +104,7 @@ def run(procs, state_dir, events, *, stopping, sleep=time.sleep, clock=state.CLO
             error = repr(e)[:500]
             note({"type": "process_exit", "process": name, "reason": "spawn", "error": error})
             return
-        # Its pid, before it logs anything itself: a caller finds and stops it from here on.
+        # Its pid as soon as it exists, not once it logs its own start: callers find it from here.
         note({"type": "process_start", "process": name, "pid": live[name][0].pid})
 
     note({"type": "supervisor_start", "processes": list(procs), "pid": os.getpid()})

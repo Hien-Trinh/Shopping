@@ -245,3 +245,14 @@ def test_an_api_restarted_on_another_port_fails_the_run(tmp_path):  # PR #143 re
     EventLog(system.data / "events", "api").emit([{"type": "api_start", "pid": 1, "port": 2}])
     with pytest.raises(chaos.Failed, match="another port"):
         system.check()
+
+
+def test_pids_are_the_supervisors_spawns_and_the_processes_own_starts(tmp_path):  # PR #144 review
+    system = chaos.System(tmp_path)
+    EventLog(system.data / "events", "supervisor").emit(
+        [{"type": "process_start", "process": "api", "pid": 1}]  # the API, before its api_start
+    )
+    # A spawn the supervisor couldn't log (its log is best effort), but the process itself did.
+    EventLog(system.data / "events", "worker-0").emit([{"type": "worker_start", "pid": 2}])
+    EventLog(system.data / "events", "x").emit([{"type": "batch", "pid": 3}])
+    assert sorted(system.pids()) == [1, 2]

@@ -35,6 +35,9 @@ from catalog.replay import diff, expected_store, live, replay_exports
 
 PROCFILE = Path(__file__).parents[2] / "Procfile"
 OUTCOMES = {o.value for o in Outcome} | {"failed"}
+# The supervisor's spawns, and each process's own start: the supervisor's log is best effort.
+STARTS = ("process_start", "worker_start", "export_start", "maintenance_start", "snapshots_start",
+          "backfill_start", "api_start")  # fmt: skip
 KEYS = 1000  # small, so concurrent loads and deletes keep hitting the same Listings
 SHOWN = 20  # differing keys per oracle in the summary
 
@@ -194,7 +197,7 @@ class System:
     def pids(self) -> list[int]:
         """Every process the supervisors ran, the API included, from the moment it was spawned."""
         found = events.read(self.data / "events")
-        return [e["pid"] for e in found if e["type"] == "process_start"]
+        return list({e["pid"]: None for e in found if e["type"] in STARTS})
 
     def workers(self) -> list[int]:
         found = events.read(self.data / "events")

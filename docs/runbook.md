@@ -157,6 +157,8 @@ Every event has its `type` and `ts` (ms); a worker's own events (start, stop, `b
 | worker | 7 | `--classifier jev` only: `TYPESAFE_API_KEY` is unset, or Jev refused it (401 or 403) | export a working key |
 | others | 1 | any error; restarted by the supervisor | read its `<process>_stop` event |
 
+Codes 3–15 are reserved for a worker's fatal errors (`entry.FATAL_CODES`): a worker exiting with one stops the supervisor. A new fatal error takes a free code in that band. The supervisor's own codes are read only from the supervisor, so its 3 doesn't clash with a worker's; a new supervisor code still goes outside the band, so the two never read alike.
+
 ## Chaos runs
 
 ```bash

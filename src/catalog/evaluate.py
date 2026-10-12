@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from catalog import classify, entry, state, taxonomy
 from catalog.envelope import Content
+from catalog.taxonomy import UNCATEGORIZED
 
 LABELS = Path("eval/labels.jsonl")
 RESULTS = Path("eval/results")
@@ -70,9 +71,9 @@ CATEGORIES = [  # Amazon Reviews '23's category files, less Unknown
     "Toys_and_Games",
     "Video_Games",
 ]
-CANDIDATES = (
-    *classify.KINDS, "laya-hierarchical", "laya-shortlist", "jev-shortlist", "student-softmax",
-    "student-knn", "student-ft", "student-ft-knn",
+CANDIDATES = (  # exactly what candidate() builds
+    "fake", "embedding", "laya-hierarchical", "laya-shortlist", "jev-shortlist",
+    "student-softmax", "student-knn", "student-ft", "student-ft-knn",
 )  # fmt: skip
 THRESHOLDS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 .. 0.90
 
@@ -183,9 +184,9 @@ def run(
     clock=time.perf_counter,
 ) -> dict:
     """Classify every Listing `batch` at a time after one untimed warm-up call (lazy loads)."""
-    paths = set(tax.paths) | {classify.UNCATEGORIZED}
+    paths = set(tax.paths) | {UNCATEGORIZED}
     classifier.classify([labeled[0].listing])
-    warm_up_usd = float(getattr(classifier, "usd", 0.0))  # not the run's: usd_per_m divides by n
+    warm_up_usd = classifier.usd or 0.0  # not the run's: usd_per_m divides by n
     answers, seconds = [], []
     for i in range(0, len(labeled), batch):
         chunk = labeled[i : i + batch]
@@ -216,7 +217,7 @@ def run(
         "batch": batch,
         "answers": answers,
         "seconds": seconds,
-        "usd": float(getattr(classifier, "usd", 0.0)) - warm_up_usd,
+        "usd": (classifier.usd or 0.0) - warm_up_usd,
         "rss_mb": rss / (2**20 if sys.platform == "darwin" else 2**10),
         "date": datetime.now(UTC).date().isoformat(),
         "machine": f"{platform.platform()}, {os.cpu_count()} CPUs",
@@ -235,7 +236,7 @@ def score(result: dict, thresholds: Sequence[float]) -> dict[float, dict]:
         kept = [
             a
             for a in answers
-            if a["category"] not in (None, classify.UNCATEGORIZED) and a["confidence"] >= t
+            if a["category"] not in (None, UNCATEGORIZED) and a["confidence"] >= t
         ]
         correct = sum(a["category"] == a["label"] for a in kept)
         out[t] = {

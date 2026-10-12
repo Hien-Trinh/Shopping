@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from catalog import classify, entry, evaluate, state, taxonomy
+from catalog import classify, entry, state, taxonomy
 from catalog.envelope import Content
 
 TRAIN = (
@@ -46,20 +46,21 @@ K = 5  # the pipeline's kNN: the better k on both evals (step-6l.3.md)
 MIN_KEPT = 200  # held-out rows a τ needs behind it, so one or two rows can't choose it (6m)
 MARGIN = 0.03  # 6l.3's bar: the fine-tuned student alone beats kNN alone by this much
 DOWNLOAD = "run python -m catalog.student --download"
+RESULTS = Path("eval/results")  # the eval's stored answers
 EVALS = {  # label file, Jev's stored answers on it (step-6h.md / 6j), Opus's answers if any
     "1,020": (
-        [evaluate.LABELS, Path("eval/labels-sonnet.jsonl")],
+        [Path("eval/labels.jsonl"), Path("eval/labels-sonnet.jsonl")],
         [
-            evaluate.RESULTS / "jev-shortlist50-d200-deeper.json",
-            evaluate.RESULTS / "jev-shortlist50-d200-deeper-sonnet.json",
+            RESULTS / "jev-shortlist50-d200-deeper.json",
+            RESULTS / "jev-shortlist50-d200-deeper-sonnet.json",
         ],
     ),
     "Shopify 2,000": (
         [Path("eval/labels-shopify.jsonl")],
-        [evaluate.RESULTS / "jev-shortlist50-d200-deeper-shopify.json"],
+        [RESULTS / "jev-shortlist50-d200-deeper-shopify.json"],
     ),
 }
-OPUS = evaluate.RESULTS / "opus-agents.jsonl"
+OPUS = RESULTS / "opus-agents.jsonl"
 
 
 def unit(x: np.ndarray) -> np.ndarray:
@@ -231,7 +232,7 @@ def _text(title: str, description: str) -> str:
 
 
 @dataclass
-class StudentClassifier:
+class StudentClassifier(classify.Classifier):
     """A trained student under the worker's `classify` contract: the eval's candidates, and the
     pipeline's `--classifier student` (`pipeline()`)."""
 

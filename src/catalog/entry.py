@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from pathlib import Path
 
 from catalog.events import prepared
@@ -22,9 +22,16 @@ from catalog.events import prepared
 SUPERVISOR = "CATALOG_SUPERVISOR"  # set to the supervisor's pid in its children's environment
 
 
-def exit_with(main: Callable[[], int | None], codes: Mapping[type, int] | None = None) -> None:
-    """Run `main` and exit with its return value: argparse's code for a bad flag, the `codes`
-    entry for an exception, else 1."""
+class Fatal(RuntimeError):
+    """An error no restart fixes. A worker exits with its `code`, so the supervisor stops
+    everything instead (supervisor.FATAL_CODES); any other process exits 1 on it."""
+
+    code: int
+
+
+def exit_with(main: Callable[[], int | None], *, fatal: bool = False) -> None:
+    """Run `main` and exit with its return value: argparse's code for a bad flag, a Fatal's code
+    if `fatal`, else 1 for an exception."""
     try:
         code = main() or 0
     except SystemExit as e:  # argparse: --help or a bad flag
@@ -34,7 +41,7 @@ def exit_with(main: Callable[[], int | None], codes: Mapping[type, int] | None =
         # which print handles. A ValueError needs our own code to close sys.stderr; none does.
         with contextlib.suppress(OSError):  # a broken pipe: still os._exit, with e's code
             traceback.print_exc()
-        code = (codes or {}).get(type(e), 1)
+        code = e.code if fatal and isinstance(e, Fatal) else 1
     for stream in (sys.stdout, sys.stderr):
         with contextlib.suppress(Exception):  # closed, or a broken pipe: exit anyway
             stream.flush()

@@ -22,7 +22,7 @@ from pathlib import Path
 import pyarrow.compute as pc
 from deltalake import DeltaTable
 
-from catalog import api, classify, delta, entry, landing, state, store
+from catalog import api, classifiers, delta, entry, landing, state, store
 from catalog.envelope import Change, Key
 from catalog.events import EventLog, stopping
 from catalog.keys import PARTITIONS
@@ -148,7 +148,7 @@ def run(
 def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m catalog.backfill")
     # The workers' flag: their version is the one rows should be on (step-6c.md, decision 5).
-    args.add_argument("--classifier", choices=classify.KINDS, required=True)
+    args.add_argument("--classifier", choices=classifiers.KINDS, required=True)
     args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--state", type=Path, default=state.STATE)
     args.add_argument("--interval", type=float, default=INTERVAL)
@@ -160,7 +160,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.error("--interval must be more than 0")
     supervisor = entry.supervisor_pid(args)
     stop = entry.watch_supervisor(supervisor, a.data / "events", "backfill")
-    version = classify.taxonomy_version(a.classifier)
+    version = classifiers.version(a.classifier)
     run(a.data, a.state, version, stop=stop, interval=a.interval, limit=a.limit)
 
 

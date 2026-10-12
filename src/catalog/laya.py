@@ -20,7 +20,7 @@ CHECKPOINT = "aac6fef/laya-mlx"
 
 
 @dataclass
-class LayaClassifier:
+class LayaClassifier(classify.Classifier):
     taxonomy: taxonomy.Taxonomy
     choose: Callable[[str, Sequence[str]], Sequence[float]]  # text, options -> probabilities
     mode: str = "hierarchical"

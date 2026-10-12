@@ -14,7 +14,7 @@ make check   # ruff + tests + coverage gates, same as CI
 
 ## Run
 
-The workers categorize with the fine-tuned student (step 6m): kNN over a bge-small fine-tuned on the training rows, locally, a few ms a Listing, no key. `--classifier jev` (an embedding shortlist and TypeSafe's paid Jev API, about $62 per 1M Listings) stays available and needs `TYPESAFE_API_KEY` exported and `catalog.classify --download`.
+The workers categorize with the fine-tuned student (step 6m): kNN over a bge-small fine-tuned on the training rows, locally, a few ms a Listing, no key. `--classifier jev` (an embedding shortlist and TypeSafe's paid Jev API, about $62 per 1M Listings) stays available and needs `TYPESAFE_API_KEY` exported and `catalog.classifiers --download`.
 
 ```bash
 uv run python -m catalog.student --download    # once: the student's encoder and its index (about 10 min the first time), into models/

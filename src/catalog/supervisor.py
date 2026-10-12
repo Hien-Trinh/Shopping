@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from catalog import entry, state, worker
+from catalog import entry, state
 from catalog.events import EventLog
 
 STALE = 60.0  # seconds without a sign of life (plan B1)
@@ -22,7 +22,7 @@ TICK = 1.0  # seconds between checks, so also the fastest a crash loop can spin
 GRACE = 10.0  # seconds all processes together get to stop after SIGTERM, on shutdown
 STABLE = 10.0  # a process that exits sooner is crash looping...
 RETRY = 5.0  # ...so it restarts after this; each start costs a new events file
-FATAL_CODES = {2, *worker.FATAL.values()}  # a worker's bad flag, or a fatal startup error
+FATAL_CODES = {2, 3, 4, 5, 6, 7}  # a worker's bad flag, or an entry.Fatal's code
 ANOTHER = 3  # exit code when another supervisor holds state/supervisor.lock
 
 

@@ -754,7 +754,7 @@ def test_a_worker_kind_the_eval_cannot_build_is_a_usage_error(kind, capsys):
     assert e.value.code == 2 and "invalid choice" in capsys.readouterr().err
 
 
-def test_each_candidate_reaches_its_own_branch(monkeypatch):
+def test_each_candidate_reaches_its_own_branch(monkeypatch, tmp_path):
     from catalog import jev, laya, student
 
     monkeypatch.setattr(
@@ -771,7 +771,7 @@ def test_each_candidate_reaches_its_own_branch(monkeypatch):
             return c
         return type(c).__name__, getattr(c, "mode", None)
 
-    assert {k: built(evaluate.candidate(k, None)) for k in evaluate.CANDIDATES} == {
+    assert {k: built(evaluate.candidate(k, tmp_path)) for k in evaluate.CANDIDATES} == {
         "fake": ("FakeClassifier", None),
         "embedding": ("EmbeddingClassifier", None),
         "laya-hierarchical": ("LayaClassifier", "hierarchical"),

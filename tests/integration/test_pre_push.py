@@ -1,5 +1,6 @@
 """The pre-push hook: a push that changes only Markdown skips `make check`; any other runs it."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -30,7 +31,9 @@ def repo(tmp_path):
 
 
 def git(work: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=work, capture_output=True, text=True,
+    # without GIT_*: run from a hook (make check in pre-push), git points them at the outer repo
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return subprocess.run(["git", *args], cwd=work, env=env, capture_output=True, text=True,
                           check=True).stdout.strip()  # fmt: skip
 
 

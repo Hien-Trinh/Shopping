@@ -6,9 +6,9 @@ import pytest
 from support import listing
 
 from catalog import events, metrics, status, store
-from catalog.classify import UNCATEGORIZED
 from catalog.events import EventLog
 from catalog.plan import Classification, Write
+from catalog.taxonomy import UNCATEGORIZED
 
 SINCE, NOW = datetime.fromtimestamp(50, UTC), datetime.fromtimestamp(350, UTC)
 

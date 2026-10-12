@@ -2,15 +2,15 @@ import numpy as np
 import pytest
 from support import listing
 
+from catalog import classify
 from catalog.classify import (
-    UNCATEGORIZED,
     EmbeddingClassifier,
     ModelMissing,
     cache_key,
     fastembed,
     texts,
 )
-from catalog.taxonomy import Taxonomy
+from catalog.taxonomy import UNCATEGORIZED, Taxonomy
 
 TAXONOMY = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
 VECTORS = {  # unit length is the classifier's job, so some of these aren't
@@ -119,26 +119,9 @@ def test_a_model_that_loads_but_wont_embed_is_missing(tmp_path, monkeypatch):
         fastembed(tmp_path)
 
 
-def test_the_version_of_a_classifier_kind_needs_no_model():  # step-6c.md: Backfill's target
-    from catalog import classify, taxonomy
-
-    assert classify.taxonomy_version("fake") == classify.FakeClassifier().taxonomy_version
-    # down is fake in an outage: the same version, so the Backfill reclassifies only flagged rows
-    assert classify.taxonomy_version("down") == classify.FakeClassifier().taxonomy_version
-    loaded = EmbeddingClassifier(taxonomy.load(), lambda texts: np.ones((len(texts), 3)))
-    assert classify.taxonomy_version("embedding") == loaded.taxonomy_version
-
-
-def test_the_jev_kind_version_needs_no_model_or_key(monkeypatch):  # step-6f.md, test point 3
-    from catalog import classify, jev, taxonomy
-
-    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
-    tax = taxonomy.load()
-    shortlist = EmbeddingClassifier(tax, lambda texts: np.ones((len(texts), 3)))
-    loaded = jev.JevClassifier(tax, shortlist, lambda body: {})
-    assert "jev" in classify.KINDS
-    assert classify.taxonomy_version("jev") == loaded.taxonomy_version
-    assert "+bge-small-en-v1.5+deeper+jev-" in loaded.taxonomy_version  # step-6f.md, 6f.3
+def test_uncategorized_is_the_taxonomys_name_not_the_seams():  # GLOSSARY: Uncategorized
+    assert UNCATEGORIZED == "Uncategorized"
+    assert not hasattr(classify, "UNCATEGORIZED")
 
 
 # --- step-6e.md, 6e.1 ----------------------------------------------------------------------
@@ -336,22 +319,3 @@ def test_an_empty_or_unusable_cache_is_model_missing_naming_the_cause(tmp_path, 
     with pytest.raises(ModelMissing, match="--download") as e:
         classifier(cache=tmp_path)
     assert str(path) in str(e.value)
-
-
-def test_download_builds_the_cache_the_worker_loads(tmp_path, monkeypatch):
-    from catalog import classify, jev, taxonomy
-
-    fake = lambda texts: np.ones((len(texts), 3))  # noqa: E731
-    monkeypatch.setattr(classify, "fastembed", lambda models, download=False: fake)
-    classify.main(["--download", "--models", str(tmp_path)])
-    loaded = jev.shortlist(taxonomy.load(), fake, tmp_path / "texts")  # what the worker does
-    assert loaded._paths.shape == (len(loaded.texts), 3)
-
-
-def test_the_student_kind_version_needs_no_model(monkeypatch):  # step-6m.md, test point 3
-    from catalog import classify, student, taxonomy
-
-    assert classify.KINDS.index("student") < classify.KINDS.index("down")  # down stays last
-    expected = student.version(taxonomy.load().version, student.FT_REVISION)
-    assert classify.taxonomy_version("student") == expected
-    assert "+student-ft-knn@" in expected and "jev" not in expected

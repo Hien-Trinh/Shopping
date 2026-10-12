@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from support import listing
 
-from catalog import classify, evaluate, student
+from catalog import classify, evaluate, student, taxonomy
 from catalog.taxonomy import Taxonomy
 
 TAX = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
@@ -510,7 +510,7 @@ def test_a_missing_finetuned_encoder_names_the_students_download(tmp_path, monke
     hub_cache(tmp_path, student.FT_REVISION)  # the files are there; the encoder won't load
     with pytest.raises(classify.ModelMissing, match="catalog.student --download") as e:
         student.embedder(tmp_path)
-    assert "catalog.classify --download" not in str(e.value) and "ValueError" in str(e.value)
+    assert "catalog.classifiers --download" not in str(e.value) and "ValueError" in str(e.value)
 
 
 def test_evaluate_dispatches_the_finetuned_candidates(tmp_path, monkeypatch):
@@ -678,7 +678,7 @@ def test_the_pipeline_classifier_answers_every_listing_from_the_index(tmp_path, 
     got = c.classify(batch)
     assert len(got) == 600 and max(calls) <= 256 and len(calls) >= 3 and sum(calls) == 600
     assert [a[0] for a in got[:2]] == ["Toys", "Apparel > Shirts"]
-    assert all(a is not None and a[0] != classify.UNCATEGORIZED for a in got)
+    assert all(a is not None and a[0] != taxonomy.UNCATEGORIZED for a in got)
     assert c.taxonomy_version == student.version(TAX.version, REV)
     assert isinstance(c.model, student.Knn) and c.model.k == student.K
 

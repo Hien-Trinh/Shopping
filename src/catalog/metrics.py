@@ -22,7 +22,7 @@ from deltalake import DeltaTable
 from deltalake.exceptions import TableNotFoundError
 
 from catalog import entry, events, state, status
-from catalog.classify import UNCATEGORIZED
+from catalog.taxonomy import UNCATEGORIZED
 
 # Each merchant Change the API accepted within the read range: when, its first Outcome (the
 # window and freshness) and its best one (the rates). Only an accepted Change counts, so a

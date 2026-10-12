@@ -216,6 +216,7 @@ src/catalog/
   status.py       events → Submission status fold                                     [pure]
   collapse.py     change-feed rows → latest row per key, tombstone → delete            [pure]
   classify.py     Classifier protocol, threshold, EmbeddingClassifier, FakeClassifier
+  classifiers.py  a worker's classifier by `--classifier` kind, the version each stamps, `--download`
   laya.py         LayaClassifier for the eval (hierarchical or shortlist), laya-mlx chooser
   jev.py          JevClassifier (embedding shortlist, then Jev): the workers' `--classifier jev` and an eval candidate; TypeSafe HTTP call
   student.py      the student (kNN over the fine-tuned encoder's vectors): the workers' `--classifier student` (`pipeline`, the index built by `--download`, the version), the eval candidates and the report

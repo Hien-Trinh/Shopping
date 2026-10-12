@@ -8,10 +8,10 @@ import numpy as np
 import pytest
 from support import listing
 
-from catalog import evaluate, jev, taxonomy
-from catalog.classify import UNCATEGORIZED, EmbeddingClassifier
+from catalog import classify, evaluate, jev, taxonomy
+from catalog.classify import EmbeddingClassifier
 from catalog.jev import JevClassifier
-from catalog.taxonomy import Taxonomy
+from catalog.taxonomy import UNCATEGORIZED, Taxonomy
 
 TAXONOMY = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
 VECTORS = {"Apparel": [1, 0], "Apparel > Shirts": [0.8, 0.6], "Toys": [0, 1], "Tee": [0.6, 0.8]}
@@ -302,7 +302,7 @@ def test_a_redirect_never_carries_the_key(monkeypatch):
 
 
 def test_the_warm_up_call_is_not_charged_to_the_run(tmp_path):
-    class Paid:
+    class Paid(classify.Classifier):
         taxonomy_version, usd = "paid-1", 0.0
 
         def classify(self, listings):

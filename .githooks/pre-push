@@ -6,7 +6,7 @@ while read -r _ local _ remote; do
   [ "$local" = "$zero" ] && continue  # deleting a branch
   base=$remote
   [ "$base" = "$zero" ] && base=$(git merge-base origin/main "$local")  # a new branch
-  files=$(git diff --name-only "$base" "$local") || exec make check
+  files=$(git diff --name-only --no-renames "$base" "$local") || exec make check  # a rename: both names
   echo "$files" | grep -qv '\.md$' && exec make check
 done
 exit 0

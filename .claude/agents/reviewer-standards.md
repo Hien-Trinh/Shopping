@@ -21,6 +21,6 @@ Report every breach of a documented rule as a candidate: `file:line`, the rule (
 - **Duplicated Code across modules**: one set of values (exit codes, kinds, names) written out in two or more modules, kept in step only by a test or by hand. Name the copies and the one place that could own it.
 - **Speculative Generality**: a branch, parameter or allowance for a case nothing in the repo produces (a module reload, a caller that doesn't exist). Name the case and show that no code reaches it.
 
-**The smell baseline** (Fowler, *Refactoring*, ch. 3), otherwise a judgement call, not a candidate: Mysterious Name, Duplicated Code, Feature Envy, Data Clumps, Primitive Obsession, Repeated Switches, Shotgun Surgery, Divergent Change, Speculative Generality, Message Chains, Middle Man, Refused Bequest. Name the smell and quote the hunk, in `asides` with kind "judgement", at most 5, the clearest first. Suppress a smell a documented rule endorses.
+**The smell baseline** (Fowler, *Refactoring*, ch. 3), a judgement call, not a candidate, except the two above: Mysterious Name, Duplicated Code, Feature Envy, Data Clumps, Primitive Obsession, Repeated Switches, Shotgun Surgery, Divergent Change, Speculative Generality, Message Chains, Middle Man, Refused Bequest. Name the smell and quote the hunk, in `asides` with kind "judgement", at most 5, the clearest first. Suppress a smell a documented rule endorses.
 
 Spend about 8 tool calls, then report. If there's nothing, say so. No padding.

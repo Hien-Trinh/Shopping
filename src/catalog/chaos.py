@@ -187,9 +187,10 @@ class System:
     def kill(self) -> None:
         """kill -9 the supervisor, reap it (an unreaped pid looks alive, 3e), and wait for what
         it ran to stop by itself, so their locks and the port are free."""
-        old = [pid for pid in self.pids() if alive(pid)]  # a long-dead one's pid may be reused
         self.supervisor.kill()
         self.supervisor.wait()
+        # Read once it's dead, so a process it spawned in its last moment is waited for too.
+        old = [pid for pid in self.pids() if alive(pid)]  # a long-dead one's pid may be reused
         wait(lambda: not any(map(alive, old)), 10, "processes outlived their supervisor")
         self.start()
         self.restarts += 1
@@ -197,7 +198,7 @@ class System:
     def pids(self) -> list[int]:
         """Every process the supervisors ran, the API included, from the moment it was spawned."""
         found = events.read(self.data / "events")
-        return list({e["pid"]: None for e in found if e["type"] in STARTS})
+        return [e["pid"] for e in found if e["type"] in STARTS]  # twice for most: harmless
 
     def workers(self) -> list[int]:
         found = events.read(self.data / "events")

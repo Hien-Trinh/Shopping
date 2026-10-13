@@ -14,8 +14,8 @@ Review target: a PR number (default: the current branch's open PR). The PR body 
    | Changed lines | Finders |
    | --- | --- |
    | docs or tooling only (no `src/` or `tests/`) | `reviewer-spec` |
-   | 1–50 | `reviewer-correctness`, `reviewer-tests`, `reviewer-failure`, `reviewer-spec` |
-   | 51–150 | those 4 + `reviewer-standards` + `reviewer-concurrency` if storage, state, events or worker code changed, else `reviewer-edge` |
+   | 1–50 | `reviewer-correctness`, `reviewer-tests`, `reviewer-failure`, `reviewer-spec`, + `reviewer-concurrency` if storage, state, events or worker code changed |
+   | 51–150 | the first 4 + `reviewer-standards` + `reviewer-concurrency` if storage, state, events or worker code changed, else `reviewer-edge` |
    | over 150 | all 11 (adds perf, security, data, observability) |
 
    `reviewer-spec` asks Matt Pocock's three spec questions (missing or partial, not asked for, implemented but wrong), quoting the spec line, plus a local fourth: unsourced numbers, dates or events in a report's prose. `reviewer-standards` checks the plan's documented coding rules. Both return two kinds of output: **candidates** (defects, like every finder) and **asides**: scope decisions for the user (spec) and code-smell judgement calls (standards; two smells, cross-module Duplicated Code and Speculative Generality, it reports as candidates instead).

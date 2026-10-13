@@ -4,7 +4,7 @@ export UV_LOCKED := 1
 
 PURE := src/catalog/keys.py,src/catalog/envelope.py,src/catalog/plan.py,src/catalog/replay.py,src/catalog/status.py,src/catalog/collapse.py
 
-.PHONY: check lint test hooks mutate
+.PHONY: check lint test hooks mutate repeat
 
 check: lint test
 
@@ -23,3 +23,10 @@ hooks:
 mutate:
 	uv run mutmut run
 	uv run mutmut results
+
+# Reproduce a flaky test: make repeat TEST=<node id or -k expr> N=<runs per loop> J=<parallel loops>.
+# Stops at the first failure and prints that run's log and pytest temp dir.
+N ?= 10
+J ?= 1
+repeat:
+	scripts/repeat.sh $(N) $(J) $(TEST)

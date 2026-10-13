@@ -59,11 +59,14 @@ def test_each_oracle_catches_its_kind_of_wrong(system):
             break
         last.with_suffix(".lost").rename(last)
     assert last != unseen and unseen.exists()  # its loss was tried first, and didn't show
-    # On failure, each file's keys and ops, newest first (pytest cuts a long message's tail).
-    held = {p.name: [(r["merchant_product_id"], r["op"]) for r in chaos._rows(p)]
-            for p in reversed(export.files(data / "export"))}  # fmt: skip
     keys = {line.split(": ")[0] for line in named}
-    assert named and keys <= {str(k) for k in lost}, (named, held)
+
+    def held():  # every file left's keys and ops, as a string: pytest cuts a long repr
+        left = {p.name: [(r["merchant_product_id"], r["op"]) for r in chaos._rows(p)]
+                for p in export.files(data / "export")}  # fmt: skip
+        return f"lost {last.name}: {sorted(k for _, k in lost)}; named {named}; left {left}"
+
+    assert named and keys <= {str(k) for k in lost}, held()
 
     # snapshot: a row gone from the newest snapshot (still pinned to the same version).
     newest = snapshots.existing(data / "snapshots")[-1]

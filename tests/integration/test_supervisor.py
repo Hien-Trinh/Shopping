@@ -150,7 +150,7 @@ def test_every_spawn_logs_the_new_pid_and_a_failed_one_logs_none(tmp_path):
     def script(w):
         if w.t == 20:
             w.kids[0].returncode = 1
-            w.refusing.add("api")  # its restart at t=21 fails; the one at t=26 works
+            w.refusing.add("api")  # its restart at t=20 fails; the retry at t=25 works
         if w.t == 22:
             w.refusing.clear()
 

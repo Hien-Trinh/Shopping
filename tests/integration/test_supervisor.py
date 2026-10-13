@@ -142,7 +142,23 @@ class World:
 
     def exits(self):  # what the supervisor logged: (process, reason, code)
         logged = events.read(self.tmp / "events")
-        return [(e["process"], e["reason"], e.get("code")) for e in logged if "process" in e]
+        return [(e["process"], e["reason"], e.get("code")) for e in logged
+                if e["type"] == "process_exit"]  # fmt: skip
+
+
+def test_every_spawn_logs_the_new_pid_and_a_failed_one_logs_none(tmp_path):
+    def script(w):
+        if w.t == 20:
+            w.kids[0].returncode = 1
+            w.refusing.add("api")  # its restart at t=20 fails; the retry at t=25 works
+        if w.t == 22:
+            w.refusing.clear()
+
+    w = World(tmp_path, 30, script)
+    w.run("api", "worker-0")
+    logged = events.read(tmp_path / "events")
+    starts = [(e["process"], e["pid"]) for e in logged if e["type"] == "process_start"]
+    assert starts == [("api", 100), ("worker-0", 101), ("api", 102)]
 
 
 def test_a_hung_worker_is_killed_a_minute_after_its_last_sign_of_life(tmp_path):
@@ -425,6 +441,20 @@ def test_a_closed_terminal_stops_everything_even_a_wrappers_child(tmp_path):
     finally:
         sup.kill()
     wait_for(lambda: not alive(grandchild))  # signalled with its group, not left holding locks
+
+
+def test_a_process_is_known_by_its_pid_before_it_writes_anything(tmp_path):
+    (tmp_path / "Procfile").write_text("api: sleep 60\n")  # never writes an event of its own
+    sup = subprocess.Popen([sys.executable, "-m", "catalog.supervisor"], cwd=tmp_path)
+    try:
+        found = lambda: events.read(tmp_path / "data" / "events")  # noqa: E731
+        start = wait_for(lambda: [e for e in found() if e["type"] == "process_start"])
+        assert [(e["process"], alive(e["pid"])) for e in start] == [("api", True)]
+        sup.send_signal(signal.SIGTERM)
+        assert sup.wait(timeout=30) == 0
+    finally:
+        sup.kill()
+    assert not alive(start[0]["pid"])  # the pid was the child's, stopped with the supervisor
 
 
 @pytest.mark.parametrize(

@@ -129,6 +129,7 @@ Every event has its `type` and `ts` (ms); a worker's own events (start, stop, `b
 |---|---|
 | `supervisor_start`, `supervisor_stop` | the supervisor's `processes` and `pid`; at stop, its exit `code` |
 | `process_exit` | a process ended: `process`, `reason` exit, stale, fatal, spawn or shutdown, with its `code` and old `pid`, or the spawn `error`. Only a fatal one isn't followed by a restart |
+| `process_start` | the supervisor spawned a process: `process` and its `pid`, logged as soon as the process exists, usually before it logs anything itself (best effort, like every supervisor event). Its `pid` is the one a later `process_exit` names |
 | `worker_start` | a worker began: `workers` (how many in all) and `pid` |
 | `api_start` | the API listens: the `port` it bound (with `--port 0`, one the OS picked) and `pid` |
 | `batch` | a worker's tick that moved an offset: `changes`, `ms` (the tick, including the MERGE), `head` (the Landing log version read up to), `next` (`{partition: [version, seq]}` per moved partition), and `usd` spent for a paid classifier. A partition's lag in commits is `head + 1 - next[p][0]` |

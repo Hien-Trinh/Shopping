@@ -40,8 +40,9 @@ def test_each_oracle_catches_its_kind_of_wrong(system):
     late = Change(merchant, "p1", 2**50, "delete", None)
     log = landing.ensure(str(data / "landing_log"))
     landing.append(log, [("late", 0, late, datetime.now(UTC))])
-    (line,) = chaos.oracles(data, state_dir)["store"]
-    assert line.startswith(f"{(merchant, 'p1')}: expected {(2**50, late.content_hash, True)}")
+    found = chaos.oracles(data, state_dir)["store"]
+    want = f"{(merchant, 'p1')}: expected {(2**50, late.content_hash, True)}"
+    assert len(found) == 1 and found[0].startswith(want), found
 
     # export: an export file lost, as a consumer missing one would be: only its keys named.
     assert chaos.oracles(data, state_dir)["export"] == []
@@ -58,7 +59,11 @@ def test_each_oracle_catches_its_kind_of_wrong(system):
             break
         last.with_suffix(".lost").rename(last)
     assert last != unseen and unseen.exists()  # its loss was tried first, and didn't show
-    assert named and {line.split(": ")[0] for line in named} <= {str(k) for k in lost}
+    # On failure, each file's keys and ops, newest first (pytest cuts a long message's tail).
+    held = {p.name: [(r["merchant_product_id"], r["op"]) for r in chaos._rows(p)]
+            for p in reversed(export.files(data / "export"))}  # fmt: skip
+    keys = {line.split(": ")[0] for line in named}
+    assert named and keys <= {str(k) for k in lost}, (named, held)
 
     # snapshot: a row gone from the newest snapshot (still pinned to the same version).
     newest = snapshots.existing(data / "snapshots")[-1]
@@ -67,8 +72,9 @@ def test_each_oracle_catches_its_kind_of_wrong(system):
     key = copy.to_pyarrow_dataset().to_table(columns=["merchant_product_id"])[0][0].as_py()
     kept = CommitProperties(custom_metadata={"pinned_version": str(pinned)})
     copy.delete(f"merchant_product_id = '{key}'", commit_properties=kept)
-    (line,) = chaos.oracles(data, state_dir)["snapshot"]
-    assert line.startswith(f"{newest.name}: ") and f"'{key}')" in line
+    found = chaos.oracles(data, state_dir)["snapshot"]
+    assert len(found) == 1 and found[0].startswith(f"{newest.name}: "), found
+    assert f"'{key}')" in found[0], found
 
 
 def test_a_scenario_runs_in_process_and_its_oracles_hold(tmp_path, capsys):

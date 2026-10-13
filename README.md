@@ -10,6 +10,7 @@ A learning project: merchants push product Listings through one API, and the pip
 uv sync
 make hooks   # once per clone: runs `make check` before every push, and refreshes graphify-out/ after a pull
 make check   # ruff + tests + coverage gates, same as CI
+make repeat TEST=tests/x.py::test_y N=25 J=4   # reproduce a flake: stops at the first failure, keeps its log and temp dir
 ```
 
 ## Run

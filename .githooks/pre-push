@@ -1,12 +1,20 @@
 #!/bin/sh
 # Same gate as CI. Enable once per clone: make hooks
 # A push that changes only Markdown skips it: no test or lint reads those files.
+# The gate's output is also saved to .git/pre-push.log, so a piped `git push` can't lose it.
 zero=0000000000000000000000000000000000000000
+gate() {  # make check through tee, exiting with make's status (sh has no pipefail)
+  log=$(git rev-parse --git-dir)/pre-push.log
+  { make check 2>&1; echo $? >"$log.status"; } | tee "$log"
+  status=$(cat "$log.status" 2>/dev/null) || status=1  # no status file: fail, never pass
+  rm -f "$log.status"
+  exit "$status"
+}
 while read -r _ local _ remote; do
   [ "$local" = "$zero" ] && continue  # deleting a branch
   base=$remote
   [ "$base" = "$zero" ] && base=$(git merge-base origin/main "$local")  # a new branch
-  files=$(git diff --name-only --no-renames "$base" "$local") || exec make check  # a rename: both names
-  echo "$files" | grep -qv '\.md$' && exec make check
+  files=$(git diff --name-only --no-renames "$base" "$local") || gate  # a rename: both names
+  echo "$files" | grep -qv '\.md$' && gate
 done
 exit 0

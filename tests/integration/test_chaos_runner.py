@@ -265,3 +265,32 @@ def test_an_api_restarted_on_another_port_fails_the_run(tmp_path):  # PR #143 re
     EventLog(system.data / "events", "api").emit([{"type": "api_start", "pid": 1, "port": 2}])
     with pytest.raises(chaos.Failed, match="another port"):
         system.check()
+
+
+def test_pids_are_the_supervisors_spawns_and_the_processes_own_starts(tmp_path):  # PR #144 review
+    system = chaos.System(tmp_path)
+    EventLog(system.data / "events", "supervisor").emit(
+        [{"type": "process_start", "process": "api", "pid": 1}]  # the API, before its api_start
+    )
+    # A spawn the supervisor couldn't log (its log is best effort), but the process itself did.
+    EventLog(system.data / "events", "worker-0").emit([{"type": "worker_start", "pid": 2}])
+    EventLog(system.data / "events", "x").emit([{"type": "batch", "pid": 3}])
+    assert sorted(system.pids()) == [1, 2]
+
+
+def test_kill_waits_for_a_process_spawned_as_the_supervisor_died(tmp_path):  # PR #144 review
+    system = chaos.System(tmp_path)
+    orphan = []
+
+    def spawn_then_die():  # the supervisor restarts a process just before the SIGKILL lands
+        cmd = "sleep 1 >/dev/null 2>&1 & echo $!"  # the sleep holds no pipe run() waits on
+        out = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
+        orphan.append(int(out.stdout))  # the shell's child: reaped by init, not by this test
+        EventLog(system.data / "events", "supervisor").emit(
+            [{"type": "process_start", "process": "api", "pid": orphan[0]}]
+        )
+
+    system.supervisor = SimpleNamespace(kill=spawn_then_die, wait=lambda: 0)
+    system.start = lambda: None
+    system.kill()
+    assert not chaos.alive(orphan[0])  # waited for it, so its locks and port are free

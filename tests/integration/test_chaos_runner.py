@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from deltalake import CommitProperties, DeltaTable
 from support import classified, listing, product_in
@@ -41,12 +43,21 @@ def test_each_oracle_catches_its_kind_of_wrong(system):
     (line,) = chaos.oracles(data, state_dir)["store"]
     assert line.startswith(f"{(merchant, 'p1')}: expected {(2**50, late.content_hash, True)}")
 
-    # export: the last export file lost, as a consumer missing one would be: exactly its keys.
+    # export: an export file lost, as a consumer missing one would be: only its keys named.
     assert chaos.oracles(data, state_dir)["export"] == []
-    last = export.files(data / "export")[-1]
-    lost = {(r["merchant_id"], r["merchant_product_id"]) for r in chaos._rows(last)}
-    last.unlink()
-    named = chaos.oracles(data, state_dir)["export"]
+    # Some losses a consumer can't see: a file holding only the delete of a key never exported
+    # live (a load's last commit can be one), so the newest file whose loss shows is the one.
+    files = export.files(data / "export")
+    row = chaos._rows(files[-1])[0] | {"merchant_product_id": "never", "op": "delete"}
+    unseen = files[-1].with_name(f"{2**40:012}-{2**40:012}.parquet")
+    pq.write_table(pa.Table.from_pylist([row], schema=export.SCHEMA), unseen)
+    for last in reversed(export.files(data / "export")):
+        lost = {(r["merchant_id"], r["merchant_product_id"]) for r in chaos._rows(last)}
+        last.rename(last.with_suffix(".lost"))  # export.files() reads *.parquet only
+        if named := chaos.oracles(data, state_dir)["export"]:
+            break
+        last.with_suffix(".lost").rename(last)
+    assert last != unseen and unseen.exists()  # its loss was tried first, and didn't show
     assert named and {line.split(": ")[0] for line in named} <= {str(k) for k in lost}
 
     # snapshot: a row gone from the newest snapshot (still pinned to the same version).

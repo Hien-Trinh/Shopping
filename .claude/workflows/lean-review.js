@@ -17,7 +17,7 @@ const INTENT = `PR #${pr} (checked out in ${repo}). ${intent}`
 const ANGLES = docsOnly
   ? ['spec']
   : lines <= 50
-    ? ['correctness', 'tests', 'failure', 'spec']
+    ? ['correctness', 'tests', 'failure', 'spec', ...(storage ? ['concurrency'] : [])]
     : lines <= 150
       ? ['correctness', 'tests', 'failure', 'spec', 'standards', storage ? 'concurrency' : 'edge']
       : ['correctness', 'concurrency', 'perf', 'tests', 'spec', 'standards', 'failure', 'security', 'data', 'observability', 'edge']

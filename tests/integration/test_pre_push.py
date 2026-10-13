@@ -1,4 +1,5 @@
-"""The pre-push hook: a push that changes only Markdown skips `make check`; any other runs it."""
+"""The pre-push hook: a push that changes only Markdown skips `make check`; any other runs it,
+logging its output to .git/pre-push.log and failing with its status."""
 
 import os
 import subprocess
@@ -47,11 +48,11 @@ def push(repo, change) -> tuple[str, str]:
     return base, head
 
 
-def hook(repo, stdin: str) -> str:
+def hook(repo, stdin: str, status: int = 0) -> str:
     env = {"PATH": f"{repo.parent / 'bin'}:/usr/bin:/bin"}  # the fixture's `make`
     done = subprocess.run(["sh", str(HOOK)], cwd=repo, input=stdin, env=env,
                           capture_output=True, text=True)  # fmt: skip
-    assert done.returncode == 0, done.stderr
+    assert done.returncode == status, done.stderr
     return done.stdout.strip()
 
 
@@ -82,3 +83,22 @@ def test_a_new_branch_is_compared_with_main_and_an_unknown_base_runs_the_gate(re
 def test_deleting_a_branch_runs_nothing(repo):
     head = git(repo, "rev-parse", "HEAD")
     assert hook(repo, f"(delete) {ZERO} refs/heads/x {head}\n") == ""
+
+
+@pytest.mark.parametrize("status", [0, 3])
+def test_the_gate_output_is_logged_and_its_status_is_the_push_status(repo, status):
+    (repo.parent / "bin" / "make").write_text(
+        f'#!/bin/sh\necho "make $*"\necho oops >&2\nexit {status}\n'
+    )
+    base, head = push(repo, lambda r: (r / "a.py").write_text("x = 2\n"))
+    out = hook(repo, f"refs/heads/x {head} refs/heads/x {base}\n", status)
+    assert out == "make check\noops"
+    assert (repo / ".git" / "pre-push.log").read_text() == "make check\noops\n"
+    assert not (repo / ".git" / "pre-push.log.status").exists()
+
+
+def test_a_gate_whose_status_is_lost_fails_the_push(repo):
+    # a directory where the status file goes: make passes, but its status can't be written
+    (repo.parent / "bin" / "make").write_text("#!/bin/sh\nmkdir .git/pre-push.log.status\n")
+    base, head = push(repo, lambda r: (r / "a.py").write_text("x = 2\n"))
+    hook(repo, f"refs/heads/x {head} refs/heads/x {base}\n", status=1)

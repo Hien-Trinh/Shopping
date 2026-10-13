@@ -95,3 +95,10 @@ def test_the_gate_output_is_logged_and_its_status_is_the_push_status(repo, statu
     assert out == "make check\noops"
     assert (repo / ".git" / "pre-push.log").read_text() == "make check\noops\n"
     assert not (repo / ".git" / "pre-push.log.status").exists()
+
+
+def test_a_gate_whose_status_is_lost_fails_the_push(repo):
+    # a directory where the status file goes: make passes, but its status can't be written
+    (repo.parent / "bin" / "make").write_text("#!/bin/sh\nmkdir .git/pre-push.log.status\n")
+    base, head = push(repo, lambda r: (r / "a.py").write_text("x = 2\n"))
+    hook(repo, f"refs/heads/x {head} refs/heads/x {base}\n", status=1)

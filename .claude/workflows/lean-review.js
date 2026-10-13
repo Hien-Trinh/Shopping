@@ -62,7 +62,7 @@ const ok = found.filter(Boolean)  // a finder that crashed resolves to null
 const all = ok.flatMap(f => f.candidates)
 const asides = ok.flatMap(f => f.asides)
 log(`${all.length} raw candidates, ${asides.length} asides (decisions and judgement calls)`)
-if (!all.length) return { finders: ANGLES, raw: 0, results: [], asides }
+if (!all.length) return { report: report([], asides), finders: ANGLES, raw: 0, results: [], asides }
 
 phase('Dedupe')
 const DEDUPE = {
@@ -109,4 +109,17 @@ const verified = await parallel(sent.map(c => () =>
     { label: `verify:${c.id}`, phase: 'Verify', schema: VERDICT, model: 'sonnet' },
   ).then(v => ({ ...c, verdict: v }))
 ))
-return { finders: ANGLES, raw: all.length, results: [...verified.filter(Boolean), ...inContext], asides }
+const results = [...verified.filter(Boolean), ...inContext]
+return { report: report(results, asides), finders: ANGLES, raw: all.length, results, asides }
+
+// First key of the result: the task notification truncates the rest, which stays in the output
+// file under .result for the evidence.
+function report(results, asides) {
+  const cut = (text, n) => (text.length > n ? `${text.slice(0, n)}…` : text)
+  const verdict = c => (c.verdict ? (c.verdict.real ? 'real' : 'refuted') : c.reproduced ? 'reproduced' : 'unverified')
+  return [
+    `${results.length} candidate(s), ${asides.length} aside(s)`,
+    ...results.map(c => `- [${c.severity}] ${c.id} ${c.file}:${c.line} (${verdict(c)}): ${cut(c.defect, 140)}`),
+    ...asides.map(a => `- aside (${a.source}, ${a.kind}): ${cut(a.text, 120)}`),
+  ].join('\n')
+}

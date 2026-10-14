@@ -213,7 +213,7 @@ src/catalog/
   plan.py         batch + stored rows → outcomes, merge rows, needs-classify set       [pure]  ← the heart
   decide.py       a batch's decision: storability, plan, classify call, fallback, events (no I/O but the classifier)
   replay.py       the three oracles: store, export, snapshot                           [pure]
-  status.py       events → Submission status fold                                     [pure]
+  status.py       the Outcome enum; events → Submission status fold                   [pure]
   collapse.py     change-feed rows → latest row per key, tombstone → delete            [pure]
   classify.py     Classifier protocol, threshold, EmbeddingClassifier, FakeClassifier
   classifiers.py  a worker's classifier by `--classifier` kind, the version each stamps, `--download`

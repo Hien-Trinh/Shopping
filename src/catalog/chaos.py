@@ -350,9 +350,12 @@ SCENARIOS = {
 EFFECTS = {
     "steady": ("nothing", lambda r: True),
     "bulk": ("10,000 more accepted", lambda r: r["loads"][1]["accepted"] == 10_000),
-    "out-of-order": ("stale Outcomes", lambda r: r["outcomes"].get("stale", 0) > 0),
-    "duplicates": ("already_applied Outcomes", lambda r: r["outcomes"].get("already_applied")),
-    "poison": ("10 failed Outcomes", lambda r: r["outcomes"].get("failed", 0) >= 10),
+    "out-of-order": ("stale Outcomes", lambda r: r["outcomes"].get(Outcome.STALE, 0) > 0),
+    "duplicates": (
+        "already_applied Outcomes",
+        lambda r: r["outcomes"].get(Outcome.ALREADY_APPLIED),
+    ),
+    "poison": ("10 failed Outcomes", lambda r: r["outcomes"].get(Outcome.FAILED, 0) >= 10),
     "classifier-outage": ("classify_failed events", lambda r: r["events"]["classify_failed"]),
     "kill-worker": ("3 process exits", lambda r: r["exits"] >= 3),
     "kill-supervisor": ("a second supervisor", lambda r: r["events"]["supervisor_start"] == 2),

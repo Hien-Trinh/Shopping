@@ -12,8 +12,8 @@ from catalog import entry, store
 from catalog.envelope import Key
 from catalog.keys import partition
 from catalog.landing import Landed
-from catalog.plan import Classification, Outcome, Stored, Write, plan
-from catalog.status import FAILED
+from catalog.plan import Classification, Stored, Write, plan
+from catalog.status import Outcome
 from catalog.taxonomy import UNCATEGORIZED
 
 _WRITES = {Outcome.WRITTEN, Outcome.RECLASSIFIED}
@@ -50,7 +50,8 @@ def decide(
     writes, notes = _classify(planned.writes, classifier, clock)
     outcomes = iter(planned.outcomes)
     results = [
-        {"type": FAILED, "error": error} if error else {"type": next(outcomes)} for error in errors
+        {"type": Outcome.FAILED, "error": error} if error else {"type": next(outcomes)}
+        for error in errors
     ]
     return Decision(
         tuple(writes),

@@ -3,12 +3,21 @@
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 
-from catalog.plan import Outcome
 
-PENDING = "pending"
-FAILED = "failed"  # worker gave up on the Change after retries
-REJECTED = "rejected"  # the Ingestion API refused the Change
+class Outcome(StrEnum):
+    WRITTEN = "written"
+    ALREADY_APPLIED = "already_applied"  # same source version, same content: a replay or a retry
+    STALE = "stale"  # older source version than stored
+    CONFLICT = "conflict"  # same source version, different content: the first one wins
+    RECLASSIFIED = "reclassified"  # internal op=reclassify on a live Listing
+    SKIPPED = "skipped"  # internal op=reclassify on a missing or deleted Listing
+    FAILED = "failed"  # worker gave up on the Change after retries
+    REJECTED = "rejected"  # the Ingestion API refused the Change
+
+
+PENDING = "pending"  # accepted, no Outcome yet
 
 # A crash replay re-reports Changes, and for merchant Changes a replay can only look worse (a
 # written Change replays as already_applied or stale). So the best Outcome a Change ever got is its
@@ -23,8 +32,8 @@ RANK = {
             Outcome.CONFLICT,
             Outcome.STALE,
             Outcome.SKIPPED,
-            FAILED,
-            REJECTED,
+            Outcome.FAILED,
+            Outcome.REJECTED,
         ]
     )
 }

@@ -30,11 +30,11 @@ from deltalake import DeltaTable
 from catalog import entry, events, export, landing, merchants, metrics, snapshots, state, store
 from catalog.envelope import Change, Content
 from catalog.keys import PARTITIONS
-from catalog.plan import Outcome
 from catalog.replay import diff, expected_store, live, replay_exports
+from catalog.status import Outcome
 
 PROCFILE = Path(__file__).parents[2] / "Procfile"
-OUTCOMES = {o.value for o in Outcome} | {"failed"}
+OUTCOMES = set(Outcome)
 # The supervisor's spawns, and each process's own start: the supervisor's log is best effort.
 STARTS = ("process_start", "worker_start", "export_start", "maintenance_start", "snapshots_start",
           "backfill_start", "api_start")  # fmt: skip
@@ -73,7 +73,7 @@ def oracles(data: Path, state_dir: Path) -> dict[str, list[str]]:
     log = landing.ensure(str(data / "landing_log"))
     landed = _landed(log)
     failed = {(e["submission_id"], e["change_index"]) for e in events.read(data / "events")
-              if e["type"] == "failed"}  # fmt: skip
+              if e["type"] == Outcome.FAILED}  # fmt: skip
     skip = {i for i, x in enumerate(landed) if (x.submission_id, x.change_index) in failed}
     listings = store.ensure(str(data / "listing_store"))
     found = {"store": diff(expected_store([x.change for x in landed], skip),

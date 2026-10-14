@@ -1,6 +1,7 @@
 from support import TAX, classified, delete, listing, reclassify, stored, up
 
-from catalog.plan import Outcome, Stored, Write, plan
+from catalog.plan import Stored, Write, plan
+from catalog.status import Outcome
 
 K = ("m_1", "a")
 W, AA, ST, CF = Outcome.WRITTEN, Outcome.ALREADY_APPLIED, Outcome.STALE, Outcome.CONFLICT

@@ -1,4 +1,4 @@
-from catalog.status import SubmissionStatus, fold
+from catalog.status import Outcome, SubmissionStatus, fold
 
 S = "0199a000-0000-7000-8000-000000000001"
 
@@ -58,3 +58,12 @@ def test_internal_reclassify_outcomes():
 def test_events_of_other_submissions_are_skipped_not_final():
     events = [ev("accepted", 0), ev("accepted", 0, submission="other"), ev("written", 0)]
     assert fold(S, events).outcomes == {0: "written"}
+
+
+def test_every_outcome_is_a_final_status():
+    assert sorted(Outcome) == [
+        "already_applied", "conflict", "failed", "reclassified", "rejected", "skipped", "stale",
+        "written",
+    ]  # fmt: skip
+    for o in Outcome:
+        assert fold(S, [ev("accepted", 0), ev(o, 0)]).outcomes == {0: o}

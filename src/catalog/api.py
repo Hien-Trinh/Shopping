@@ -172,7 +172,7 @@ def submission_events(submission: str, merchant_id: str, checked: envelope.Check
             for i, c in checked.accepted
         ),
         *(
-            ids | {"type": "rejected", "change_index": i, "errors": list(errors)}
+            ids | {"type": status.Outcome.REJECTED, "change_index": i, "errors": list(errors)}
             for i, errors in checked.rejected
         ),
     ]

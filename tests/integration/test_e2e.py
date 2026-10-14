@@ -21,12 +21,12 @@ from test_supervisor import alive, wait_for
 from catalog import chaos, events, export, landing, load, snapshots, state, store
 from catalog.keys import PARTITIONS, partition
 from catalog.landing import START
-from catalog.plan import Outcome
 from catalog.replay import diff, expected_store, live, replay_exports
+from catalog.status import Outcome
 
 PROCFILE = Path(__file__).parents[2] / "Procfile"
 SUPERVISOR = [sys.executable, "-m", "catalog.supervisor"]
-OUTCOMES = {o.value for o in Outcome} | {"failed"}
+OUTCOMES = set(Outcome)
 
 
 def bindable(port: int) -> bool:

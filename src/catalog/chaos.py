@@ -30,11 +30,11 @@ from deltalake import DeltaTable
 from catalog import entry, events, export, landing, merchants, metrics, snapshots, state, store
 from catalog.envelope import Change, Content
 from catalog.keys import PARTITIONS
-from catalog.plan import Outcome
 from catalog.replay import diff, expected_store, live, replay_exports
+from catalog.status import Outcome
 
 PROCFILE = Path(__file__).parents[2] / "Procfile"
-OUTCOMES = {o.value for o in Outcome} | {"failed"}
+OUTCOMES = set(Outcome)
 # The supervisor's spawns, and each process's own start: the supervisor's log is best effort.
 STARTS = ("process_start", "worker_start", "export_start", "maintenance_start", "snapshots_start",
           "backfill_start", "api_start")  # fmt: skip
@@ -73,7 +73,7 @@ def oracles(data: Path, state_dir: Path) -> dict[str, list[str]]:
     log = landing.ensure(str(data / "landing_log"))
     landed = _landed(log)
     failed = {(e["submission_id"], e["change_index"]) for e in events.read(data / "events")
-              if e["type"] == "failed"}  # fmt: skip
+              if e["type"] == Outcome.FAILED}  # fmt: skip
     skip = {i for i, x in enumerate(landed) if (x.submission_id, x.change_index) in failed}
     listings = store.ensure(str(data / "listing_store"))
     found = {"store": diff(expected_store([x.change for x in landed], skip),
@@ -350,9 +350,12 @@ SCENARIOS = {
 EFFECTS = {
     "steady": ("nothing", lambda r: True),
     "bulk": ("10,000 more accepted", lambda r: r["loads"][1]["accepted"] == 10_000),
-    "out-of-order": ("stale Outcomes", lambda r: r["outcomes"].get("stale", 0) > 0),
-    "duplicates": ("already_applied Outcomes", lambda r: r["outcomes"].get("already_applied")),
-    "poison": ("10 failed Outcomes", lambda r: r["outcomes"].get("failed", 0) >= 10),
+    "out-of-order": ("stale Outcomes", lambda r: r["outcomes"].get(Outcome.STALE, 0) > 0),
+    "duplicates": (
+        "already_applied Outcomes",
+        lambda r: r["outcomes"].get(Outcome.ALREADY_APPLIED),
+    ),
+    "poison": ("10 failed Outcomes", lambda r: r["outcomes"].get(Outcome.FAILED, 0) >= 10),
     "classifier-outage": ("classify_failed events", lambda r: r["events"]["classify_failed"]),
     "kill-worker": ("3 process exits", lambda r: r["exits"] >= 3),
     "kill-supervisor": ("a second supervisor", lambda r: r["events"]["supervisor_start"] == 2),

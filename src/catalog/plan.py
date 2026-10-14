@@ -6,18 +6,9 @@ only decides when writes are flushed, never what they are.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 
 from catalog.envelope import Change, Content, Key, content_hash
-
-
-class Outcome(StrEnum):
-    WRITTEN = "written"
-    ALREADY_APPLIED = "already_applied"  # same source version, same content: a replay or a retry
-    STALE = "stale"  # older source version than stored
-    CONFLICT = "conflict"  # same source version, different content: the first one wins
-    RECLASSIFIED = "reclassified"  # internal op=reclassify on a live Listing
-    SKIPPED = "skipped"  # internal op=reclassify on a missing or deleted Listing
+from catalog.status import Outcome
 
 
 @dataclass(frozen=True)

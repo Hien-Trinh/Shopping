@@ -1,6 +1,6 @@
 # Commerce Ingestion
 
-How merchant product data enters the system, gets categorized, and becomes the current catalog. Serving and recommendations are downstream and out of scope.
+How merchant product data enters the system, gets categorized, and becomes the current set of Listings. Serving and recommendations are downstream and out of scope.
 
 ## Language
 
@@ -45,7 +45,7 @@ What happened to one Change: written, already applied, stale (an older source ve
 ### Categorization
 
 **Category**:
-A node in the hierarchical catalog taxonomy (e.g. Apparel > Shirts).
+A node in the hierarchical Category taxonomy (e.g. Apparel > Shirts).
 _Avoid_: Bucket
 
 **Primary Category**:
@@ -62,22 +62,23 @@ The Primary Category given when the classifier is not confident or not available
 **Ingestion API**:
 The single entry point Merchants use to submit Changes. Accepts asynchronously.
 
-**Catalog**:
-The grouping that owns a Listing from acceptance to export: Landing log, Ingestion workers, Listing Store, Catalog Snapshots and Change Export.
-_Avoid_: using Catalog to mean any single one of its parts
+**Listing pipeline**:
+The grouping that owns a Listing from acceptance to export: Landing log, Ingestion job, Listing Store, Listing Store Snapshots and Change Export.
+_Avoid_: Catalog (clashes with Unity Catalog's catalogs), DataStore; using Listing pipeline to mean any single one of its parts
 
 **Landing log**:
 The raw, append-only record of every Change the Ingestion API accepted. The only place every intermediate version survives.
 
-**Ingestion worker**:
-A worker that validates, classifies and applies accepted Changes to the Listing Store. Generic across Categories.
+**Ingestion job**:
+The single job that validates, classifies and applies accepted Changes to the Listing Store. Generic across Categories.
+_Avoid_: Ingestion worker, worker
 
 **Listing Store**:
 The source of truth for every Listing's current state.
 
-**Catalog Snapshots**:
+**Listing Store Snapshots**:
 Periodic copies of the Listing Store. Never read to serve shoppers.
-_Avoid_: calling snapshots "every version"
+_Avoid_: Catalog Snapshots; calling snapshots "every version"
 
 **Change Export**:
 The frequent export of changed Listings from the Listing Store to the serving boundary. Only an export: no warehousing or recommendations.

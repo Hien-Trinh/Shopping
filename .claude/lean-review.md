@@ -18,6 +18,8 @@ From docs/design-commerce-ingestion-pipeline.md and docs/adr/:
 - at-least-once delivery, with offsets saved only after the MERGE and events
 - every process-crash point is safe (`kill -9` then restart)
 
+`storage` is true when the diff touches storage, state, events or worker code.
+
 ## Scale
 From docs/plan-v1.md: about 1M Listings in 64 partitions; about 50 changes/s with bulk batches of 10k items; worker batches up to 1,000 changes; status lookups over about 1M event lines per hour; p99 freshness under 5 minutes. Per-row Python where Arrow would do is waste at this scale.
 

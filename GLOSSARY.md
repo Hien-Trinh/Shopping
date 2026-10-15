@@ -69,6 +69,10 @@ _Avoid_: Catalog (clashes with Unity Catalog's catalogs), DataStore; using Listi
 **Landing log**:
 The raw, append-only record of every Change the Ingestion API accepted. The only place every intermediate version survives.
 
+**Submission log**:
+The Ingestion API's record of which Changes in each Submission it accepted and which it rejected. With the Outcomes the Ingestion job reports, it gives a Submission's status.
+_Avoid_: events (v1 kept these records as events)
+
 **Ingestion job**:
 The single job that validates, classifies and applies accepted Changes to the Listing Store. Generic across Categories.
 _Avoid_: Ingestion worker, worker

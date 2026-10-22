@@ -115,7 +115,7 @@ def models(tmp_path, monkeypatch, http):
     def shirt(texts):
         return np.array([[1.0, 0.0] if "shirt" in t.lower() else [0.0, 1.0] for t in texts])
 
-    monkeypatch.setattr(student, "embedder", lambda models: (shirt, student.FT_REVISION))
+    monkeypatch.setattr(student, "embedder", lambda models, **_: (shirt, student.FT_REVISION))
     path = student.index_path(tmp_path, student.FT_REVISION)
     path.parent.mkdir(parents=True)
     np.savez(path, x=np.eye(2, dtype=np.float32), y=np.array(tax.paths[:2]))
@@ -163,7 +163,7 @@ def test_the_version_of_a_kind_is_what_it_loads_and_needs_no_model(models, monke
     expected = classifiers.load(kind, models, workers=4).taxonomy_version
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     monkeypatch.setattr(classify, "fastembed", lambda models: pytest.fail("loaded the model"))
-    monkeypatch.setattr(student, "embedder", lambda models: pytest.fail("loaded the student"))
+    monkeypatch.setattr(student, "embedder", lambda models, **_: pytest.fail("loaded the student"))
     assert classifiers.version(kind) == expected
 
 

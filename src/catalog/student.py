@@ -32,6 +32,7 @@ TRAIN = (
 )
 DESCRIPTION = 200  # description characters after the title, as Jev reads them (step-6f.md)
 CHUNK = 256  # rows per embed call and per kNN similarity block
+THREADS = 2  # ONNX threads per Ingestion worker: 4 workers x 2 on 10 cores (step-6m.md)
 KS = (5, 10, 20, 50)
 TAUS = [round(0.05 * i, 2) for i in range(21)]  # 0.00 .. 1.00
 OUT = Path("eval/student.md")
@@ -277,10 +278,13 @@ class StudentClassifier(classify.Classifier):
         )
 
 
-def embedder(models: Path, *, download: bool = False) -> tuple[Callable, str]:
+def embedder(
+    models: Path, *, download: bool = False, threads: int | None = None
+) -> tuple[Callable, str]:
     """An `embed` over the fine-tuned encoder at FT_REVISION, the Hub commit the pipeline is
     pinned to (fetched into `models` when `download`, like bge-small), and that revision: it
-    names the head, the index and the vectors in the cache."""
+    names the head, the index and the vectors in the cache. `threads` None is fastembed's
+    default, one per core."""
     from fastembed import TextEmbedding
     from fastembed.common.model_description import ModelSource, PoolingType
 
@@ -299,7 +303,9 @@ def embedder(models: Path, *, download: bool = False) -> tuple[Callable, str]:
     }
     snapshot = Path(files[ONNX]).parents[1]  # .../snapshots/<revision>/onnx/<file>
     try:
-        embed = classify.fastembed(models, FT_MODEL, specific_model_path=str(snapshot))
+        embed = classify.fastembed(
+            models, FT_MODEL, specific_model_path=str(snapshot), threads=threads
+        )
     except (
         classify.ModelMissing
     ) as e:  # its hint names classify's download, which fetches bge-small
@@ -426,8 +432,8 @@ def version(taxonomy_version: str, rev: str = FT_REVISION) -> str:
 def pipeline(tax, models: Path) -> StudentClassifier:
     """The workers' `--classifier student`: kNN (K) over the index, the encoder at FT_REVISION,
     nothing embedded at start (step-6f.md, 6f.3)."""
-    embed, rev = embedder(models)  # ponytail: fastembed's default threads; `threads` per
-    # worker if 7d.2b shows four workers embedding at once contend for the cores
+    embed, rev = embedder(models, threads=THREADS)  # ponytail: fixed for 4 workers on 10
+    # cores; cores // workers if a host has fewer cores
     width = np.asarray(embed(["probe"])).shape[1]
     x, y = load_index(index_path(models, rev), tax, width=width)
     return StudentClassifier(embed, Knn(x, y, K), version(tax.version, rev))

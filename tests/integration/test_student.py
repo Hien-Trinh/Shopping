@@ -563,7 +563,7 @@ def test_the_index_round_trips_and_is_unit_vectors(tmp_path, monkeypatch):
 def test_the_index_is_named_by_the_training_data_too(tmp_path, monkeypatch):
     # review round 1: a stale index must not serve under a new train- version (exit 6 instead)
     monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
-    monkeypatch.setattr(student, "embedder", lambda models: (fake_embed, REV))
+    monkeypatch.setattr(student, "embedder", lambda models, **_: (fake_embed, REV))
     path = student.build_index(TAX, fake_embed, REV, tmp_path)
     assert path.name.endswith(f"-{student.train_hash()}.npz")
     student.pipeline(TAX, tmp_path)
@@ -572,6 +572,22 @@ def test_the_index_is_named_by_the_training_data_too(tmp_path, monkeypatch):
     monkeypatch.setattr(student, "TRAIN", (other,))
     with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
         student.pipeline(TAX, tmp_path)
+
+
+def test_the_pipeline_caps_each_workers_onnx_threads(tmp_path, monkeypatch):
+    # four workers at fastembed's default threads oversubscribe the cores (step-6m.md)
+    loaded = {}
+
+    def fastembed(models, model=None, **kwargs):
+        loaded.update(kwargs)
+        return fake_embed
+
+    monkeypatch.setattr(student, "_hub_file", lambda models, name, **_: str(tmp_path / name))
+    monkeypatch.setattr(classify, "fastembed", fastembed)
+    monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
+    student.build_index(TAX, fake_embed, REV, tmp_path)
+    student.pipeline(TAX, tmp_path)
+    assert loaded["threads"] == student.THREADS == 2
 
 
 def test_a_missing_training_file_is_a_fatal_start(tmp_path, monkeypatch):
@@ -628,6 +644,7 @@ def test_embedder_fetches_every_file_at_the_pinned_revision_and_loads_the_snapsh
         "models": tmp_path,
         "model": student.FT_MODEL,
         "specific_model_path": str(snapshot),
+        "threads": None,
     }
 
 
@@ -666,7 +683,7 @@ def test_the_pipeline_classifier_answers_every_listing_from_the_index(tmp_path, 
         return fake_embed(texts)
 
     monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
-    monkeypatch.setattr(student, "embedder", lambda models: (embed, REV))
+    monkeypatch.setattr(student, "embedder", lambda models, **_: (embed, REV))
     student.build_index(TAX, fake_embed, REV, tmp_path)
     c = student.pipeline(TAX, tmp_path)
     assert c.classify([]) == []
@@ -684,7 +701,7 @@ def test_the_pipeline_classifier_answers_every_listing_from_the_index(tmp_path, 
 
 
 def test_the_pipeline_needs_the_index(tmp_path, monkeypatch):
-    monkeypatch.setattr(student, "embedder", lambda models: (fake_embed, REV))
+    monkeypatch.setattr(student, "embedder", lambda models, **_: (fake_embed, REV))
     with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
         student.pipeline(TAX, tmp_path)
 

@@ -144,6 +144,19 @@ def test_embed_chunks_groups_texts_by_length_and_keeps_their_order(monkeypatch):
     assert all(a[-1] <= b[0] for a, b in itertools.pairwise(lengths)), f"mixed lengths: {calls}"
 
 
+def test_embed_chunks_refuses_an_embed_that_drops_a_row():
+    """A short answer can't be put back in order, so it fails loudly instead of misaligning
+    vectors with Listings (decide.py then files the batch as a classify error)."""
+    with pytest.raises(ValueError):
+        student.embed_chunks(lambda texts: np.ones((len(texts) - 1, 2)), ["ab", "c"])
+
+
+def test_the_knn_block_is_its_own_setting_not_the_embed_chunk():
+    """CHUNK is tuned for ONNX padding (16); kNN is faster on bigger similarity blocks."""
+    x, y = toy()
+    assert student.Knn(x, y).chunk == student.KNN_BLOCK > student.CHUNK
+
+
 # 5. The classifier as an eval candidate
 
 

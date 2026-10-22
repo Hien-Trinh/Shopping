@@ -108,7 +108,7 @@ After a reset (`rm -rf data/landing_log data/listing_store data/events data/expo
 | The machine's throughput | the four together classify 4,000 Listings in 35 s: about 110 a second, the same work shared over the 10 cores (each ONNX session uses them all). A 1M bulk is about 2.5 hours of classification (Jev: 3.5 hours at 80 calls/s and about $62); the 50/s SLO load takes about 45% of it |
 | Disk | 20 GiB free before, 19 after |
 
-**Verdict: fine at this size.** The batch stays under the heartbeat with four workers. The time is the machine's, not the classifier's: 9 s of embedding stretched to 35 s because four ONNX sessions share the ten cores. `student.py`'s note names the knob if that ever matters, fastembed's `threads` per worker.
+**Verdict: fine at this size.** The batch stays under the heartbeat with four workers. The time is the machine's, not the classifier's: 9 s of embedding stretched to 35 s because four ONNX sessions share the ten cores. These numbers are at fastembed's default threads; since step-6m.md's "ONNX threads per worker" outcome, each worker runs cores ÷ workers threads (2 here), about 1.8x the four-worker throughput.
 
 ## 7f.2: the SLO run after 7f.1, on the T9
 

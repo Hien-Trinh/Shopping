@@ -574,8 +574,8 @@ def test_the_index_is_named_by_the_training_data_too(tmp_path, monkeypatch):
         student.pipeline(TAX, tmp_path)
 
 
-def test_the_pipeline_caps_each_workers_onnx_threads(tmp_path, monkeypatch):
-    # four workers at fastembed's default threads oversubscribe the cores (step-6m.md)
+def test_the_pipeline_passes_its_onnx_threads_to_the_encoder(tmp_path, monkeypatch):
+    # step-6m.md, ONNX threads per worker
     loaded = {}
 
     def fastembed(models, model=None, **kwargs):
@@ -586,8 +586,8 @@ def test_the_pipeline_caps_each_workers_onnx_threads(tmp_path, monkeypatch):
     monkeypatch.setattr(classify, "fastembed", fastembed)
     monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
     student.build_index(TAX, fake_embed, REV, tmp_path)
-    student.pipeline(TAX, tmp_path)
-    assert loaded["threads"] == student.THREADS == 2
+    student.pipeline(TAX, tmp_path, threads=3)
+    assert loaded["threads"] == 3
 
 
 def test_a_missing_training_file_is_a_fatal_start(tmp_path, monkeypatch):

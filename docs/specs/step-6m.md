@@ -130,6 +130,6 @@ Not in CI: the real student in a worker (no download in CI; 6m.2's hand run cove
 
 ## Outcome, ONNX threads per worker (Oct 21)
 
-- **The change**: `student.pipeline` loads the encoder with `threads=2` (`student.THREADS`), not fastembed's default of one thread per core. Training and the eval keep the default, since they run one process.
+- **The change**: `classifiers.load` gives the student `threads` = the cores ÷ `--workers` (at least 1), which is 2 for four workers on this Mac's 10 cores. Before this change, fastembed used its default of one thread per core. `student.pipeline` passes the count to the encoder. Training and the eval keep the default, because they run one process. The Backfill only reads `classifiers.version` and loads no encoder.
 - **Why**: four workers at the default run about 40 ONNX threads on this Mac's 10 cores. On 4 processes encoding 1,000 Listings each at once (sorted texts, chunks of 16, the real fp32 encoder), total Listings/s over three rounds at load 6 to 20: default 110 / 132 / 87; threads 1: 214 / 230 / 165; threads 2: 231 / 245 / 158; threads 3: 180 / 178 / 136; threads 4: 122 / 101 / 101. One worker alone drops from about 176/s to about 121/s at threads 2, which the four-worker total outweighs.
-- **Ceiling**: the value is fixed for four workers on ten cores; a host with fewer cores wants about cores ÷ workers.
+- **The measurement**: a one-off script (in PR #158's description). Threads 1 and 2 are within noise of each other; both beat the default by about 1.8x. Cores ÷ workers lands on 2 here.

@@ -150,6 +150,16 @@ def test_the_student_kind_loads_from_the_index(models, monkeypatch):
         classifiers.load("student", models / "empty", workers=4)
 
 
+def test_the_student_kind_splits_the_cores_over_the_workers(tmp_path, monkeypatch):
+    # four workers at fastembed's default threads oversubscribe the cores (step-6m.md)
+    threads = []
+    monkeypatch.setattr(classifiers.os, "cpu_count", lambda: 10)
+    monkeypatch.setattr(student, "pipeline", lambda tax, models, **kw: threads.append(kw))
+    for workers in (4, 1, 16):
+        classifiers.load("student", tmp_path, workers=workers)
+    assert threads == [{"threads": 2}, {"threads": 10}, {"threads": 1}]
+
+
 def test_the_fake_kinds_need_no_model(tmp_path):
     assert classifiers.load("fake", tmp_path, workers=4) == classify.FakeClassifier()
     with pytest.raises(RuntimeError, match="unavailable"):  # down: an outage (step-7b.md)

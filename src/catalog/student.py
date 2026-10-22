@@ -32,7 +32,6 @@ TRAIN = (
 )
 DESCRIPTION = 200  # description characters after the title, as Jev reads them (step-6f.md)
 CHUNK = 256  # rows per embed call and per kNN similarity block
-THREADS = 2  # ONNX threads per Ingestion worker: 4 workers x 2 on 10 cores (step-6m.md)
 KS = (5, 10, 20, 50)
 TAUS = [round(0.05 * i, 2) for i in range(21)]  # 0.00 .. 1.00
 OUT = Path("eval/student.md")
@@ -429,11 +428,10 @@ def version(taxonomy_version: str, rev: str = FT_REVISION) -> str:
     return f"{taxonomy_version}+{FT_MODEL}-knn@{rev[:12]}+{tag()}+k{K}+train-{train_hash()}"
 
 
-def pipeline(tax, models: Path) -> StudentClassifier:
-    """The workers' `--classifier student`: kNN (K) over the index, the encoder at FT_REVISION,
-    nothing embedded at start (step-6f.md, 6f.3)."""
-    embed, rev = embedder(models, threads=THREADS)  # ponytail: fixed for 4 workers on 10
-    # cores; cores // workers if a host has fewer cores
+def pipeline(tax, models: Path, *, threads: int | None = None) -> StudentClassifier:
+    """The workers' `--classifier student`: kNN (K) over the index, the encoder at FT_REVISION
+    on `threads` ONNX threads, nothing embedded at start (step-6f.md, 6f.3)."""
+    embed, rev = embedder(models, threads=threads)
     width = np.asarray(embed(["probe"])).shape[1]
     x, y = load_index(index_path(models, rev), tax, width=width)
     return StudentClassifier(embed, Knn(x, y, K), version(tax.version, rev))

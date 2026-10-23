@@ -31,7 +31,8 @@ TRAIN = (
     Path("train/amazon-opus-2.jsonl"),
 )
 DESCRIPTION = 200  # description characters after the title, as Jev reads them (step-6f.md)
-CHUNK = 256  # rows per embed call and per kNN similarity block
+CHUNK = 16  # texts per ONNX run: fastest alone, level with 64 under four workers (step-6m.md)
+KNN_BLOCK = 256  # query rows per kNN similarity block: bigger blocks are faster there
 KS = (5, 10, 20, 50)
 TAUS = [round(0.05 * i, 2) for i in range(21)]  # 0.00 .. 1.00
 OUT = Path("eval/student.md")
@@ -126,7 +127,7 @@ class Knn:
     x: np.ndarray
     y: Sequence[str]
     k: int = 10
-    chunk: int = CHUNK
+    chunk: int = KNN_BLOCK
 
     def predict(self, q: np.ndarray) -> list[tuple[str, float]]:
         out = []
@@ -221,10 +222,16 @@ def vectors(
 
 
 def embed_chunks(embed: Callable, texts: Sequence[str]) -> np.ndarray:
-    """Unit vectors of `texts`, CHUNK per embed call: one ONNX run each, releasing the GIL."""
-    return unit(
-        np.vstack([np.asarray(embed(texts[i : i + CHUNK])) for i in range(0, len(texts), CHUNK)])
-    )
+    """Unit vectors of `texts`, CHUNK per embed call: one ONNX run each, releasing the GIL.
+    Shortest first, so each run pads to a length near its own texts', not the batch's longest."""
+    order = np.argsort([len(t) for t in texts], kind="stable")
+    ranked = [texts[i] for i in order]
+    x = np.vstack([np.asarray(embed(ranked[i : i + CHUNK])) for i in range(0, len(ranked), CHUNK)])
+    if len(x) != len(texts):  # one row would broadcast into every slot
+        raise ValueError(f"embed answered {len(x)} rows for {len(texts)} texts")
+    out = np.empty_like(x)
+    out[order] = x
+    return unit(out)
 
 
 def _text(title: str, description: str) -> str:
@@ -277,10 +284,13 @@ class StudentClassifier(classify.Classifier):
         )
 
 
-def embedder(models: Path, *, download: bool = False) -> tuple[Callable, str]:
+def embedder(
+    models: Path, *, download: bool = False, threads: int | None = None
+) -> tuple[Callable, str]:
     """An `embed` over the fine-tuned encoder at FT_REVISION, the Hub commit the pipeline is
     pinned to (fetched into `models` when `download`, like bge-small), and that revision: it
-    names the head, the index and the vectors in the cache."""
+    names the head, the index and the vectors in the cache. `threads` None is fastembed's
+    default, one per core."""
     from fastembed import TextEmbedding
     from fastembed.common.model_description import ModelSource, PoolingType
 
@@ -299,7 +309,9 @@ def embedder(models: Path, *, download: bool = False) -> tuple[Callable, str]:
     }
     snapshot = Path(files[ONNX]).parents[1]  # .../snapshots/<revision>/onnx/<file>
     try:
-        embed = classify.fastembed(models, FT_MODEL, specific_model_path=str(snapshot))
+        embed = classify.fastembed(
+            models, FT_MODEL, specific_model_path=str(snapshot), threads=threads
+        )
     except (
         classify.ModelMissing
     ) as e:  # its hint names classify's download, which fetches bge-small
@@ -423,11 +435,10 @@ def version(taxonomy_version: str, rev: str = FT_REVISION) -> str:
     return f"{taxonomy_version}+{FT_MODEL}-knn@{rev[:12]}+{tag()}+k{K}+train-{train_hash()}"
 
 
-def pipeline(tax, models: Path) -> StudentClassifier:
-    """The workers' `--classifier student`: kNN (K) over the index, the encoder at FT_REVISION,
-    nothing embedded at start (step-6f.md, 6f.3)."""
-    embed, rev = embedder(models)  # ponytail: fastembed's default threads; `threads` per
-    # worker if 7d.2b shows four workers embedding at once contend for the cores
+def pipeline(tax, models: Path, *, threads: int | None = None) -> StudentClassifier:
+    """The workers' `--classifier student`: kNN (K) over the index, the encoder at FT_REVISION
+    on `threads` ONNX threads, nothing embedded at start (step-6f.md, 6f.3)."""
+    embed, rev = embedder(models, threads=threads)
     width = np.asarray(embed(["probe"])).shape[1]
     x, y = load_index(index_path(models, rev), tax, width=width)
     return StudentClassifier(embed, Knn(x, y, K), version(tax.version, rev))

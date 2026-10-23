@@ -1,5 +1,6 @@
 """The student prototype (docs/specs/step-6l.md, test points 1-5)."""
 
+import itertools
 from pathlib import Path
 
 import numpy as np
@@ -123,6 +124,37 @@ def test_vectors_are_cached_by_text(tmp_path):
     student.vectors(["ab", "cd"], embed, tmp_path)
     assert len(calls) == 2
     assert np.allclose(np.linalg.norm(a, axis=1), 1.0)
+
+
+def test_embed_chunks_groups_texts_by_length_and_keeps_their_order(monkeypatch):
+    """Each embed call pads to its longest text, so a call gets texts of similar length; the
+    vectors still come back in the caller's order."""
+    monkeypatch.setattr(student, "CHUNK", 2)
+    calls = []
+
+    def embed(texts):
+        calls.append(list(texts))
+        return np.array([[float(len(t)), float(ord(t[0]))] for t in texts])
+
+    texts = ["long text", "a", "medium", "bb", "longest text"]
+    out = student.embed_chunks(embed, texts)
+    assert np.allclose(out, student.unit(embed(texts))), "a row is not its own text's vector"
+    calls.pop()  # the expected vectors' call
+    lengths = [sorted(len(t) for t in call) for call in calls]
+    assert all(a[-1] <= b[0] for a, b in itertools.pairwise(lengths)), f"mixed lengths: {calls}"
+
+
+def test_embed_chunks_refuses_an_embed_that_drops_a_row():
+    """A short answer can't be put back in order, so it fails loudly instead of misaligning
+    vectors with Listings (decide.py then files the batch as a classify error)."""
+    with pytest.raises(ValueError):
+        student.embed_chunks(lambda texts: np.ones((len(texts) - 1, 2)), ["ab", "c"])
+
+
+def test_the_knn_block_is_its_own_setting_not_the_embed_chunk():
+    """CHUNK is tuned for ONNX padding (16); kNN is faster on bigger similarity blocks."""
+    x, y = toy()
+    assert student.Knn(x, y).chunk == student.KNN_BLOCK > student.CHUNK
 
 
 # 5. The classifier as an eval candidate
@@ -563,7 +595,7 @@ def test_the_index_round_trips_and_is_unit_vectors(tmp_path, monkeypatch):
 def test_the_index_is_named_by_the_training_data_too(tmp_path, monkeypatch):
     # review round 1: a stale index must not serve under a new train- version (exit 6 instead)
     monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
-    monkeypatch.setattr(student, "embedder", lambda models: (fake_embed, REV))
+    monkeypatch.setattr(student, "embedder", lambda models, **_: (fake_embed, REV))
     path = student.build_index(TAX, fake_embed, REV, tmp_path)
     assert path.name.endswith(f"-{student.train_hash()}.npz")
     student.pipeline(TAX, tmp_path)
@@ -572,6 +604,22 @@ def test_the_index_is_named_by_the_training_data_too(tmp_path, monkeypatch):
     monkeypatch.setattr(student, "TRAIN", (other,))
     with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
         student.pipeline(TAX, tmp_path)
+
+
+def test_the_pipeline_passes_its_onnx_threads_to_the_encoder(tmp_path, monkeypatch):
+    # step-6m.md, ONNX threads per worker
+    loaded = {}
+
+    def fastembed(models, model=None, **kwargs):
+        loaded.update(kwargs)
+        return fake_embed
+
+    monkeypatch.setattr(student, "_hub_file", lambda models, name, **_: str(tmp_path / name))
+    monkeypatch.setattr(classify, "fastembed", fastembed)
+    monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
+    student.build_index(TAX, fake_embed, REV, tmp_path)
+    student.pipeline(TAX, tmp_path, threads=3)
+    assert loaded["threads"] == 3
 
 
 def test_a_missing_training_file_is_a_fatal_start(tmp_path, monkeypatch):
@@ -628,6 +676,7 @@ def test_embedder_fetches_every_file_at_the_pinned_revision_and_loads_the_snapsh
         "models": tmp_path,
         "model": student.FT_MODEL,
         "specific_model_path": str(snapshot),
+        "threads": None,
     }
 
 
@@ -666,7 +715,7 @@ def test_the_pipeline_classifier_answers_every_listing_from_the_index(tmp_path, 
         return fake_embed(texts)
 
     monkeypatch.setattr(student, "load_training", lambda: FT_ROWS)
-    monkeypatch.setattr(student, "embedder", lambda models: (embed, REV))
+    monkeypatch.setattr(student, "embedder", lambda models, **_: (embed, REV))
     student.build_index(TAX, fake_embed, REV, tmp_path)
     c = student.pipeline(TAX, tmp_path)
     assert c.classify([]) == []
@@ -684,7 +733,7 @@ def test_the_pipeline_classifier_answers_every_listing_from_the_index(tmp_path, 
 
 
 def test_the_pipeline_needs_the_index(tmp_path, monkeypatch):
-    monkeypatch.setattr(student, "embedder", lambda models: (fake_embed, REV))
+    monkeypatch.setattr(student, "embedder", lambda models, **_: (fake_embed, REV))
     with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
         student.pipeline(TAX, tmp_path)
 

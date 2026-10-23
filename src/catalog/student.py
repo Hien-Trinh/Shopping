@@ -31,7 +31,8 @@ TRAIN = (
     Path("train/amazon-opus-2.jsonl"),
 )
 DESCRIPTION = 200  # description characters after the title, as Jev reads them (step-6f.md)
-CHUNK = 256  # rows per embed call and per kNN similarity block
+CHUNK = 16  # texts per ONNX run: fastest alone, level with 64 under four workers (step-6m.md)
+KNN_BLOCK = 256  # query rows per kNN similarity block: bigger blocks are faster there
 KS = (5, 10, 20, 50)
 TAUS = [round(0.05 * i, 2) for i in range(21)]  # 0.00 .. 1.00
 OUT = Path("eval/student.md")
@@ -126,7 +127,7 @@ class Knn:
     x: np.ndarray
     y: Sequence[str]
     k: int = 10
-    chunk: int = CHUNK
+    chunk: int = KNN_BLOCK
 
     def predict(self, q: np.ndarray) -> list[tuple[str, float]]:
         out = []
@@ -221,10 +222,16 @@ def vectors(
 
 
 def embed_chunks(embed: Callable, texts: Sequence[str]) -> np.ndarray:
-    """Unit vectors of `texts`, CHUNK per embed call: one ONNX run each, releasing the GIL."""
-    return unit(
-        np.vstack([np.asarray(embed(texts[i : i + CHUNK])) for i in range(0, len(texts), CHUNK)])
-    )
+    """Unit vectors of `texts`, CHUNK per embed call: one ONNX run each, releasing the GIL.
+    Shortest first, so each run pads to a length near its own texts', not the batch's longest."""
+    order = np.argsort([len(t) for t in texts], kind="stable")
+    ranked = [texts[i] for i in order]
+    x = np.vstack([np.asarray(embed(ranked[i : i + CHUNK])) for i in range(0, len(ranked), CHUNK)])
+    if len(x) != len(texts):  # one row would broadcast into every slot
+        raise ValueError(f"embed answered {len(x)} rows for {len(texts)} texts")
+    out = np.empty_like(x)
+    out[order] = x
+    return unit(out)
 
 
 def _text(title: str, description: str) -> str:

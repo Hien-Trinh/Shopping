@@ -1,5 +1,6 @@
 """The student prototype (docs/specs/step-6l.md, test points 1-5)."""
 
+import itertools
 from pathlib import Path
 
 import numpy as np
@@ -123,6 +124,37 @@ def test_vectors_are_cached_by_text(tmp_path):
     student.vectors(["ab", "cd"], embed, tmp_path)
     assert len(calls) == 2
     assert np.allclose(np.linalg.norm(a, axis=1), 1.0)
+
+
+def test_embed_chunks_groups_texts_by_length_and_keeps_their_order(monkeypatch):
+    """Each embed call pads to its longest text, so a call gets texts of similar length; the
+    vectors still come back in the caller's order."""
+    monkeypatch.setattr(student, "CHUNK", 2)
+    calls = []
+
+    def embed(texts):
+        calls.append(list(texts))
+        return np.array([[float(len(t)), float(ord(t[0]))] for t in texts])
+
+    texts = ["long text", "a", "medium", "bb", "longest text"]
+    out = student.embed_chunks(embed, texts)
+    assert np.allclose(out, student.unit(embed(texts))), "a row is not its own text's vector"
+    calls.pop()  # the expected vectors' call
+    lengths = [sorted(len(t) for t in call) for call in calls]
+    assert all(a[-1] <= b[0] for a, b in itertools.pairwise(lengths)), f"mixed lengths: {calls}"
+
+
+def test_embed_chunks_refuses_an_embed_that_drops_a_row():
+    """A short answer can't be put back in order, so it fails loudly instead of misaligning
+    vectors with Listings (decide.py then files the batch as a classify error)."""
+    with pytest.raises(ValueError):
+        student.embed_chunks(lambda texts: np.ones((len(texts) - 1, 2)), ["ab", "c"])
+
+
+def test_the_knn_block_is_its_own_setting_not_the_embed_chunk():
+    """CHUNK is tuned for ONNX padding (16); kNN is faster on bigger similarity blocks."""
+    x, y = toy()
+    assert student.Knn(x, y).chunk == student.KNN_BLOCK > student.CHUNK
 
 
 # 5. The classifier as an eval candidate

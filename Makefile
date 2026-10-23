@@ -4,7 +4,7 @@ export UV_LOCKED := 1
 
 PURE := src/catalog/keys.py,src/catalog/envelope.py,src/catalog/plan.py,src/catalog/replay.py,src/catalog/status.py,src/catalog/collapse.py
 
-.PHONY: check lint test hooks mutate repeat
+.PHONY: check lint test hooks mutate repeat bench
 
 check: lint test
 
@@ -30,3 +30,8 @@ N ?= 10
 J ?= 1
 repeat:
 	scripts/repeat.sh $(N) $(J) $(TEST)
+
+# Time the student's encoder per CHUNK and ONNX threads, waiting for a quiet machine; needs models/.
+# make bench ARGS="--chunk 256,16 --threads 0,2 --procs 4,1" (see scripts/bench-encode.py)
+bench:
+	PYTHONPATH=src uv run python scripts/bench-encode.py $(ARGS)

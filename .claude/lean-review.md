@@ -5,6 +5,7 @@ Read by the user-scoped `/lean-review` skill and its `reviewer-*` agents.
 ## Spec sources
 Read from `main` (`git show main:<path>`):
 - the PR's row in docs/plan-v1.md's "PR steps" table, and its phase section (tests, "Rules carried")
+- for a v2 step (G1–P7): its row in docs/plan-v2.md's "PR steps" table, its phase under "Phases", and that plan's "Rules that hold across steps" and "Testing rules"
 - the sections of docs/design-commerce-ingestion-pipeline.md the diff touches
 - docs/adr/
 - GLOSSARY.md (Listing, Change, Tombstone, Submission, Outcome)

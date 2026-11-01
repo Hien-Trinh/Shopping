@@ -1,4 +1,6 @@
 #!/bin/sh
 # Ruff only (lint and format check, under 1 s): CI's `check` job is the gate, and `make check`
 # stays for hand runs. Enable once per clone: make hooks
-exec make lint
+while read -r _ local _ _; do
+  [ "$local" = 0000000000000000000000000000000000000000 ] || exec make lint  # a delete pushes no code
+done

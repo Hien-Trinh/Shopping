@@ -100,7 +100,7 @@ def create_app(
                 return refuse(413, "too_large", too_large, merchant.merchant_id)
         try:
             raw = json.loads(body)
-        except ValueError, RecursionError:  # deep nesting raises RecursionError, not ValueError
+        except (ValueError, RecursionError):  # deep nesting raises RecursionError, not ValueError
             return refuse(400, "bad_json", "the body is not JSON", merchant.merchant_id)
         try:
             checked = envelope.check_batch(
@@ -135,7 +135,7 @@ def create_app(
                 raise ValueError
             # Only the hours from the id's own (A12).
             since = datetime.fromtimestamp(0, UTC) + timedelta(milliseconds=parsed.int >> 80)
-        except ValueError, OverflowError:  # a 48-bit timestamp reaches past the year 9999
+        except (ValueError, OverflowError):  # a 48-bit timestamp reaches past the year 9999
             return not_found("unknown_submission")
         # Its events are pruned (step 5d): a forged old id would otherwise scan every hour kept.
         if since < datetime.fromtimestamp(clock(), UTC) - event_files.RETENTION:
@@ -157,8 +157,10 @@ def create_app(
 
 
 def uuid7_at(ms: int) -> uuid.UUID:
-    """A UUIDv7 whose 48-bit timestamp is `ms`, taking every other bit from uuid7()."""
-    return uuid.UUID(int=(ms << 80) | (uuid.uuid7().int & ((1 << 80) - 1)))
+    """A UUIDv7 (RFC 9562) whose 48-bit timestamp is `ms`: version 7, variant 10, 74 random bits.
+    A stand-in for uuid.uuid7(), which is 3.14+; Databricks runs 3.12."""
+    # A uuid4's low 76 bits are already v7's: 12 random, variant 10, 62 random.
+    return uuid.UUID(int=(ms << 80) | (7 << 76) | (uuid.uuid4().int & ((1 << 76) - 1)))
 
 
 def submission_events(submission: str, merchant_id: str, checked: envelope.Checked) -> list[dict]:

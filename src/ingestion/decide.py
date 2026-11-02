@@ -8,13 +8,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from time import monotonic
 
-from catalog import entry, store
-from catalog.envelope import Key
-from catalog.keys import partition
-from catalog.landing import Landed
-from catalog.plan import Classification, Stored, Write, plan
-from catalog.status import Outcome
-from catalog.taxonomy import UNCATEGORIZED
+from ingestion import entry, store
+from ingestion.envelope import Key
+from ingestion.keys import partition
+from ingestion.landing import Landed
+from ingestion.plan import Classification, Stored, Write, plan
+from ingestion.status import Outcome
+from ingestion.taxonomy import UNCATEGORIZED
 
 _WRITES = {Outcome.WRITTEN, Outcome.RECLASSIFIED}
 

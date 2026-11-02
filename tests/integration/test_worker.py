@@ -13,15 +13,15 @@ import pytest
 from deltalake.exceptions import CommitFailedError
 from support import delete, listing, poison, product_in, reclassify, up
 
-from catalog import classify, events, jev, landing, state, store, supervisor, worker
-from catalog.classify import FakeClassifier
-from catalog.envelope import Change
-from catalog.events import EventLog
-from catalog.keys import PARTITIONS
-from catalog.landing import START
-from catalog.replay import diff, expected_store
-from catalog.status import fold
-from catalog.taxonomy import UNCATEGORIZED
+from ingestion import classify, events, jev, landing, state, store, supervisor, worker
+from ingestion.classify import FakeClassifier
+from ingestion.envelope import Change
+from ingestion.events import EventLog
+from ingestion.keys import PARTITIONS
+from ingestion.landing import START
+from ingestion.replay import diff, expected_store
+from ingestion.status import fold
+from ingestion.taxonomy import UNCATEGORIZED
 
 NOW = datetime(2026, 9, 30, 12, tzinfo=UTC)
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")  # pydantic, on poison content
@@ -578,7 +578,7 @@ def test_main_wires_the_flags_and_stops_on_sigterm_or_sigint(tmp_path, monkeypat
 def test_the_cli_works_until_sigterm_then_exits_cleanly(env):
     env.land(up(A, 1))
     args = ["--index", "0", "--workers", "4", "--data", str(env.tmp), "--state", str(env.state)]
-    proc = subprocess.Popen([sys.executable, "-m", "catalog.worker", *args])
+    proc = subprocess.Popen([sys.executable, "-m", "ingestion.worker", *args])
     deadline = time.monotonic() + 30
     while stored(env, A) is None:
         assert proc.poll() is None and time.monotonic() < deadline
@@ -604,7 +604,7 @@ def test_a_retried_batch_reports_a_classifier_outage_once(env, monkeypatch):
 
 def cli(*args, **kwargs):
     return subprocess.run(
-        [sys.executable, "-m", "catalog.worker", *args],
+        [sys.executable, "-m", "ingestion.worker", *args],
         capture_output=True, text=True, timeout=60, **kwargs
     )  # fmt: skip
 
@@ -633,7 +633,7 @@ def test_the_cli_exits_6_without_the_embedding_model(env):
 def test_the_cli_exits_6_without_the_student(env):  # step-6m.md, test point 4
     args = ["--index", "0", "--workers", "4", "--data", str(env.tmp), "--state", str(env.state)]
     missing = cli(*args, "--classifier", "student", "--models", str(env.tmp / "models"))
-    assert missing.returncode == 6 and "catalog.student --download" in missing.stderr
+    assert missing.returncode == 6 and "ingestion.student --download" in missing.stderr
     assert not (env.state / "locks").exists()  # stopped before claiming a partition
 
 
@@ -656,8 +656,8 @@ def test_a_broken_stderr_neither_skips_retries_nor_changes_the_exit_code(env):
     for f in (env.tmp / "listing_store" / "partition=3").glob("*.parquet"):
         f.write_bytes(b"\0" * f.stat().st_size)  # every tick fails reading it
     env.land(up(A, 2), submission="s2")
-    script = (  # `python -m catalog.worker`, giving up after 2 attempts: 1 s of backoff, not 15
-        "from catalog import entry, worker\n"
+    script = (  # `python -m ingestion.worker`, giving up after 2 attempts: 1 s of backoff, not 15
+        "from ingestion import entry, worker\n"
         "worker.ATTEMPTS = 2\n"
         "entry.exit_with(worker.main, fatal=True)\n"
     )

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from catalog import (
+from ingestion import (
     backfill,
     entry,
     events,
@@ -21,7 +21,7 @@ from catalog import (
     supervisor,
     worker,
 )
-from catalog.supervisor import GRACE, STALE, parse_procfile, run, verdict
+from ingestion.supervisor import GRACE, STALE, parse_procfile, run, verdict
 
 REPO = Path(__file__).parents[2]
 
@@ -340,14 +340,14 @@ def test_workers_and_the_supervisor_agree_on_clock_names_and_directories():
     workers = {n: argv for n, argv in procs.items() if n.startswith(state.WORKER)}
     assert workers
     for name, argv in workers.items():
-        assert argv[1:4] == ["-m", "catalog.worker", "--index"]
+        assert argv[1:4] == ["-m", "ingestion.worker", "--index"]
         assert name == f"{state.WORKER}{argv[4]}"  # its heartbeat file is the one watched
         assert "--state" not in argv and "--data" not in argv  # the supervisor's directories
 
 
 def test_main_wires_the_procfile_and_stops_on_sigterm_sigint_or_sighup(tmp_path, monkeypatch):
     handlers, seen = {}, {}
-    (tmp_path / "Procfile").write_text("worker-0: python -m catalog.worker --index 0\n")
+    (tmp_path / "Procfile").write_text("worker-0: python -m ingestion.worker --index 0\n")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.update({sig: handler}))
 
@@ -359,7 +359,7 @@ def test_main_wires_the_procfile_and_stops_on_sigterm_sigint_or_sighup(tmp_path,
     monkeypatch.setattr(supervisor, "run", fake_run)
     assert supervisor.main() == 1  # stopping was set by the handler
     assert seen == {
-        "procs": {"worker-0": [sys.executable, "-m", "catalog.worker", "--index", "0"]},
+        "procs": {"worker-0": [sys.executable, "-m", "ingestion.worker", "--index", "0"]},
         "state": state.STATE,
         "events": state.DATA / "events",
     }
@@ -414,7 +414,7 @@ def test_a_group_is_signalled_whole_and_never_after_its_reaped(tmp_path):
 def test_the_supervisor_restarts_a_killed_process_and_stops_cleanly(tmp_path):
     cmd = "echo $$ > pid.tmp; mv pid.tmp pid; exec sleep 60"  # records its pid, atomically
     (tmp_path / "Procfile").write_text(f"worker-0: sh -c '{cmd}'\n")
-    sup = subprocess.Popen([sys.executable, "-m", "catalog.supervisor"], cwd=tmp_path)
+    sup = subprocess.Popen([sys.executable, "-m", "ingestion.supervisor"], cwd=tmp_path)
     try:
         pid = tmp_path / "pid"
         first = wait_for(lambda: read_pid(pid))
@@ -434,7 +434,7 @@ def test_the_supervisor_restarts_a_killed_process_and_stops_cleanly(tmp_path):
 def test_a_closed_terminal_stops_everything_even_a_wrappers_child(tmp_path):
     cmd = "sleep 60 & echo $! > pid.tmp; mv pid.tmp pid; wait"  # the sleep is the shell's child
     (tmp_path / "Procfile").write_text(f"api: sh -c '{cmd}'\n")
-    sup = subprocess.Popen([sys.executable, "-m", "catalog.supervisor"], cwd=tmp_path)
+    sup = subprocess.Popen([sys.executable, "-m", "ingestion.supervisor"], cwd=tmp_path)
     try:
         grandchild = wait_for(lambda: read_pid(tmp_path / "pid"))
         sup.send_signal(signal.SIGHUP)
@@ -446,7 +446,7 @@ def test_a_closed_terminal_stops_everything_even_a_wrappers_child(tmp_path):
 
 def test_a_process_is_known_by_its_pid_before_it_writes_anything(tmp_path):
     (tmp_path / "Procfile").write_text("api: sleep 60\n")  # never writes an event of its own
-    sup = subprocess.Popen([sys.executable, "-m", "catalog.supervisor"], cwd=tmp_path)
+    sup = subprocess.Popen([sys.executable, "-m", "ingestion.supervisor"], cwd=tmp_path)
     try:
         found = lambda: events.read(tmp_path / "data" / "events")  # noqa: E731
         start = wait_for(lambda: [e for e in found() if e["type"] == "process_start"])

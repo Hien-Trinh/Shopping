@@ -2,7 +2,7 @@
 the middle, then the three oracles (design doc, "Three oracles"). Prints one JSON line; exits 0
 only if every oracle holds.
 
-    python -m catalog.chaos kill-worker --seconds 60 --rate 20
+    python -m ingestion.chaos kill-worker --seconds 60 --rate 20
 """
 
 import argparse
@@ -27,11 +27,11 @@ from pathlib import Path
 
 from deltalake import DeltaTable
 
-from catalog import entry, events, export, landing, merchants, metrics, snapshots, state, store
-from catalog.envelope import Change, Content
-from catalog.keys import PARTITIONS
-from catalog.replay import diff, expected_store, live, replay_exports
-from catalog.status import Outcome
+from ingestion import entry, events, export, landing, merchants, metrics, snapshots, state, store
+from ingestion.envelope import Change, Content
+from ingestion.keys import PARTITIONS
+from ingestion.replay import diff, expected_store, live, replay_exports
+from ingestion.status import Outcome
 
 PROCFILE = Path(__file__).parents[2] / "Procfile"
 OUTCOMES = set(Outcome)
@@ -52,14 +52,14 @@ def procfile(text: str, port: int, *, workers=4, classifier="fake", min_free=0) 
         if n != expected:
             raise ValueError(f"the Procfile changed: {pattern} matched {n} lines, not {expected}")
 
-    sub(r"^api: python -m catalog\.api$", rf"\g<0> --port {port} --min-free {min_free}", 1)
-    sub(r"^export: python -m catalog\.export$", r"\g<0> --interval 0.2", 1)
+    sub(r"^api: python -m ingestion\.api$", rf"\g<0> --port {port} --min-free {min_free}", 1)
+    sub(r"^export: python -m ingestion\.export$", r"\g<0> --interval 0.2", 1)
     # The store's dead files go within seconds, not minutes, so the oracles run over a vacuumed
     # store and a short run shows a store_vacuum event (step 7f).
-    sub(r"^maintenance: python -m catalog\.maintenance$",
+    sub(r"^maintenance: python -m ingestion\.maintenance$",
         r"\g<0> --interval 0.2 --store-vacuum 0.2 --grace 1", 1)  # fmt: skip
     # Every second at least, so consecutive snapshots never share a second's name.
-    sub(r"^snapshots: python -m catalog\.snapshots$", r"\g<0> --every 1", 1)
+    sub(r"^snapshots: python -m ingestion\.snapshots$", r"\g<0> --every 1", 1)
     sub(r"^((?:worker-\d|backfill): .*)--classifier student$", rf"\1--classifier {classifier}", 5)
     sub(r" --workers 4 ", f" --workers {workers} ", 4)
     sub(rf"^worker-[{workers}-9]: .*\n", "", 4 - workers)  # a rescale down drops the last ones
@@ -162,7 +162,7 @@ class System:
         # take it in the moment between the old API's exit and the new one's bind. An API the
         # supervisor restarts alone fails the run (check).
         (self.root / "Procfile").write_text(procfile(PROCFILE.read_text(), self.port, **options))
-        argv = [sys.executable, "-m", "catalog.supervisor"]
+        argv = [sys.executable, "-m", "ingestion.supervisor"]
         # Its own session: a Ctrl-C reaches only the runner, which stops it in order. Its logs
         # go to stderr, so stdout holds only the summary.
         self.supervisor = subprocess.Popen(argv, cwd=self.root, start_new_session=True,
@@ -220,8 +220,8 @@ class System:
             raise Failed("the API restarted on another port")
 
     def load(self, *flags) -> subprocess.Popen:
-        """catalog.load in the background; its key goes through the environment, never argv."""
-        argv = [sys.executable, "-m", "catalog.load", "--url", self.url, "--keys", str(KEYS),
+        """ingestion.load in the background; its key goes through the environment, never argv."""
+        argv = [sys.executable, "-m", "ingestion.load", "--url", self.url, "--keys", str(KEYS),
                 "--processes", "8", *map(str, flags)]  # fmt: skip
         env = os.environ | {"CATALOG_API_KEY": self.key}
         self.loads.append(subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, text=True))
@@ -256,10 +256,10 @@ class System:
 
 
 def ours(pid: int) -> bool:
-    """Whether `pid` still runs a catalog process: a long-dead one's pid may be reused."""
+    """Whether `pid` still runs an ingestion process: a long-dead one's pid may be reused."""
     # -ww: the whole command line. Without it, CI's procps cut it at 80 columns.
     command = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True)
-    return b"catalog." in command.stdout
+    return b"ingestion." in command.stdout
 
 
 def wait(condition: Callable[[], object], timeout: float, why: str | Callable[[], str]) -> None:
@@ -447,7 +447,7 @@ def settle_down(system, scenario: str, budget: float) -> float:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = argparse.ArgumentParser(prog="python -m catalog.chaos")
+    args = argparse.ArgumentParser(prog="python -m ingestion.chaos")
     args.add_argument("scenario", choices=SCENARIOS)
     args.add_argument("--seconds", type=float, default=60, help="load time")
     args.add_argument("--rate", type=float, default=20, help="Changes/s")

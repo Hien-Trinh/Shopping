@@ -5,9 +5,9 @@ import math
 import pytest
 from support import listing
 
-from catalog import classify, evaluate, taxonomy
-from catalog.classify import FakeClassifier
-from catalog.taxonomy import UNCATEGORIZED
+from ingestion import classify, evaluate, taxonomy
+from ingestion.classify import FakeClassifier
+from ingestion.taxonomy import UNCATEGORIZED
 
 SHIRT = "Apparel & Accessories > Clothing > Activewear"
 KIDS = "Apparel & Accessories > Clothing > Baby & Children's Clothing"
@@ -478,7 +478,7 @@ def test_a_negative_description_or_no_items_per_category_is_a_usage_error(argv):
 
 
 def test_the_laya_candidates_run_without_a_threshold(monkeypatch):
-    from catalog import laya
+    from ingestion import laya
 
     monkeypatch.setattr(
         evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
@@ -493,7 +493,7 @@ def test_the_laya_candidates_run_without_a_threshold(monkeypatch):
 
 
 def test_the_jev_candidate_shortlists_with_the_embedding(monkeypatch):
-    from catalog import jev
+    from ingestion import jev
 
     monkeypatch.setattr(
         evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
@@ -512,7 +512,7 @@ def test_the_jev_candidate_shortlists_with_the_embedding(monkeypatch):
 
 
 def test_shortlist_sets_the_jev_and_laya_shortlist_length(monkeypatch):
-    from catalog import jev, laya
+    from ingestion import jev, laya
 
     monkeypatch.setattr(
         evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
@@ -755,7 +755,7 @@ def test_a_worker_kind_the_eval_cannot_build_is_a_usage_error(kind, capsys):
 
 
 def test_each_candidate_reaches_its_own_branch(monkeypatch, tmp_path):
-    from catalog import jev, laya, student
+    from ingestion import jev, laya, student
 
     monkeypatch.setattr(
         evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)

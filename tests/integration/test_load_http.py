@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from catalog import load
+from ingestion import load
 
 KEY = "k_stub"
 

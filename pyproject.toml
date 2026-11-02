@@ -1,5 +1,5 @@
 [project]
-name = "catalog"
+name = "ingestion"
 version = "0.1.0"
 description = "Commerce ingestion pipeline: Listings in, categorized current catalog out."
 readme = "README.md"
@@ -49,7 +49,7 @@ markers = [
 
 [tool.coverage.run]
 branch = true
-source = ["catalog"]
+source = ["ingestion"]
 
 [tool.coverage.report]
 fail_under = 90
@@ -65,7 +65,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.mutmut]
 # Pure modules only (plan-v1.md, Testing rules); run with `make mutate`.
-source_paths = ["src/catalog/keys.py", "src/catalog/envelope.py", "src/catalog/plan.py", "src/catalog/replay.py", "src/catalog/status.py", "src/catalog/collapse.py"]
+source_paths = ["src/ingestion/keys.py", "src/ingestion/envelope.py", "src/ingestion/plan.py", "src/ingestion/replay.py", "src/ingestion/status.py", "src/ingestion/collapse.py"]
 # test_decide imports non-pure modules, which the mutants tree doesn't hold
 pytest_add_cli_args_test_selection = ["tests/unit/", "--ignore=tests/unit/test_decide.py"]
 also_copy = ["tests/"]

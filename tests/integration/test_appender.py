@@ -3,7 +3,7 @@
 import asyncio
 import threading
 
-from catalog.landing import Appender
+from ingestion.landing import Appender
 
 
 class Commits:

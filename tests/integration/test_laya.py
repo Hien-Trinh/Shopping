@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 from support import listing
 
-from catalog import laya
-from catalog.classify import EmbeddingClassifier, ModelMissing
-from catalog.laya import LayaClassifier
-from catalog.taxonomy import Taxonomy
+from ingestion import laya
+from ingestion.classify import EmbeddingClassifier, ModelMissing
+from ingestion.laya import LayaClassifier
+from ingestion.taxonomy import Taxonomy
 
 TAXONOMY = Taxonomy(
     "shopify-2026-08",

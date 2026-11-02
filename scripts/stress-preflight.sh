@@ -6,7 +6,7 @@
 set -u
 vol=${1:-/Volumes/T9}
 max_swap_gb=${MAX_SWAP_GB:-8}
-guard_gib=5   # src/catalog/api.py MIN_FREE: the API refuses writes (low_disk) under this
+guard_gib=5   # src/ingestion/api.py MIN_FREE: the API refuses writes (low_disk) under this
 min_free_gib=$((guard_gib + 2))
 
 fail() { echo "preflight FAILED: $*" >&2; exit 1; }

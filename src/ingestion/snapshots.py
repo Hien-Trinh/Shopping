@@ -18,8 +18,8 @@ from pathlib import Path
 
 from deltalake import CommitProperties, DeltaTable, write_deltalake
 
-from catalog import entry, state, store
-from catalog.events import EventLog, stopping
+from ingestion import entry, state, store
+from ingestion.events import EventLog, stopping
 
 NAME = "%Y%m%dT%H%M%SZ"  # UTC; name order is time order
 EVERY, KEEP = timedelta(hours=6), timedelta(days=7)  # design doc: every 6 h, keep 7 days
@@ -139,7 +139,7 @@ def _taken(path: Path) -> datetime:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = argparse.ArgumentParser(prog="python -m catalog.snapshots")
+    args = argparse.ArgumentParser(prog="python -m ingestion.snapshots")
     args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--state", type=Path, default=state.STATE)
     args.add_argument("--every", type=float, default=EVERY.total_seconds(), help="seconds")

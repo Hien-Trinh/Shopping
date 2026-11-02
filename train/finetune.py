@@ -14,8 +14,8 @@ On the Mac, `uv run --group finetune python train/finetune.py --smoke`. Not impo
 
 Writes to `--out`: `onnx/model.onnx` and `onnx/model_quantized.onnx` (the encoder; fastembed does
 the CLS pooling and normalization), the tokenizer files, `head.npz` (the linear head in
-`catalog.student.Softmax`'s format) and `train.json` (what produced them). `--push` uploads the
-folder to the Hub repo the eval downloads (`python -m catalog.student --download`).
+`ingestion.student.Softmax`'s format) and `train.json` (what produced them). `--push` uploads the
+folder to the Hub repo the eval downloads (`python -m ingestion.student --download`).
 """
 
 import argparse
@@ -33,7 +33,7 @@ import torch
 from torch.nn import functional as F
 from transformers import AutoModel, AutoTokenizer
 
-from catalog import entry, student
+from ingestion import entry, student
 
 BASE = "BAAI/bge-small-en-v1.5"  # the fp32 checkpoint of the model the workers run as int8 ONNX
 MAX_LENGTH = 128  # title plus 200 description characters is about 64 tokens

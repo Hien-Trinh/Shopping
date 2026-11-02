@@ -3,13 +3,13 @@ import itertools
 import pytest
 from support import listing, poison, product_in, reclassify, up
 
-from catalog import jev, state, store
-from catalog.classify import Classifier, FakeClassifier
-from catalog.decide import decide
-from catalog.keys import partition
-from catalog.landing import Landed
-from catalog.plan import Classification, Stored
-from catalog.taxonomy import UNCATEGORIZED
+from ingestion import jev, state, store
+from ingestion.classify import Classifier, FakeClassifier
+from ingestion.decide import decide
+from ingestion.keys import partition
+from ingestion.landing import Landed
+from ingestion.plan import Classification, Stored
+from ingestion.taxonomy import UNCATEGORIZED
 
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")  # pydantic, on poison content
 

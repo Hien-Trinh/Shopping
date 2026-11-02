@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 
 import pytest
 
-from catalog import benchmark, evaluate, taxonomy
+from ingestion import benchmark, evaluate, taxonomy
 
 FULL = {
     "Apparel & Accessories",

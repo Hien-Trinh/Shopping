@@ -2,7 +2,7 @@
 
 The committed file keeps the release's line format, `{GID} : {Ancestor} > ... > {Name}` under a
 `#` header ending in the release date. Update it from a new release's `categories.en.txt` with
-`python -m catalog.taxonomy categories.en.txt > src/catalog/data/shopify-taxonomy.txt`.
+`python -m ingestion.taxonomy categories.en.txt > src/ingestion/data/shopify-taxonomy.txt`.
 """
 
 import gzip
@@ -13,13 +13,13 @@ from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 
-from catalog.entry import exit_with
+from ingestion.entry import exit_with
 
 DEPTH = 3
 SEP = " > "
 UNCATEGORIZED = "Uncategorized"  # the fallback Category: never a path in a taxonomy
-DEFAULT = files("catalog") / "data" / "shopify-taxonomy.txt"
-FULL = files("catalog") / "data" / "shopify-taxonomy-full.txt.gz"  # the release, untrimmed
+DEFAULT = files("ingestion") / "data" / "shopify-taxonomy.txt"
+FULL = files("ingestion") / "data" / "shopify-taxonomy-full.txt.gz"  # the release, untrimmed
 _VERSION = re.compile(r"# Shopify Product Taxonomy - Categories: (\S+)$")
 
 

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from support import listing, product_in, up
 
-from catalog import classify, landing, store, taxonomy
+from ingestion import classify, landing, store, taxonomy
 
 NOW = datetime(2026, 10, 4, tzinfo=UTC)
 
@@ -70,7 +70,7 @@ def test_the_worker_cli_classifies_with_the_real_model(tmp_path):
     )
     args = ["--index", "0", "--workers", "4", "--data", str(data), "--state", str(state_dir)]
     proc = subprocess.Popen(
-        [sys.executable, "-m", "catalog.worker", *args, "--classifier", "embedding"]
+        [sys.executable, "-m", "ingestion.worker", *args, "--classifier", "embedding"]
     )
     try:
         deadline = time.monotonic() + 120

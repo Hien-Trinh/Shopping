@@ -1,4 +1,4 @@
-"""Test only: the worker CLI with one catalog function wrapped to go wrong at its Nth call.
+"""Test only: the worker CLI with one ingestion function wrapped to go wrong at its Nth call.
 
     python chaos_driver.py [MODULE.FUNCTION WHEN N] -- WORKER_ARGS...
 
@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 
-from catalog import entry, worker
+from ingestion import entry, worker
 
 
 def die():
@@ -28,7 +28,7 @@ def wrap(target: str, when: str, n: int) -> None:
     if when not in ("before", "after", "slow", "hang") and not when.isdecimal():
         raise ValueError(f"unknown WHEN {when!r}")  # a typo must not quietly test nothing
     module, name = target.rsplit(".", 1)
-    module = importlib.import_module(f"catalog.{module}")
+    module = importlib.import_module(f"ingestion.{module}")
     real, calls = getattr(module, name), itertools.count(1)
 
     def wrapped(*args, **kwargs):

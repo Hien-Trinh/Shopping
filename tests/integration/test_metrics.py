@@ -5,10 +5,10 @@ from datetime import UTC, datetime
 import pytest
 from support import listing
 
-from catalog import events, metrics, status, store
-from catalog.events import EventLog
-from catalog.plan import Classification, Write
-from catalog.taxonomy import UNCATEGORIZED
+from ingestion import events, metrics, status, store
+from ingestion.events import EventLog
+from ingestion.plan import Classification, Write
+from ingestion.taxonomy import UNCATEGORIZED
 
 SINCE, NOW = datetime.fromtimestamp(50, UTC), datetime.fromtimestamp(350, UTC)
 

@@ -21,7 +21,7 @@ ROWS = 2000  # training rows skipped before the first slice (each process takes 
 
 
 def _work(chunk, threads, offset, n, models, barrier, out):
-    from catalog import classify, student
+    from ingestion import classify, student
 
     student.CHUNK = chunk
     if threads:  # 0: fastembed's default; forced over whatever the caller passes

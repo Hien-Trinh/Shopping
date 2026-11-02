@@ -21,10 +21,10 @@ from pathlib import Path
 import pyarrow.compute as pc
 from deltalake import DeltaTable
 
-from catalog import api, classifiers, delta, entry, landing, state, store
-from catalog.envelope import Change, Key
-from catalog.events import EventLog, stopping
-from catalog.keys import PARTITIONS
+from ingestion import api, classifiers, delta, entry, landing, state, store
+from ingestion.envelope import Change, Key
+from ingestion.events import EventLog, stopping
+from ingestion.keys import PARTITIONS
 
 INTERVAL = 10.0  # seconds between ticks
 LIMIT = 1000  # reclassifies per round: about one worker batch, spread over the workers
@@ -145,7 +145,7 @@ def run(
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = argparse.ArgumentParser(prog="python -m catalog.backfill")
+    args = argparse.ArgumentParser(prog="python -m ingestion.backfill")
     # The workers' flag: their version is the one rows should be on (step-6c.md, decision 5).
     args.add_argument("--classifier", choices=classifiers.KINDS, required=True)
     args.add_argument("--data", type=Path, default=state.DATA)

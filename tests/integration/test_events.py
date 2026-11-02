@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from catalog import events
-from catalog.events import EventLog
+from ingestion import events
+from ingestion.events import EventLog
 
 T0 = datetime(2026, 9, 30, 12, 30, tzinfo=UTC).timestamp()
 HOUR = "2026-09-30T12"

@@ -7,8 +7,8 @@ only decides when writes are flushed, never what they are.
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from catalog.envelope import Change, Content, Key, content_hash
-from catalog.status import Outcome
+from ingestion.envelope import Change, Content, Key, content_hash
+from ingestion.status import Outcome
 
 
 @dataclass(frozen=True)

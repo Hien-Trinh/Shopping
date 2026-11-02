@@ -17,10 +17,10 @@ import pyarrow.compute as pc
 from deltalake import DeltaTable, write_deltalake
 from deltalake.exceptions import CommitFailedError
 
-from catalog import delta
-from catalog.envelope import Change, Content
-from catalog.events import EventLog
-from catalog.keys import PARTITIONS, partition
+from ingestion import delta
+from ingestion.envelope import Change, Content
+from ingestion.events import EventLog
+from ingestion.keys import PARTITIONS, partition
 
 Position = tuple[int, int]  # (commit version, seq) of the next row to read
 START: Position = (0, 0)  # nothing processed; version 0 only creates the table

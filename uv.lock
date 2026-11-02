@@ -76,69 +76,6 @@ wheels = [
 ]
 
 [[package]]
-name = "catalog"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "deltalake" },
-    { name = "fastapi" },
-    { name = "fastembed" },
-    { name = "numpy" },
-    { name = "pyarrow" },
-    { name = "pydantic" },
-    { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "duckdb" },
-    { name = "httpx2" },
-    { name = "hypothesis" },
-    { name = "mutmut" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
-]
-finetune = [
-    { name = "onnx" },
-    { name = "torch" },
-    { name = "transformers" },
-]
-laya = [
-    { name = "laya-mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "deltalake", specifier = ">=1.6.6" },
-    { name = "fastapi", specifier = ">=0.142.2" },
-    { name = "fastembed", specifier = ">=0.8.1" },
-    { name = "numpy", specifier = ">=2.3" },
-    { name = "pyarrow", specifier = ">=25.0.1" },
-    { name = "pydantic", specifier = ">=2.13.5" },
-    { name = "uvicorn", specifier = ">=0.54.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "duckdb", specifier = ">=1.5.6" },
-    { name = "httpx2", specifier = ">=2.13.1" },
-    { name = "hypothesis", specifier = ">=6" },
-    { name = "mutmut", specifier = ">=3.8.0" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-cov", specifier = ">=6" },
-    { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "ruff", specifier = ">=0.13" },
-]
-finetune = [
-    { name = "onnx", specifier = ">=1.23.2" },
-    { name = "torch", specifier = ">=2.14.1" },
-    { name = "transformers", specifier = ">=5.19.0" },
-]
-laya = [{ name = "laya-mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==0.3.0" }]
-
-[[package]]
 name = "certifi"
 version = "2026.7.22"
 source = { registry = "https://pypi.org/simple" }
@@ -807,6 +744,69 @@ sdist = { url = "https://files.pythonhosted.org/packages/f5/08/8eea9d4b8302028f3
 wheels = [
     { url = "https://files.pythonhosted.org/packages/58/a2/bb081bab032533a855d44de1d56f8e8426114ff1ba5d1f07a438a0a654f8/idna-3.20-py3-none-any.whl", hash = "sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c", size = 69583, upload-time = "2026-09-17T14:11:03.168Z" },
 ]
+
+[[package]]
+name = "ingestion"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "deltalake" },
+    { name = "fastapi" },
+    { name = "fastembed" },
+    { name = "numpy" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "duckdb" },
+    { name = "httpx2" },
+    { name = "hypothesis" },
+    { name = "mutmut" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-xdist" },
+    { name = "ruff" },
+]
+finetune = [
+    { name = "onnx" },
+    { name = "torch" },
+    { name = "transformers" },
+]
+laya = [
+    { name = "laya-mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "deltalake", specifier = ">=1.6.6" },
+    { name = "fastapi", specifier = ">=0.142.2" },
+    { name = "fastembed", specifier = ">=0.8.1" },
+    { name = "numpy", specifier = ">=2.3" },
+    { name = "pyarrow", specifier = ">=25.0.1" },
+    { name = "pydantic", specifier = ">=2.13.5" },
+    { name = "uvicorn", specifier = ">=0.54.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "duckdb", specifier = ">=1.5.6" },
+    { name = "httpx2", specifier = ">=2.13.1" },
+    { name = "hypothesis", specifier = ">=6" },
+    { name = "mutmut", specifier = ">=3.8.0" },
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-cov", specifier = ">=6" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
+    { name = "ruff", specifier = ">=0.13" },
+]
+finetune = [
+    { name = "onnx", specifier = ">=1.23.2" },
+    { name = "torch", specifier = ">=2.14.1" },
+    { name = "transformers", specifier = ">=5.19.0" },
+]
+laya = [{ name = "laya-mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==0.3.0" }]
 
 [[package]]
 name = "iniconfig"

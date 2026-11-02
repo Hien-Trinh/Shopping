@@ -24,10 +24,10 @@ from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from catalog import entry, envelope, landing, merchants, state, status
-from catalog import events as event_files
-from catalog.events import EventLog
-from catalog.keys import partition
+from ingestion import entry, envelope, landing, merchants, state, status
+from ingestion import events as event_files
+from ingestion.events import EventLog
+from ingestion.keys import partition
 
 MAX_BODY = 32 * 2**20  # bytes; uvicorn and FastAPI set no limit (plan-v1 B8)
 MIN_FREE = 5 * 2**30  # bytes of free disk below which every write gets 503 (plan-v1 A13)
@@ -196,7 +196,7 @@ class _Server(uvicorn.Server):
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = argparse.ArgumentParser(prog="python -m catalog.api")
+    args = argparse.ArgumentParser(prog="python -m ingestion.api")
     args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--db", type=Path, default=merchants.DB)
     args.add_argument("--port", type=int, default=8000)
@@ -206,7 +206,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         app = create_app(a.data, a.db, min_free=a.min_free)
     except sqlite3.Error as e:
-        args.error(f"no usable merchant registry at {a.db} ({e}): run catalog.merchants create")
+        args.error(f"no usable merchant registry at {a.db} ({e}): run ingestion.merchants create")
     # Never wider than localhost: there is no TLS and no rate limit yet (plan-v1, section C).
     log = EventLog(a.data / "events", "api")
     server = _Server(uvicorn.Config(app, host="127.0.0.1", port=a.port), log)

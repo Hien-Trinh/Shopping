@@ -8,10 +8,10 @@ import numpy as np
 import pytest
 from support import listing
 
-from catalog import classify, evaluate, jev, taxonomy
-from catalog.classify import EmbeddingClassifier
-from catalog.jev import JevClassifier
-from catalog.taxonomy import UNCATEGORIZED, Taxonomy
+from ingestion import classify, evaluate, jev, taxonomy
+from ingestion.classify import EmbeddingClassifier
+from ingestion.jev import JevClassifier
+from ingestion.taxonomy import UNCATEGORIZED, Taxonomy
 
 TAXONOMY = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
 VECTORS = {"Apparel": [1, 0], "Apparel > Shirts": [0.8, 0.6], "Toys": [0, 1], "Tee": [0.6, 0.8]}

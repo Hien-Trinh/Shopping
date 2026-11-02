@@ -1,7 +1,7 @@
 """Classifiers: Listing content -> (Primary Category, confidence), a whole batch per call.
 
-The seam: the contract (`Classifier`) and the fake and embedding adapters. `catalog.classifiers`
-builds a worker's classifier by kind, and `python -m catalog.classifiers --download` fetches the
+The seam: the contract (`Classifier`) and the fake and embedding adapters. `ingestion.classifiers`
+builds a worker's classifier by kind, and `python -m ingestion.classifiers --download` fetches the
 embedding model (step-6b.md).
 """
 
@@ -14,8 +14,8 @@ from pathlib import Path
 
 import numpy as np
 
-from catalog import entry, state, taxonomy
-from catalog.envelope import Content
+from ingestion import entry, state, taxonomy
+from ingestion.envelope import Content
 
 MODEL = "BAAI/bge-small-en-v1.5"
 MODELS = Path("models")  # where --download puts it and workers load it from (gitignored)
@@ -172,7 +172,7 @@ def text(listing: Content, description: int = DESCRIPTION) -> str:
     return f"{listing.title} {listing.description[:description]}".strip()
 
 
-DOWNLOAD = "run python -m catalog.classifiers --download"
+DOWNLOAD = "run python -m ingestion.classifiers --download"
 
 
 def cache_key(model: str, texts: Sequence[tuple[str, str]]) -> str:

@@ -34,7 +34,7 @@ One PR:
 |---|---|
 | `databricks.txt` edited by hand, or `databricks.in` or `runtime-18.txt` changed without recompiling | The stale step fails the `spark` job |
 | A Runtime 18 maintenance update changes a library | Nothing notices: `runtime-18.txt` is refetched by hand, and its header says when it was fetched |
-| pyspark missing from the Spark env (a broken install) | Nothing is collected, and pytest's exit code 5 fails the job: never a green run of zero tests |
+| pyspark missing from the Spark env (a broken install) | `make spark` names `tests/spark`, which `collect_ignore` doesn't stop, so its conftest fails to import (pytest exit 4): never a green run of zero tests |
 | The runner's default JDK (17) is picked | The session fixture asserts JVM 21 and fails at once |
 | Cold Ivy cache (a new runner or a version bump) | The first session downloads about 85 MB of jars (31 s on the Mac) and still fits the timeout |
 | Maven Central down | The job fails; rerun it. No mirror |
@@ -43,7 +43,7 @@ One PR:
 ## Implementation decisions
 
 1. **`requirements/`** holds the three inputs (`runtime-18.txt`, `databricks.in`, `spark.txt`) and the one output (`databricks.txt`).
-2. **The compile:** `uv pip compile requirements/databricks.in -c requirements/runtime-18.txt --python-version 3.12 --python-platform x86_64-manylinux_2_39 -o requirements/databricks.txt`. manylinux 2.39 is Runtime 18's glibc (Ubuntu 24.04). aarch64 and the other x86_64 targets compile to the same 31 pins today.
+2. **The compile:** `uv pip compile requirements/databricks.in -c requirements/runtime-18.txt --python-version 3.12 --python-platform x86_64-manylinux_2_39 --upgrade --exclude-newer 2026-11-01T00:00:00Z -o requirements/databricks.txt`. manylinux 2.39 is Runtime 18's glibc (Ubuntu 24.04). aarch64 and the other x86_64 targets compile to the same 31 pins today. Without `--upgrade`, uv keeps the old file's pins as preferences, so a hand edit of a pin the runtime doesn't constrain (loguru, say) survived the stale step; `--exclude-newer` keeps the output from moving with each upstream release (review, round 1).
 3. **`runtime-18.txt` is the whole table as published:** 265 libraries, fetched Nov 1, with its source URL and date in the header (question 1).
 4. **pyspark 4.1.4 and delta-spark 4.4.1,** the pair measured on the Mac for [#162][t162]. Runtime 18.0's Spark is 4.1.0, and 4.1.4 is the latest 4.1 patch. delta-spark 4.4.1 accepts pyspark 4.0.1 to 4.2.0, and its jar (`delta-spark_4.1_2.13`) follows the installed pyspark. delta-spark 4.2.0 is out: it caps pyspark at 4.1.1. The `sql` extra brings pandas and pyarrow at the runtime's versions under the constraints. The `connect` extra conflicts with the runtime's grpcio and zstandard, and nothing needs it.
 5. **`tests/conftest.py` skips `tests/spark` when pyspark isn't importable,** so `make check` and a bare `uv run pytest` never import it.
@@ -52,10 +52,14 @@ One PR:
    - the Delta extension and catalog;
    - `snapshotPartitions=1` and `spark.sql.shuffle.partitions=1`;
    - the UI off;
+   - `PYSPARK_PYTHON` to the env's own Python, since workers otherwise run PATH's `python3` (a 3.15 on the Mac);
+   - an assertion that every library the env shares with `runtime-18.txt` is at the runtime's version;
    - an assertion that the JVM is 21.
+
+   `make spark` installs with `--exact`, so a reused env drops what the files no longer list.
 7. **CI:**
    - `JAVA_HOME=$JAVA_HOME_21_X64` in the run step, because runner variables aren't in the workflow's `env` context;
-   - the stale step is `make requirements` then `git diff --exit-code requirements/`;
+   - the stale step is `make requirements`, then `git add -N` and `git diff --exit-code requirements/`, so a deleted file counts too;
    - `actions/cache` on `~/.ivy2.5.2`, keyed on `hashFiles('requirements/spark.txt')`.
 8. **Required after merge.** Once the job has run green on `main`, `spark` joins `main`'s required checks. That's a branch-protection change, and I ask before making it.
 

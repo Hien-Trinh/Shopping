@@ -10,6 +10,7 @@ A learning project: merchants push product Listings through one API, and the pip
 uv sync
 make hooks   # once per clone: runs ruff before every push, and refreshes graphify-out/ after a pull
 make check   # ruff + tests + coverage gates, same as CI
+make spark   # the Spark tests, in Runtime 18's libraries: needs JDK 21, and the first run fetches ~85 MB of jars
 make repeat TEST=tests/x.py::test_y N=25 J=4   # reproduce a flake: stops at the first failure, keeps its log and temp dir
 ```
 

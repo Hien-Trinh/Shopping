@@ -10,3 +10,4 @@ __pycache__/
 .mutmut-cache
 mutants/
 /models/
+.venv-spark/

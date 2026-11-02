@@ -176,6 +176,16 @@ def test_close_kills_its_loads_and_only_live_catalog_processes(tmp_path, monkeyp
     sleep = "import time; time.sleep(60)"
     ours = subprocess.Popen([sys.executable, "-c", sleep, "catalog.worker"])
     other = subprocess.Popen([sys.executable, "-c", sleep])  # a reused pid: not ours
+    import os  # noqa: E401  DEBUG(g3): what ps sees on Linux 3.12; remove
+    import time
+    import warnings
+
+    for _ in range(2):
+        ps = subprocess.run(["ps", "-o", "command=", "-p", str(ours.pid)], capture_output=True)
+        proc = f"/proc/{ours.pid}/cmdline"
+        raw = open(proc, "rb").read() if os.path.exists(proc) else None  # noqa: SIM115
+        warnings.warn(f"DEBUG ps={ps!r} proc={raw!r} ours={chaos.ours(ours.pid)}", stacklevel=1)
+        time.sleep(1)
     monkeypatch.setattr(chaos.System, "pids", lambda self: [ours.pid, other.pid])
     try:
         system.close()

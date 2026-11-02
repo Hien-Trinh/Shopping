@@ -99,7 +99,7 @@ def send(bodies: Iterable[dict], post: Callable[[dict], tuple[int, dict]], *, ra
             status, reply = post(body)
         # Refused, reset or timed out (URLError and TimeoutError are OSErrors), a cut-off
         # response (HTTPException) or a body that isn't JSON (ValueError).
-        except OSError, HTTPException, ValueError:
+        except (OSError, HTTPException, ValueError):
             tally["errors"] += 1
             status, reply = None, {}
         tally["latencies"].append(clock() - began)

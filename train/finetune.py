@@ -1,7 +1,7 @@
 """Fine-tune bge-small end-to-end as the student (docs/specs/step-6l.3.md).
 
-Plain Python, so it runs where there is a GPU. The project needs Python 3.14, which Colab
-doesn't ship, so install through uv there (it brings its own Python and the locked versions):
+Plain Python, so it runs where there is a GPU. Install through uv there (it brings the project's
+Python and the locked versions):
 
     !curl -LsSf https://astral.sh/uv/install.sh | sh
     !git clone -b <branch> https://github.com/Hien-Trinh/Shopping.git && cd Shopping && \

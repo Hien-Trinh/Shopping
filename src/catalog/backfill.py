@@ -13,7 +13,6 @@ import os
 import shutil
 import threading
 import time
-import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -98,7 +97,7 @@ def tick(
     found = pending(store_dt, version, limit)
     if not found.rows:
         return None
-    submission = f"backfill-{uuid.uuid7()}"  # not a UUIDv7, so GET /submissions 404s it
+    submission = f"backfill-{api.uuid7_at(int(now.timestamp() * 1000))}"  # not a UUIDv7: a GET 404s
     entries = [
         (submission, i, Change(*key, source_version, "reclassify"), now)
         for i, (key, source_version) in enumerate(found.rows)

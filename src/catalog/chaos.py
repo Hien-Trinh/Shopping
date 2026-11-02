@@ -257,7 +257,8 @@ class System:
 
 def ours(pid: int) -> bool:
     """Whether `pid` still runs a catalog process: a long-dead one's pid may be reused."""
-    command = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True)
+    # -ww: the whole command line. Without it, CI's procps cut it at 80 columns.
+    command = subprocess.run(["ps", "-ww", "-o", "command=", "-p", str(pid)], capture_output=True)
     return b"catalog." in command.stdout
 
 

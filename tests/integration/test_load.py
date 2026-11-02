@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from catalog import envelope, load
+from ingestion import envelope, load
 
 START_MS = 1_790_000_000_000
 TEXTS = load.texts()

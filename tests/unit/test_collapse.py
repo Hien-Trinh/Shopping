@@ -1,4 +1,4 @@
-from catalog.collapse import collapse
+from ingestion.collapse import collapse
 
 
 def feed(mpid, kind, version, sv=1, tombstone=False):

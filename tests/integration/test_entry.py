@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-from catalog import entry, events, state
+from ingestion import entry, events, state
 
 
 @pytest.fixture

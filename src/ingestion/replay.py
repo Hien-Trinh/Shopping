@@ -1,12 +1,12 @@
 """Correctness oracles (plan-v1.md A4): what the Listing Store and Change Export must hold. Pure.
 
-Deliberately a different formulation from catalog.plan, so a shared bug can't hide:
+Deliberately a different formulation from ingestion.plan, so a shared bug can't hide:
 per Listing key, the earliest-landed Change with the highest source version wins.
 """
 
 from collections.abc import Container, Iterable, Mapping
 
-from catalog.envelope import Change, Key
+from ingestion.envelope import Change, Key
 
 Fingerprint = tuple[int, str, bool]  # (source_version, content_hash, is_tombstone)
 

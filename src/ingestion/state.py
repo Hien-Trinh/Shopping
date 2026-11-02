@@ -24,8 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from catalog.entry import Fatal
-from catalog.landing import START, Position
+from ingestion.entry import Fatal
+from ingestion.landing import START, Position
 
 # Shared by every worker and the supervisor, so they can't disagree:
 CLOCK = time.monotonic  # heartbeats: system-wide, and laptop sleep or NTP never jumps it (B7)

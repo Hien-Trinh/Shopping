@@ -1,4 +1,5 @@
-"""The classifier factory (`catalog.classifiers`), the classifier contract and the fatal errors."""
+"""The classifier factory (`ingestion.classifiers`), the classifier contract and the fatal
+errors."""
 
 import ast
 import importlib
@@ -13,28 +14,28 @@ import numpy as np
 import pytest
 from support import listing
 
-from catalog import classifiers, classify, entry, jev, laya, state, student, supervisor, taxonomy
+from ingestion import classifiers, classify, entry, jev, laya, state, student, supervisor, taxonomy
 
 MODULES = ("classify", "taxonomy", "jev", "student", "decide", "metrics", "evaluate", "worker")
 
 
 def imported(module: str) -> set[str]:
-    """The catalog modules `module` imports anywhere in its source, functions included."""
-    tree = ast.parse(Path(find_spec(f"catalog.{module}").origin).read_text())
+    """The ingestion modules `module` imports anywhere in its source, functions included."""
+    tree = ast.parse(Path(find_spec(f"ingestion.{module}").origin).read_text())
     names = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "catalog":
+        if isinstance(node, ast.ImportFrom) and node.module == "ingestion":
             names |= {a.name for a in node.names}
-        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("catalog."):
-            names.add(node.module.removeprefix("catalog."))
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("ingestion."):
+            names.add(node.module.removeprefix("ingestion."))
         elif isinstance(node, ast.Import):
-            names |= {a.name.removeprefix("catalog.") for a in node.names}
+            names |= {a.name.removeprefix("ingestion.") for a in node.names}
     return names
 
 
 @pytest.mark.parametrize("module", [*MODULES, "supervisor", "classifiers"])
 def test_each_module_imports_first_in_a_fresh_interpreter(module):  # no import cycle
-    done = subprocess.run([sys.executable, "-c", f"import catalog.{module}"], capture_output=True)
+    done = subprocess.run([sys.executable, "-c", f"import ingestion.{module}"], capture_output=True)
     assert done.returncode == 0, done.stderr.decode()
 
 
@@ -75,9 +76,11 @@ def test_a_classifier_is_free_and_silent_unless_it_says_otherwise():
 
 def test_each_fatal_error_has_its_own_code_and_stops_the_supervisor():
     for module in ("state", "classify", "jev"):  # every module that defines one
-        importlib.import_module(f"catalog.{module}")
-    # the catalog's own: a test's refused class can linger until garbage collected
-    codes = {e: e.code for e in entry.Fatal.__subclasses__() if e.__module__.startswith("catalog.")}
+        importlib.import_module(f"ingestion.{module}")
+    # ingestion's own: a test's refused class can linger until garbage collected
+    codes = {
+        e: e.code for e in entry.Fatal.__subclasses__() if e.__module__.startswith("ingestion.")
+    }
     assert codes == {
         state.PartitionTaken: 3,
         state.OffsetsMismatch: 4,
@@ -129,7 +132,7 @@ def test_the_jev_kind_loads_with_the_pipeline_settings(models, http):  # PR #63
     assert (c.shortlist.description, c.shortlist.budget) == (200, math.inf)
     assert c.texts == "deeper" and c.shortlist.cache == models / "texts"  # step-6f.md, 6f.3
     assert len(c.shortlist.texts) > 14_000
-    with pytest.raises(classify.ModelMissing, match="catalog.classifiers --download"):  # exit 6
+    with pytest.raises(classify.ModelMissing, match="ingestion.classifiers --download"):  # exit 6
         classifiers.load("jev", models / "empty", workers=4)
 
 
@@ -146,7 +149,7 @@ def test_the_student_kind_loads_from_the_index(models, monkeypatch):
     c = classifiers.load("student", models, workers=4)
     assert isinstance(c, student.StudentClassifier)
     assert [a[0] for a in c.classify([listing("Blue shirt")])] == [taxonomy.load().paths[0]]
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):  # exit 6
+    with pytest.raises(classify.ModelMissing, match="ingestion.student --download"):  # exit 6
         classifiers.load("student", models / "empty", workers=4)
 
 
@@ -192,4 +195,4 @@ def test_download_builds_the_cache_the_worker_loads(tmp_path, monkeypatch):
     classifiers.main(["--download", "--models", str(tmp_path)])
     loaded = jev.shortlist(taxonomy.load(), ones, tmp_path / "texts")  # what the worker does
     assert loaded._paths.shape == (len(loaded.texts), 3)
-    assert "catalog.classifiers --download" in classify.DOWNLOAD
+    assert "ingestion.classifiers --download" in classify.DOWNLOAD

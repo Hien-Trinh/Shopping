@@ -1,6 +1,6 @@
 """A worker's classifier by `--classifier` kind, and the version each kind stamps.
 
-`python -m catalog.classifiers --download` fetches the embedding model and builds the Jev
+`python -m ingestion.classifiers --download` fetches the embedding model and builds the Jev
 shortlist's vectors (step-6b.md, step-6f.md 6f.3).
 """
 
@@ -9,7 +9,7 @@ import os
 from collections.abc import Sequence
 from pathlib import Path
 
-from catalog import classify, entry, jev, student, taxonomy
+from ingestion import classify, entry, jev, student, taxonomy
 
 KINDS = ("fake", "embedding", "jev", "student", "down")  # a worker's and the Backfill's kinds
 # down: the fake one in an outage, every call failing (the chaos runner's, step-7b.md)
@@ -44,7 +44,7 @@ def version(kind: str) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = argparse.ArgumentParser(prog="python -m catalog.classifiers")
+    args = argparse.ArgumentParser(prog="python -m ingestion.classifiers")
     args.add_argument("--download", action="store_true", required=True)
     args.add_argument("--models", type=Path, default=classify.MODELS)
     models = args.parse_args(argv).models

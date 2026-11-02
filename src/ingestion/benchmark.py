@@ -1,6 +1,6 @@
 """Shopify's product benchmark as eval and training data (docs/specs/step-6k.md).
 
-`python -m catalog.benchmark` fetches the text of Shopify/product-catalogue (Apache-2.0) through
+`python -m ingestion.benchmark` fetches the text of Shopify/product-catalogue (Apache-2.0) through
 Hugging Face's datasets-server rows API, keeps English rows, maps each label to our taxonomy at
 level 3, and writes `eval/labels-shopify.jsonl` (a draw from the test split) and
 `train/shopify.jsonl.gz` (the train split, less any product also in test).
@@ -23,7 +23,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-from catalog import entry, evaluate, state, taxonomy
+from ingestion import entry, evaluate, state, taxonomy
 
 DATASET = "Shopify/product-catalogue"
 ROWS = "https://datasets-server.huggingface.co/rows?dataset={}&config=default&split={}&offset={}&length={}"
@@ -32,7 +32,7 @@ PAGE = 100  # the rows API's maximum
 TRIES = 6
 BACKOFF = 15  # seconds, doubling: the rows API's 429 carries no Retry-After
 PAUSE = 1.0  # seconds between pages, to stay under the rows API's rate limit
-RENAMES = files("catalog") / "data" / "shopify-renames.json"  # old prefix -> new prefix
+RENAMES = files("ingestion") / "data" / "shopify-renames.json"  # old prefix -> new prefix
 EVAL = Path("eval/labels-shopify.jsonl")
 TRAIN = Path("train/shopify.jsonl.gz")
 _WORD = re.compile(r"[a-zà-ÿ]+")
@@ -196,7 +196,7 @@ def gz(items: Sequence[dict]) -> bytes:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    p = argparse.ArgumentParser(prog="python -m catalog.benchmark")
+    p = argparse.ArgumentParser(prog="python -m ingestion.benchmark")
     p.add_argument("--n", type=int, default=2000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--eval", type=Path, default=EVAL)

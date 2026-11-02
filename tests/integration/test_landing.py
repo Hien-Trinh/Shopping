@@ -7,9 +7,9 @@ from deltalake import DeltaTable, write_deltalake
 from deltalake.exceptions import CommitFailedError
 from support import delete, listing, product_in, race, reclassify, up
 
-from catalog import events, landing
-from catalog.events import EventLog
-from catalog.landing import START, Landed
+from ingestion import events, landing
+from ingestion.events import EventLog
+from ingestion.landing import START, Landed
 
 NOW = datetime(2026, 9, 30, 12, tzinfo=UTC)
 A, B = product_in(3), product_in(40)  # two partitions

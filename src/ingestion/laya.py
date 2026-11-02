@@ -3,7 +3,7 @@
 Laya answers a `choice` question with a probability per option. `hierarchical` asks for the
 level-1 Category, then the chosen one's children, until a Category has none; `shortlist` asks once
 among the embedding's `k` nearest paths. Run them with
-`uv run --group laya python -m catalog.evaluate run --classifier laya-hierarchical`.
+`uv run --group laya python -m ingestion.evaluate run --classifier laya-hierarchical`.
 """
 
 import math
@@ -11,8 +11,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from catalog import classify, taxonomy
-from catalog.envelope import Content
+from ingestion import classify, taxonomy
+from ingestion.envelope import Content
 
 QUESTION = "Which product category fits this listing?"
 MODES = ("hierarchical", "shortlist")

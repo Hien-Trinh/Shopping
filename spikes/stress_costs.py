@@ -24,9 +24,9 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from deltalake import DeltaTable
 
-from catalog import delta, landing, state, store
-from catalog.keys import owned, partition
-from catalog.plan import Write
+from ingestion import delta, landing, state, store
+from ingestion.keys import owned, partition
+from ingestion.plan import Write
 
 LIMIT, MINE = 1000, owned(0, 4)  # a worker's batch, on the shipped Procfile's 4 workers
 
@@ -123,7 +123,7 @@ def commit_failures(root):
 
 
 def metrics_24h(data, events, changes, repeats):
-    cmd = [sys.executable, "-m", "catalog.metrics", "--since", "24h", "--data", str(data)]
+    cmd = [sys.executable, "-m", "ingestion.metrics", "--since", "24h", "--data", str(data)]
     _, ms, runs = timed(lambda: subprocess.run(cmd, check=True, capture_output=True), repeats)
     per_change = events / changes
     scaled = ms / 1000 * per_change * 50 * 86400 / events  # linear in events parsed

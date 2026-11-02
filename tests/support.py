@@ -1,8 +1,8 @@
 """Small builders shared by the unit tests."""
 
-from catalog.envelope import Change, Content
-from catalog.keys import partition
-from catalog.plan import Classification, Stored
+from ingestion.envelope import Change, Content
+from ingestion.keys import partition
+from ingestion.plan import Classification, Stored
 
 TAX = "shopify-2026-09"
 

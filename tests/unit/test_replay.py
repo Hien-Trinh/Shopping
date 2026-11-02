@@ -1,7 +1,7 @@
 from support import delete, listing, reclassify, up
 
-from catalog.envelope import content_hash
-from catalog.replay import diff, expected_store, fingerprint, live, replay_exports
+from ingestion.envelope import content_hash
+from ingestion.replay import diff, expected_store, fingerprint, live, replay_exports
 
 A, B = ("m_1", "a"), ("m_1", "b")
 T1, T2 = listing(title="one"), listing(title="two")

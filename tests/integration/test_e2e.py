@@ -18,14 +18,14 @@ import pytest
 from deltalake import DeltaTable
 from test_supervisor import alive, wait_for
 
-from catalog import chaos, events, export, landing, load, snapshots, state, store
-from catalog.keys import PARTITIONS, partition
-from catalog.landing import START
-from catalog.replay import diff, expected_store, live, replay_exports
-from catalog.status import Outcome
+from ingestion import chaos, events, export, landing, load, snapshots, state, store
+from ingestion.keys import PARTITIONS, partition
+from ingestion.landing import START
+from ingestion.replay import diff, expected_store, live, replay_exports
+from ingestion.status import Outcome
 
 PROCFILE = Path(__file__).parents[2] / "Procfile"
-SUPERVISOR = [sys.executable, "-m", "catalog.supervisor"]
+SUPERVISOR = [sys.executable, "-m", "ingestion.supervisor"]
 OUTCOMES = set(Outcome)
 
 
@@ -77,7 +77,7 @@ class System:
 
     def __init__(self, tmp: Path):
         self.tmp, self.port, self.supervisors = tmp, 0, []  # the API picks it at the first start
-        create = [sys.executable, "-m", "catalog.merchants", "create", "--currency", "USD"]
+        create = [sys.executable, "-m", "ingestion.merchants", "create", "--currency", "USD"]
         out = subprocess.run(create, cwd=tmp, capture_output=True, text=True, check=True).stdout
         self.merchant_id, self.key = re.findall(r"^\w+: (\S+)$", out, flags=re.M)
         self.http = httpx2.Client(timeout=30, headers={"Authorization": f"Bearer {self.key}"})

@@ -19,7 +19,7 @@ from pathlib import Path
 import httpx2
 from deltalake import DeltaTable
 
-from catalog import entry, events
+from ingestion import entry, events
 
 REPO = Path(__file__).parents[1]
 PORT = 8765
@@ -33,14 +33,14 @@ def main():
         return fail("export TYPESAFE_API_KEY first")
     if not a.models.is_dir():
         return fail(
-            f"no models in {a.models}: pass --models or python -m catalog.classify --download"
+            f"no models in {a.models}: pass --models or python -m ingestion.classify --download"
         )
     run = Path(tempfile.mkdtemp(prefix="run6f2-"))
     text = (REPO / "Procfile").read_text()
     (run / "Procfile").write_text(re.sub(r"^api: .*$", rf"\g<0> --port {PORT}", text, flags=re.M))
     (run / "models").symlink_to(a.models.resolve())
     out = subprocess.run(
-        [sys.executable, "-m", "catalog.merchants", "create", "--currency", "USD"],
+        [sys.executable, "-m", "ingestion.merchants", "create", "--currency", "USD"],
         cwd=run,
         capture_output=True,
         text=True,
@@ -50,7 +50,7 @@ def main():
     labels = [
         json.loads(line) for line in (REPO / "eval/labels.jsonl").read_text().splitlines()[:20]
     ]
-    supervisor = subprocess.Popen([sys.executable, "-m", "catalog.supervisor"], cwd=run)
+    supervisor = subprocess.Popen([sys.executable, "-m", "ingestion.supervisor"], cwd=run)
     try:
         http = httpx2.Client(
             base_url=f"http://127.0.0.1:{PORT}",

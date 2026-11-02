@@ -3,7 +3,7 @@ import hashlib
 
 import pytest
 
-from catalog.envelope import (
+from ingestion.envelope import (
     FUTURE_SLACK_MS,
     INT64_MAX,
     MAX_BATCH,

@@ -7,8 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from catalog import state
-from catalog.landing import START
+from ingestion import state
+from ingestion.landing import START
 
 
 def test_load_default_and_round_trip(tmp_path):
@@ -129,7 +129,7 @@ def test_claim_is_exclusive_and_released(tmp_path):
 HOLDER = """
 import sys, time
 from pathlib import Path
-from catalog import state
+from ingestion import state
 with state.claim(Path(sys.argv[1]), [7]):
     print("held", flush=True)
     time.sleep(60)

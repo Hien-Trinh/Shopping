@@ -2,10 +2,10 @@
 processes, then prints one JSON summary line. The Merchant's key comes from CATALOG_API_KEY and
 is never printed.
 
-    python -m catalog.load --rate 50 --changes 30000                    # steady
-    python -m catalog.load --rate 50 --seconds 1800                     # steady, for 30 min
-    python -m catalog.load --changes 10000 --batch 10000                # bulk
-    python -m catalog.load --changes 1000000 --keys 1000000 --order sequential --batch 1000
+    python -m ingestion.load --rate 50 --changes 30000                    # steady
+    python -m ingestion.load --rate 50 --seconds 1800                     # steady, for 30 min
+    python -m ingestion.load --changes 10000 --batch 10000                # bulk
+    python -m ingestion.load --changes 1000000 --keys 1000000 --order sequential --batch 1000
 """
 
 import argparse
@@ -26,7 +26,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from catalog import entry, envelope
+from ingestion import entry, envelope
 
 LABELS = Path(__file__).parents[2] / "eval" / "labels.jsonl"
 MAX_CHANGES = 10_000_000  # source_version runs ahead of the clock by up to this many ms (A14)
@@ -198,7 +198,7 @@ def summary(tallies: Sequence[dict], elapsed: float, start_ms: int, failed=(),
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = argparse.ArgumentParser(prog="python -m catalog.load")
+    args = argparse.ArgumentParser(prog="python -m ingestion.load")
     args.add_argument("--url", default="http://127.0.0.1:8000")
     args.add_argument("--rate", type=float, default=50, help="Changes/s in all; 0: no pacing")
     args.add_argument("--changes", type=int, help=f"default 3000, or {MAX_CHANGES} with --seconds")

@@ -1,7 +1,7 @@
 import ast
 from pathlib import Path
 
-from catalog.status import Outcome, SubmissionStatus, fold
+from ingestion.status import Outcome, SubmissionStatus, fold
 
 S = "0199a000-0000-7000-8000-000000000001"
 
@@ -77,7 +77,7 @@ NOT_OUTCOMES = {("api.py", "rejected"), ("supervisor.py", "stale")}  # a reply k
 
 
 def test_outcome_values_are_spelled_only_in_status():
-    src = Path(__file__).parents[2] / "src" / "catalog"
+    src = Path(__file__).parents[2] / "src" / "ingestion"
     found = {
         (p.name, n.value, n.lineno)
         for p in src.rglob("*.py")

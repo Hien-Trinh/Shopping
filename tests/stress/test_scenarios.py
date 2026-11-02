@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from catalog import chaos
+from ingestion import chaos
 
 pytestmark = pytest.mark.slow
 

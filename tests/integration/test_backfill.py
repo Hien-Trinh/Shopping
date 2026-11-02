@@ -9,13 +9,13 @@ from support import delete, listing, product_in, up
 from test_supervisor import REPO, wait_for
 from test_worker import NOW, Env
 
-from catalog import backfill, events, landing, state, store
-from catalog.classify import FakeClassifier
-from catalog.events import EventLog
-from catalog.keys import PARTITIONS
-from catalog.plan import Classification, Write
-from catalog.supervisor import parse_procfile
-from catalog.taxonomy import UNCATEGORIZED
+from ingestion import backfill, events, landing, state, store
+from ingestion.classify import FakeClassifier
+from ingestion.events import EventLog
+from ingestion.keys import PARTITIONS
+from ingestion.plan import Classification, Write
+from ingestion.supervisor import parse_procfile
+from ingestion.taxonomy import UNCATEGORIZED
 
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
 A, B, C, D = (product_in(p) for p in (3, 20, 40, 60))
@@ -237,7 +237,7 @@ def test_the_procfile_runs_backfill_with_the_workers_classifier():
     def kind(argv):
         return argv[argv.index("--classifier") + 1] if "--classifier" in argv else "fake"
 
-    assert procs["backfill"][1:3] == ["-m", "catalog.backfill"]
+    assert procs["backfill"][1:3] == ["-m", "ingestion.backfill"]
     assert "--classifier" in procs["backfill"]
     workers = {kind(argv) for n, argv in procs.items() if n.startswith(state.WORKER)}
     assert workers == {kind(procs["backfill"])}
@@ -265,7 +265,7 @@ def types(data):
 
 def test_main_stamps_the_student_version_without_a_model(tmp_path, monkeypatch):
     # step-6m.md, test point 3: the Backfill's string is the workers' (constants, no model)
-    from catalog import classifiers
+    from ingestion import classifiers
 
     seen = {}
     monkeypatch.setattr(backfill, "run", lambda data, state, version, **kw: seen.update(v=version))

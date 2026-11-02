@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
-      - run: uv run python -m catalog.chaos ${{ matrix.scenario }} --seconds 60 --dir run
+      - run: uv run python -m ingestion.chaos ${{ matrix.scenario }} --seconds 60 --dir run
       - if: failure() || cancelled()  # a timeout cancels the job: keep its events too
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -56,7 +56,7 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          if git diff --name-only "$BASE"...HEAD | grep -qE '(^|/)(classif(y|iers)|taxonomy)[^/]*$|^src/catalog/data/|^eval/|^tests/model/|^pyproject\.toml$|^uv\.lock$|^\.github/workflows/'; then
+          if git diff --name-only "$BASE"...HEAD | grep -qE '(^|/)(classif(y|iers)|taxonomy)[^/]*$|^src/ingestion/data/|^eval/|^tests/model/|^pyproject\.toml$|^uv\.lock$|^\.github/workflows/'; then
             echo model=true >> "$GITHUB_OUTPUT"
           fi
 
@@ -72,5 +72,5 @@ jobs:
         with:
           path: models
           key: models-bge-small-en-v1.5
-      - run: uv run python -m catalog.classifiers --download
+      - run: uv run python -m ingestion.classifiers --download
       - run: uv run pytest tests/model -m model

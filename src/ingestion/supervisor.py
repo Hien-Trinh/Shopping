@@ -14,8 +14,8 @@ import sys
 import time
 from pathlib import Path
 
-from catalog import entry, state
-from catalog.events import EventLog
+from ingestion import entry, state
+from ingestion.events import EventLog
 
 STALE = 60.0  # seconds without a sign of life (plan B1)
 TICK = 1.0  # seconds between checks, so also the fastest a crash loop can spin
@@ -48,7 +48,7 @@ class Group(subprocess.Popen):
 def parse_procfile(text: str) -> dict[str, list[str]]:
     """`name: command` per line, in order; blank lines and #comments are skipped.
 
-    A bare `python` runs as this interpreter: the one on PATH may not have catalog installed.
+    A bare `python` runs as this interpreter: the one on PATH may not have ingestion installed.
     """
     procs = {}
     for n, line in enumerate(text.splitlines(), 1):

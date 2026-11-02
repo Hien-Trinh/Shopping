@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 from support import listing
 
-from catalog import classify, evaluate, student, taxonomy
-from catalog.taxonomy import Taxonomy
+from ingestion import classify, evaluate, student, taxonomy
+from ingestion.taxonomy import Taxonomy
 
 TAX = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
 
@@ -454,7 +454,7 @@ def test_the_finetuned_student_answers_a_taxonomy_path_for_every_listing(tmp_pat
 
 
 def test_a_missing_finetuned_head_names_the_download(tmp_path):
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+    with pytest.raises(classify.ModelMissing, match="ingestion.student --download"):
         student.load_head(tmp_path)
 
 
@@ -492,7 +492,7 @@ def test_report_lists_the_finetuned_students_when_given(tmp_path):
     assert "Student alone: exact 100.0%" in knn_ft and "Bar 6l.3" in knn_ft
     assert body.count("Bar (beats Jev alone with 70% or more kept local)") == 4
     without = student.report(TAX, fake_embed, SOURCES, tmp_path / "cache", **kw)
-    assert "## student-ft" not in without and "catalog.student --download" in without
+    assert "## student-ft" not in without and "ingestion.student --download" in without
 
 
 def test_beats_knn_needs_the_margin_and_a_no_worse_cascade_point():
@@ -527,7 +527,7 @@ def test_the_head_is_loaded_from_the_encoders_revision(tmp_path):
     old, new = "a" * 40, "b" * 40
     hub_cache(tmp_path, new, fake_head())
     assert student.load_head(tmp_path, revision=new).classes == fake_head().classes
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download") as e:
+    with pytest.raises(classify.ModelMissing, match="ingestion.student --download") as e:
         student.load_head(tmp_path, revision=old)
     assert e.value.__cause__ is not None and "(" in str(e.value)  # the cause is in the message
     assert student._name(new) == "student-ft@bbbbbbbbbbbb-fp32"
@@ -540,9 +540,9 @@ def test_a_missing_finetuned_encoder_names_the_students_download(tmp_path, monke
 
     monkeypatch.setattr(classify, "fastembed", missing)
     hub_cache(tmp_path, student.FT_REVISION)  # the files are there; the encoder won't load
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download") as e:
+    with pytest.raises(classify.ModelMissing, match="ingestion.student --download") as e:
         student.embedder(tmp_path)
-    assert "catalog.classifiers --download" not in str(e.value) and "ValueError" in str(e.value)
+    assert "ingestion.classifiers --download" not in str(e.value) and "ValueError" in str(e.value)
 
 
 def test_evaluate_dispatches_the_finetuned_candidates(tmp_path, monkeypatch):
@@ -602,7 +602,7 @@ def test_the_index_is_named_by_the_training_data_too(tmp_path, monkeypatch):
     other = tmp_path / "rows.jsonl"
     other.write_text("{}\n")
     monkeypatch.setattr(student, "TRAIN", (other,))
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+    with pytest.raises(classify.ModelMissing, match="ingestion.student --download"):
         student.pipeline(TAX, tmp_path)
 
 
@@ -633,13 +633,13 @@ def test_the_index_rejects_empty_non_float_and_misshapen_labels(tmp_path):
     # review round 1: an empty index would fail every batch; a bad y is a corrupt file (exit 6)
     path = tmp_path / "index.npz"
     np.savez(path, x=np.ones((0, 2), np.float32), y=np.array([], dtype=str))
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+    with pytest.raises(classify.ModelMissing, match="ingestion.student --download"):
         student.load_index(path, TAX, width=2)
     np.savez(path, x=np.ones((1, 2), np.int32), y=np.array(["Toys"]))
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+    with pytest.raises(classify.ModelMissing, match="ingestion.student --download"):
         student.load_index(path, TAX, width=2)
     np.savez(path, x=np.ones((1, 2), np.float32), y=np.array([["Toys"]]))
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+    with pytest.raises(classify.ModelMissing, match="ingestion.student --download"):
         student.load_index(path, TAX, width=2)
 
 
@@ -683,10 +683,10 @@ def test_embedder_fetches_every_file_at_the_pinned_revision_and_loads_the_snapsh
 def test_a_bad_index_names_the_download(tmp_path):
     # 6m test point 1: missing, truncated, the wrong shape, not finite
     path = tmp_path / "index.npz"
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+    with pytest.raises(classify.ModelMissing, match="ingestion.student --download"):
         student.load_index(path, TAX, width=2)
     path.write_bytes(b"PK\x03\x04")
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+    with pytest.raises(classify.ModelMissing, match="ingestion.student --download"):
         student.load_index(path, TAX, width=2)
     np.savez(path, x=np.ones((2, 3), np.float32), y=np.array(["Toys", "Toys"]))
     with pytest.raises(classify.ModelMissing, match="width 2"):
@@ -734,7 +734,7 @@ def test_the_pipeline_classifier_answers_every_listing_from_the_index(tmp_path, 
 
 def test_the_pipeline_needs_the_index(tmp_path, monkeypatch):
     monkeypatch.setattr(student, "embedder", lambda models, **_: (fake_embed, REV))
-    with pytest.raises(classify.ModelMissing, match="catalog.student --download"):
+    with pytest.raises(classify.ModelMissing, match="ingestion.student --download"):
         student.pipeline(TAX, tmp_path)
 
 

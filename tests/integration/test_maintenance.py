@@ -1,5 +1,6 @@
 """Maintenance (docs/specs/step-5d.md): retention and cleanup, never past the slowest reader."""
 
+import json
 import os
 import threading
 import time
@@ -68,6 +69,13 @@ class Env:
 
     def store_files(self):
         return sorted((self.tmp / "data" / "listing_store").rglob("part-*.parquet"))
+
+    def removed_at(self, version):
+        """When `version` removed its files: the deletionTimestamp vacuum_store dates them by."""
+        log = self.tmp / "data" / "listing_store" / "_delta_log" / f"{version:020}.json"
+        actions = [json.loads(line) for line in log.read_text().splitlines()]
+        ms = min(a["remove"]["deletionTimestamp"] for a in actions if "remove" in a)
+        return datetime.fromtimestamp(ms / 1000, UTC)
 
     def store_events(self):
         return [e for e in events.read(self.tmp / "data" / "events") if e["type"] == "store_vacuum"]
@@ -278,18 +286,14 @@ def test_the_grace_runs_from_the_removal_not_the_commit(env):
     # An idle store: version 1 is old, but its file was only just replaced, and a reader that
     # loaded version 1 up to a grace ago may still hold it.
     env.merge(1)
-    time.sleep(0.3)
+    time.sleep(0.3)  # version 1 is older than the grace when its file is removed
     head = env.merge(2)
     env.watermark(head)
-    before = env.store_files()
-    maintenance.vacuum_store(
-        env.store, env.state, env.events, datetime.now(UTC), grace=timedelta(seconds=0.15)
-    )
-    assert env.store_files() == before  # removed 0.0 s ago, inside a 0.15 s grace
-    time.sleep(0.2)
-    maintenance.vacuum_store(
-        env.store, env.state, env.events, datetime.now(UTC), grace=timedelta(seconds=0.15)
-    )
+    before, grace, removed = env.store_files(), timedelta(seconds=0.15), env.removed_at(head)
+    # `now` counts from the removal, not the clock: a slow runner can't age the file past the grace
+    maintenance.vacuum_store(env.store, env.state, env.events, removed + grace / 2, grace=grace)
+    assert env.store_files() == before  # removed half a grace ago
+    maintenance.vacuum_store(env.store, env.state, env.events, removed + grace * 2, grace=grace)
     assert len(env.store_files()) < len(before)
 
 

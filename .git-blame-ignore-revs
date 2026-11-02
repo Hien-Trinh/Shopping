@@ -1,0 +1,6 @@
+# Commits git blame skips. GitHub's blame view reads this file; locally, pass
+# --ignore-revs-file .git-blame-ignore-revs (blame.ignoreRevsFile would break blame on checkouts
+# older than this file).
+
+# plan-v2 G4: the package rename catalog -> ingestion (#173)
+1fbbd65369bda1aa1fa7f5440fe63d6d302a2f08

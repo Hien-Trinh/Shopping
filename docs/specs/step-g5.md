@@ -1,6 +1,6 @@
 # Step G5: the compiled requirements file and the `spark` job (mini PRD)
 
-Status: draft, for your OK on the decisions, question 1 and the test points. Plan row: [plan-v2.md, PR steps, G5](../plan-v2.md). Decisions from [3.12 packaging][t141] and [CI][t162]. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: approved Nov 1: the decisions, the test points, and question 1 (`runtime-18.txt` stays whole). Plan row: [plan-v2.md, PR steps, G5](../plan-v2.md). Decisions from [3.12 packaging][t141] and [CI][t162]. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 
@@ -78,6 +78,8 @@ One PR:
    - Trimmed: only the 45 or so packages the two resolutions touch, so the PR stays under 300.
 
    I recommend whole. A trimmed file silently stops constraining any package a later step adds.
+
+   **Answer (Nov 1): whole.**
 
 ## Out of scope
 

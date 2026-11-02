@@ -14,6 +14,21 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
       - run: make check
 
+  # The Spark tests, in Runtime 18's libraries, and the compiled requirements file kept current
+  # (docs/specs/step-g5.md). Required on main once it has run green there.
+  spark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
+      - run: make requirements && git diff --exit-code requirements/  # stale: run make requirements
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ivy2.5.2
+          key: delta-jars-${{ hashFiles('requirements/spark.txt') }}
+      - run: JAVA_HOME=$JAVA_HOME_21_X64 make spark  # Runtime 18 runs JDK 21; the runner's default is 17
+
   # Every chaos scenario for 60 s at the runner's defaults, ending with the three oracles
   # (step-7d.md, 7d.1). One leg per scenario, all at once; test_chaos_runner checks the list.
   stress-smoke-leg:

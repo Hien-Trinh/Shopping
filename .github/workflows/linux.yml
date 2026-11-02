@@ -1,0 +1,43 @@
+name: linux
+
+# make repeat on Linux and Python 3.12, for failures the Mac can't show (fork as the default
+# start method, procps tools). Put debug lines on a throwaway branch, not the PR's:
+#   gh workflow run linux.yml --ref <branch> -f test=tests/x.py::test_y -f runs=20 -f loops=4
+on:
+  workflow_dispatch:
+    inputs:
+      test:
+        description: pytest node id (make repeat's TEST)
+        required: true
+      runs:
+        description: runs per loop (make repeat's N)
+        default: "1"
+      loops:
+        description: parallel loops (make repeat's J)
+        default: "1"
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      UV_LOCKED: 1  # as the Makefile exports
+      TEST: ${{ inputs.test }}
+      RUNS: ${{ inputs.runs }}
+      LOOPS: ${{ inputs.loops }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
+      # The script, not make repeat: make would paste the input into a shell command line.
+      - run: scripts/repeat.sh "$RUNS" "$LOOPS" $TEST
+      - if: failure()
+        run: cat /tmp/repeat.*/loop*-run*.log
+      - if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repeat
+          path: /tmp/repeat.*
+          retention-days: 3

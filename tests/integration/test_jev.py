@@ -205,7 +205,12 @@ def test_a_failed_call_names_the_listing_and_the_spend_so_far():
 
 @pytest.mark.parametrize(
     "response",
-    [{"answers": {"c": {"choice": "1", "probabilities": {}}}}, {"usage": {"input_tokens": 1}}],
+    [  # a KeyError twice, then a TypeError and an AttributeError
+        {"answers": {"c": {"choice": "1", "probabilities": {}}}},
+        {"usage": {"input_tokens": 1}},
+        {"usage": {"input_tokens": "1"}},
+        {"usage": {"input_tokens": 1}, "answers": {"c": {"choice": "1", "probabilities": None}}},
+    ],
 )
 def test_a_response_of_another_shape_is_named(response):
     c = JevClassifier(TAXONOMY, embedding(), lambda body: response, k=1, pool=Inline())

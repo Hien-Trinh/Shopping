@@ -18,11 +18,11 @@ from hypothesis import strategies as st
 from support import delete, up
 from test_supervisor import wait_for
 
-from catalog import api, events, landing, merchants
-from catalog.events import EventLog
-from catalog.keys import PARTITIONS
-from catalog.landing import START
-from catalog.status import fold
+from ingestion import api, events, landing, merchants
+from ingestion.events import EventLog
+from ingestion.keys import PARTITIONS
+from ingestion.landing import START
+from ingestion.status import fold
 
 
 def change(mpid, sv=1, **listing):
@@ -563,8 +563,8 @@ def test_a_plain_stop_is_logged_and_exits_0_like_the_others(tmp_path, sig):  # a
     db = tmp_path / "data" / "merchants.sqlite"
     merchants.create(db, "USD")
     # --port 0: it binds a free port itself and logs which, so no other process can take it first
-    argv = [sys.executable, "-m", "catalog.api", "--data", str(tmp_path / "data"), "--db", str(db),
-            "--port", "0", "--min-free", "0"]  # fmt: skip
+    argv = [sys.executable, "-m", "ingestion.api", "--data", str(tmp_path / "data"), "--db",
+            str(db), "--port", "0", "--min-free", "0"]  # fmt: skip
     proc = subprocess.Popen(argv, stderr=subprocess.DEVNULL)
     try:
         logged = tmp_path / "data" / "events"

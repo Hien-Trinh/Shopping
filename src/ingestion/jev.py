@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from catalog import classify, entry, taxonomy
-from catalog.taxonomy import UNCATEGORIZED
+from ingestion import classify, entry, taxonomy
+from ingestion.taxonomy import UNCATEGORIZED
 
 URL = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-1.13.0"  # pinned, not jev-latest: an alias would change the answers under a result

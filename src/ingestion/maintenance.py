@@ -19,10 +19,10 @@ from pathlib import Path
 from deltalake import DeltaTable
 from deltalake.exceptions import CommitFailedError
 
-from catalog import delta, entry, export, landing, snapshots, state, store
-from catalog import events as event_files
-from catalog.events import EventLog, stopping
-from catalog.keys import PARTITIONS
+from ingestion import delta, entry, export, landing, snapshots, state, store
+from ingestion import events as event_files
+from ingestion.events import EventLog, stopping
+from ingestion.keys import PARTITIONS
 
 INTERVAL = 600.0  # seconds between passes
 LANDING_RETENTION = timedelta(days=7)  # plan-v1 A13
@@ -283,7 +283,7 @@ def _read_before(unread: datetime | None, t: datetime) -> bool:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = argparse.ArgumentParser(prog="python -m catalog.maintenance")
+    args = argparse.ArgumentParser(prog="python -m ingestion.maintenance")
     args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--state", type=Path, default=state.STATE)
     args.add_argument("--interval", type=float, default=INTERVAL)

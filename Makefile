@@ -2,7 +2,7 @@
 # A stale uv.lock fails the gate instead of being re-resolved silently (here and in CI).
 export UV_LOCKED := 1
 
-PURE := src/catalog/keys.py,src/catalog/envelope.py,src/catalog/plan.py,src/catalog/replay.py,src/catalog/status.py,src/catalog/collapse.py
+PURE := src/ingestion/keys.py,src/ingestion/envelope.py,src/ingestion/plan.py,src/ingestion/replay.py,src/ingestion/status.py,src/ingestion/collapse.py
 
 .PHONY: check lint test hooks mutate repeat bench requirements spark
 

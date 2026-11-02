@@ -21,9 +21,9 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from deltalake import DeltaTable
 
-from catalog import delta, entry, state, store
-from catalog.collapse import collapse
-from catalog.events import EventLog, stopping
+from ingestion import delta, entry, state, store
+from ingestion.collapse import collapse
+from ingestion.events import EventLog, stopping
 
 INTERVAL = 60.0  # seconds between ticks once caught up (design doc: every minute)
 # ponytail: caps versions, not rows, and collapse runs in Python: a 1M initial load still puts
@@ -138,7 +138,7 @@ def _event(kind: str, first: int, last: int, ops, started: float, head: int | No
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = argparse.ArgumentParser(prog="python -m catalog.export")
+    args = argparse.ArgumentParser(prog="python -m ingestion.export")
     args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--state", type=Path, default=state.STATE)
     args.add_argument("--interval", type=float, default=INTERVAL)

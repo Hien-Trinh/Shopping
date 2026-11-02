@@ -5,10 +5,10 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from support import TAX, classified, listing
 
-from catalog.envelope import Change
-from catalog.plan import Stored, plan
-from catalog.replay import diff, expected_store
-from catalog.status import fold
+from ingestion.envelope import Change
+from ingestion.plan import Stored, plan
+from ingestion.replay import diff, expected_store
+from ingestion.status import fold
 
 CONTENTS = [listing(title="red"), listing(title="red", price=2), listing(title="blue")]
 

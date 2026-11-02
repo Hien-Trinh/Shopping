@@ -4,7 +4,7 @@ A batch: read -> decide (plan, classify) -> one conditional MERGE -> events -> o
 are saved last, so a crash anywhere earlier replays the batch, which plan's rules make safe (at
 least once).
 `run` loops batches over the partitions one worker owns, and bootstraps them when cleanup removed
-history they still needed (step-5e.md); `python -m catalog.worker` starts it.
+history they still needed (step-5e.md); `python -m ingestion.worker` starts it.
 """
 
 import argparse
@@ -20,11 +20,11 @@ from pathlib import Path
 from deltalake import DeltaTable
 from deltalake.exceptions import CommitFailedError
 
-from catalog import classifiers, classify, delta, entry, landing, state, store
-from catalog.decide import decide
-from catalog.events import EventLog
-from catalog.keys import owned, partition
-from catalog.landing import Batch, Landed, Position
+from ingestion import classifiers, classify, delta, entry, landing, state, store
+from ingestion.decide import decide
+from ingestion.events import EventLog
+from ingestion.keys import owned, partition
+from ingestion.landing import Batch, Landed, Position
 
 
 def process_batch(
@@ -228,7 +228,7 @@ def run(
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = argparse.ArgumentParser(prog="python -m catalog.worker")
+    args = argparse.ArgumentParser(prog="python -m ingestion.worker")
     args.add_argument("--index", type=int, required=True)
     args.add_argument("--workers", type=int, required=True)
     args.add_argument("--data", type=Path, default=state.DATA)

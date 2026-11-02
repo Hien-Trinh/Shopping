@@ -8,10 +8,10 @@ from deltalake import DeltaTable, write_deltalake
 from deltalake.exceptions import CommitFailedError
 from support import TAX, classified, listing, product_in, race
 
-from catalog import store
-from catalog.collapse import collapse
-from catalog.envelope import content_hash
-from catalog.plan import Classification, Stored, Write
+from ingestion import store
+from ingestion.collapse import collapse
+from ingestion.envelope import content_hash
+from ingestion.plan import Classification, Stored, Write
 
 NOW = datetime(2026, 9, 30, 12, tzinfo=UTC)
 K = ("m_1", product_in(5))
@@ -269,7 +269,7 @@ def _open_and_identify(path):
 
 
 def test_unstorable_names_the_bad_listing_only():
-    from catalog.envelope import Content
+    from ingestion.envelope import Content
 
     surrogate = Content.model_construct(**listing().model_dump() | {"title": "\ud800"})
     errors = store.unstorable([listing(), None, surrogate])

@@ -16,19 +16,19 @@ make repeat TEST=tests/x.py::test_y N=25 J=4   # reproduce a flake: stops at the
 
 ## Run
 
-The workers categorize with the fine-tuned student (step 6m): kNN over a bge-small fine-tuned on the training rows, locally, a few ms a Listing, no key. `--classifier jev` (an embedding shortlist and TypeSafe's paid Jev API, about $62 per 1M Listings) stays available and needs `TYPESAFE_API_KEY` exported and `catalog.classifiers --download`.
+The workers categorize with the fine-tuned student (step 6m): kNN over a bge-small fine-tuned on the training rows, locally, a few ms a Listing, no key. `--classifier jev` (an embedding shortlist and TypeSafe's paid Jev API, about $62 per 1M Listings) stays available and needs `TYPESAFE_API_KEY` exported and `ingestion.classifiers --download`.
 
 ```bash
-uv run python -m catalog.student --download    # once: the student's encoder and its index (about 10 min the first time), into models/
-uv run python -m catalog.merchants create --currency USD   # once: the API won't start without a merchant; prints its key once
-uv run python -m catalog.supervisor             # runs the Procfile
+uv run python -m ingestion.student --download    # once: the student's encoder and its index (about 10 min the first time), into models/
+uv run python -m ingestion.merchants create --currency USD   # once: the API won't start without a merchant; prints its key once
+uv run python -m ingestion.supervisor             # runs the Procfile
 ```
 
-Stop, rescale, recover, reset and read metrics: see the [runbook](docs/runbook.md).
+Stop, rescale, recover, reset and read metrics: see the [runbook](docs/runbook.md). It was written for v1, before the package was renamed: read its `catalog` as `ingestion`, or its `pgrep` and `pkill` lines match nothing.
 
 ## Data
 
-- `eval/labels-shopify.jsonl` and `train/shopify.jsonl.gz` are built from [Shopify/product-catalogue](https://huggingface.co/datasets/Shopify/product-catalogue) (Apache-2.0, © Shopify) by `python -m catalog.benchmark`: text and Category only, English rows, Categories mapped to our taxonomy.
+- `eval/labels-shopify.jsonl` and `train/shopify.jsonl.gz` are built from [Shopify/product-catalogue](https://huggingface.co/datasets/Shopify/product-catalogue) (Apache-2.0, © Shopify) by `python -m ingestion.benchmark`: text and Category only, English rows, Categories mapped to our taxonomy.
 - Amazon Listings in `eval/` and `train/` come from [Amazon Reviews '23](https://amazon-reviews-2023.github.io/) (McAuley Lab).
 
 Changes reach `main` only through a PR with a green `check` job.

@@ -3,7 +3,7 @@
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from catalog.envelope import Key
+from ingestion.envelope import Key
 
 _FEED_COLUMNS = ("_change_type", "_commit_version", "_commit_timestamp")
 

@@ -12,10 +12,10 @@ from deltalake import DeltaTable
 from support import classified, listing, product_in, up
 from test_supervisor import wait_for
 
-from catalog import events, export, landing, maintenance, state, store
-from catalog.events import EventLog
-from catalog.keys import PARTITIONS
-from catalog.plan import Write
+from ingestion import events, export, landing, maintenance, state, store
+from ingestion.events import EventLog
+from ingestion.keys import PARTITIONS
+from ingestion.plan import Write
 
 A, B = product_in(3), product_in(40)  # two partitions
 LATER = timedelta(days=8)  # past the 7-day Landing log retention

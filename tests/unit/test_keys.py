@@ -7,7 +7,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from catalog.keys import PARTITIONS, owned, owner, partition
+from ingestion.keys import PARTITIONS, owned, owner, partition
 
 merchant_ids = st.from_regex(r"m_[a-z0-9]{1,12}", fullmatch=True)
 product_ids = st.text(max_size=128)
@@ -30,7 +30,7 @@ def test_partition_known_answers(merchant_id, merchant_product_id, expected):
 
 
 def test_partition_is_stable_across_processes():
-    code = "from catalog.keys import partition; print(partition('m_42', 'SKU-123'))"
+    code = "from ingestion.keys import partition; print(partition('m_42', 'SKU-123'))"
     runs = {
         subprocess.run(
             [sys.executable, "-c", code], capture_output=True, text=True, check=True

@@ -14,10 +14,10 @@ import pytest
 from deltalake import CommitProperties, DeltaTable
 from support import classified, listing, product_in
 
-from catalog import chaos, export, landing, maintenance, merchants, snapshots, store
-from catalog.envelope import Change
-from catalog.events import EventLog
-from catalog.plan import Write
+from ingestion import chaos, export, landing, maintenance, merchants, snapshots, store
+from ingestion.envelope import Change
+from ingestion.events import EventLog
+from ingestion.plan import Write
 
 
 @pytest.fixture
@@ -108,8 +108,8 @@ def test_the_procfile_rewrite_rescales_and_sets_the_classifier_and_the_guard():
         "worker-2",
     ]
     assert all("--workers 3 --classifier down" in line for line in lines if "worker-" in line)
-    assert "api: python -m catalog.api --port 9 --min-free 5" in lines
-    assert "backfill: python -m catalog.backfill --classifier down" in lines
+    assert "api: python -m ingestion.api --port 9 --min-free 5" in lines
+    assert "backfill: python -m ingestion.backfill --classifier down" in lines
 
 
 def test_the_shipped_procfile_runs_the_student_and_the_rewrite_never_loads_it():
@@ -120,7 +120,7 @@ def test_the_shipped_procfile_runs_the_student_and_the_rewrite_never_loads_it():
     with pytest.raises(ValueError, match="matched 0 lines, not 5"):
         chaos.procfile(shipped.replace("--classifier student", "--classifier jev"), 9)
     with pytest.raises(ValueError, match="would load the student"):  # a line the rewrite misses
-        chaos.procfile(shipped + "extra: python -m catalog.x --classifier student\n", 9)
+        chaos.procfile(shipped + "extra: python -m ingestion.x --classifier student\n", 9)
 
 
 def fake_load(stdout):
@@ -169,12 +169,12 @@ def test_a_supervisor_slow_to_stop_is_a_failure_not_a_traceback(tmp_path):
         system.stop()
 
 
-def test_close_kills_its_loads_and_only_live_catalog_processes(tmp_path, monkeypatch):
+def test_close_kills_its_loads_and_only_live_ingestion_processes(tmp_path, monkeypatch):
     system = chaos.System(tmp_path)
     load = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     system.loads.append(load)
     sleep = "import time; time.sleep(60)"
-    ours = subprocess.Popen([sys.executable, "-c", sleep, "catalog.worker"])
+    ours = subprocess.Popen([sys.executable, "-c", sleep, "ingestion.worker"])
     other = subprocess.Popen([sys.executable, "-c", sleep])  # a reused pid: not ours
     monkeypatch.setattr(chaos.System, "pids", lambda self: [ours.pid, other.pid])
     try:
@@ -209,7 +209,7 @@ def test_ci_runs_every_scenario_and_nothing_else():
     listed = re.search(r"^\s+scenario: \[(.*)\]$", leg, re.M)
     assert listed, "no scenario matrix in stress-smoke-leg"
     assert [s.strip() for s in listed[1].split(",")] == list(chaos.SCENARIOS)
-    assert "catalog.chaos ${{ matrix.scenario }} " in leg  # each leg runs its own scenario
+    assert "ingestion.chaos ${{ matrix.scenario }} " in leg  # each leg runs its own scenario
     assert "if: failure() || cancelled()" in leg  # a timed-out leg still uploads its events
 
 

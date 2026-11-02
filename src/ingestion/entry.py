@@ -17,7 +17,7 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-from catalog.events import prepared
+from ingestion.events import prepared
 
 SUPERVISOR = "CATALOG_SUPERVISOR"  # set to the supervisor's pid in its children's environment
 FATAL_CODES = range(3, 16)  # a worker exiting with one stops the supervisor (2 is a bad flag)

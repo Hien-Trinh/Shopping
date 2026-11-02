@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from catalog import entry, envelope
+from ingestion import entry, envelope
 
 DB = Path("data/merchants.sqlite")
 
@@ -128,7 +128,7 @@ def verify(db: Path, key: str) -> Merchant:
 
 
 def main(argv: Sequence[str] | None = None) -> int | None:
-    args = argparse.ArgumentParser(prog="python -m catalog.merchants")
+    args = argparse.ArgumentParser(prog="python -m ingestion.merchants")
     args.add_argument("--db", type=Path, default=DB)
     commands = args.add_subparsers(dest="command", required=True)
     commands.add_parser("create").add_argument("--currency", required=True)

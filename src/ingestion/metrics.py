@@ -6,7 +6,7 @@ line, because events of many shapes would infer a sparse schema. A Change counts
 (submission_id, change_index), with its best Outcome as status.fold ranks them (Phase 7), and
 falls in the window when its first Outcome does.
 
-    python -m catalog.metrics [--since 10m] [--data DIR]
+    python -m ingestion.metrics [--since 10m] [--data DIR]
 """
 
 import argparse
@@ -21,8 +21,8 @@ import pyarrow as pa
 from deltalake import DeltaTable
 from deltalake.exceptions import TableNotFoundError
 
-from catalog import entry, events, state, status
-from catalog.taxonomy import UNCATEGORIZED
+from ingestion import entry, events, state, status
+from ingestion.taxonomy import UNCATEGORIZED
 
 # Each merchant Change the API accepted within the read range: when, its first Outcome (the
 # window and freshness) and its best one (the rates). Only an accepted Change counts, so a
@@ -137,7 +137,7 @@ def duration(text: str) -> float:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    args = argparse.ArgumentParser(prog="python -m catalog.metrics")
+    args = argparse.ArgumentParser(prog="python -m ingestion.metrics")
     args.add_argument("--data", type=Path, default=state.DATA)
     args.add_argument("--since", type=duration, default=3600.0, help="how far back, e.g. 10m")
     a = args.parse_args(argv)

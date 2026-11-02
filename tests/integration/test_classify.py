@@ -2,15 +2,15 @@ import numpy as np
 import pytest
 from support import listing
 
-from catalog import classify
-from catalog.classify import (
+from ingestion import classify
+from ingestion.classify import (
     EmbeddingClassifier,
     ModelMissing,
     cache_key,
     fastembed,
     texts,
 )
-from catalog.taxonomy import UNCATEGORIZED, Taxonomy
+from ingestion.taxonomy import UNCATEGORIZED, Taxonomy
 
 TAXONOMY = Taxonomy("shopify-2026-08", ("Apparel", "Apparel > Shirts", "Toys"))
 VECTORS = {  # unit length is the classifier's job, so some of these aren't

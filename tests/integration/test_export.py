@@ -9,10 +9,10 @@ import pytest
 from support import classified, listing, product_in
 from test_supervisor import wait_for
 
-from catalog import delta, events, export, state, store
-from catalog.events import EventLog
-from catalog.plan import Write
-from catalog.replay import diff, live, replay_exports
+from ingestion import delta, events, export, state, store
+from ingestion.events import EventLog
+from ingestion.plan import Write
+from ingestion.replay import diff, live, replay_exports
 
 NOW = datetime(2026, 10, 3, 12, tzinfo=UTC)
 A, B, C = (("m_1", product_in(p)) for p in (5, 9, 40))

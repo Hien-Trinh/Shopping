@@ -3,7 +3,7 @@ name: mutation
 # Reports surviving mutants in the pure modules. Informational: not a required check.
 on:
   pull_request:
-    paths: ["src/catalog/**", "tests/unit/**"]
+    paths: ["src/ingestion/**", "tests/unit/**"]
   workflow_dispatch:
 
 jobs:

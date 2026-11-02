@@ -8,8 +8,8 @@ import threading
 
 import pytest
 
-from catalog import merchants
-from catalog.merchants import Merchant
+from ingestion import merchants
+from ingestion.merchants import Merchant
 
 
 @pytest.fixture

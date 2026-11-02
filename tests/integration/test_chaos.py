@@ -13,12 +13,12 @@ from support import delete, listing, product_in, reclassify, up
 from test_supervisor import alive, wait_for
 from test_worker import A, Env, failed_indexes, is_poison, poison
 
-from catalog import entry, events, landing, state, store, worker
-from catalog.keys import PARTITIONS
-from catalog.replay import diff, expected_store
+from ingestion import entry, events, landing, state, store, worker
+from ingestion.keys import PARTITIONS
+from ingestion.replay import diff, expected_store
 
 DRIVER = Path(__file__).with_name("chaos_driver.py")
-SUPERVISOR = [sys.executable, "-m", "catalog.supervisor"]
+SUPERVISOR = [sys.executable, "-m", "ingestion.supervisor"]
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")  # pydantic, on poison content
 
 
@@ -56,7 +56,7 @@ def driver(tmp, *wrap):
 
 
 def procfile(tmp, workers):
-    lines = (f"worker-{i}: python -m catalog.worker --index {i} --workers {workers}"
+    lines = (f"worker-{i}: python -m ingestion.worker --index {i} --workers {workers}"
              " --data . --state state\n" for i in range(workers))  # fmt: skip
     (tmp / "Procfile").write_text("".join(lines))
 

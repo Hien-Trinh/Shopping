@@ -9,11 +9,11 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from deltalake import DeltaTable
 
-from catalog import delta
-from catalog.envelope import Content, Key, content_hash
-from catalog.keys import partition
-from catalog.plan import Classification, Stored, Write
-from catalog.replay import Fingerprint, fingerprint
+from ingestion import delta
+from ingestion.envelope import Content, Key, content_hash
+from ingestion.keys import partition
+from ingestion.plan import Classification, Stored, Write
+from ingestion.replay import Fingerprint, fingerprint
 
 # Copy-on-write MERGE rewrites every file holding a matched row, so files stay small: a 1 MiB
 # file is ~1-3k Listings rewritten per change, not a whole partition (measured).

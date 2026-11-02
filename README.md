@@ -12,6 +12,7 @@ make hooks   # once per clone: runs ruff before every push, and refreshes graphi
 make check   # ruff + tests + coverage gates, same as CI
 make spark   # the Spark tests, in Runtime 18's libraries: needs JDK 21, and the first run fetches ~85 MB of jars
 make repeat TEST=tests/x.py::test_y N=25 J=4   # reproduce a flake: stops at the first failure, keeps its log and temp dir
+gh workflow run linux.yml --ref <branch> -f test=tests/x.py::test_y   # the same on Linux (3.12), for what the Mac can't show
 ```
 
 ## Run

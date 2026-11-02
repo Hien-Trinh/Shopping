@@ -20,13 +20,16 @@ hooks:
 	git config core.hooksPath .githooks
 
 # The job cluster's pins: fastembed under Runtime 18's libraries, for Linux x86_64 (step-g5.md).
+# --upgrade and --exclude-newer make the pins depend on the inputs and that date alone, so CI's
+# stale step catches any hand edit. A fastembed newer than the date needs the date moved.
 requirements:
-	uv pip compile -q requirements/databricks.in -c requirements/runtime-18.txt --python-version 3.12 --python-platform x86_64-manylinux_2_39 -o requirements/databricks.txt
+	uv pip compile -q requirements/databricks.in -c requirements/runtime-18.txt --python-version 3.12 --python-platform x86_64-manylinux_2_39 --upgrade --exclude-newer 2026-11-01T00:00:00Z -o requirements/databricks.txt
 
 # The Spark tests, in Runtime 18's libraries with the package --no-deps, as on the cluster (JDK 21).
+# --exact also removes what the files no longer list, so a reused env matches a fresh one.
 spark:
 	uv venv -q --allow-existing --python 3.12 .venv-spark
-	uv pip install -q -p .venv-spark -r requirements/databricks.txt -r requirements/spark.txt -c requirements/runtime-18.txt
+	uv pip install -q --exact -p .venv-spark -r requirements/databricks.txt -r requirements/spark.txt -c requirements/runtime-18.txt
 	uv pip install -q -p .venv-spark --no-deps -e .
 	.venv-spark/bin/pytest tests/spark
 

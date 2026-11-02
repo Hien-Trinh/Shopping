@@ -2,15 +2,30 @@
 holds about 850 MB, so there is one, and no xdist."""
 
 import os
+import re
 import sys
+from importlib.metadata import distributions
+from pathlib import Path
 
 import pytest
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 
+RUNTIME = Path(__file__).parents[2] / "requirements" / "runtime-18.txt"
+
 
 @pytest.fixture(scope="session")
 def spark():
+    # Every library the env shares with Runtime 18 is at the runtime's version.
+    lines = RUNTIME.read_text().splitlines()
+    pins = dict(line.split("==") for line in lines if not line.startswith("#"))
+    installed = {re.sub(r"[-_.]+", "-", d.name).lower(): d.version for d in distributions()}
+    drift = {
+        name: (pin, installed[name])
+        for name, pin in pins.items()
+        if installed.get(name, pin) != pin
+    }
+    assert not drift, f"not Runtime 18's versions (pin, installed): {drift}: run make spark"
     builder = (
         SparkSession.builder.master("local[2]")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")

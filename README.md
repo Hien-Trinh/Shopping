@@ -23,7 +23,7 @@ uv run python -m ingestion.merchants create --currency USD   # once: the API won
 uv run python -m ingestion.supervisor             # runs the Procfile
 ```
 
-Stop, rescale, recover, reset and read metrics: see the [runbook](docs/runbook.md).
+Stop, rescale, recover, reset and read metrics: see the [runbook](docs/runbook.md). It was written for v1, before the package was renamed: read its `catalog` as `ingestion`, or its `pgrep` and `pkill` lines match nothing.
 
 ## Data
 

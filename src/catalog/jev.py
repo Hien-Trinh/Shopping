@@ -134,7 +134,7 @@ class JevClassifier(classify.Classifier):
                 confidence = float(answer["probabilities"].get(key, 0.0))
                 if not 0.0 <= confidence <= 1.0:  # NaN too
                     raise ValueError
-            except KeyError, TypeError, AttributeError, ValueError:
+            except (KeyError, TypeError, AttributeError, ValueError):
                 raise ValueError(f"unexpected Jev response: {str(got)[:300]}") from None
         except Exception:
             failed.set()  # no new calls: a 429 means slow down, an outage fails them all

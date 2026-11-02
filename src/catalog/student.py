@@ -8,6 +8,8 @@ student alone, then the cascade (the student where it is sure, Jev or Opus below
 builds the index the workers' `--classifier student` loads: `pipeline()`.
 """
 
+from __future__ import annotations  # Softmax's methods return Softmax, unbound in its own body
+
 import argparse
 import gzip
 import hashlib
@@ -213,7 +215,7 @@ def vectors(
     path = cache / f"student-{key}.npy"
     try:
         return np.load(path)
-    except OSError, ValueError, EOFError:  # missing, or cut short by a killed run
+    except (OSError, ValueError, EOFError):  # missing, or cut short by a killed run
         pass
     x = embed_chunks(embed, texts)
     with state.atomic(path) as f:

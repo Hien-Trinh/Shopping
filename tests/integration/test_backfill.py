@@ -141,6 +141,7 @@ def test_tick_waits_until_every_worker_passed_its_last_commit(tables):
     assert landing_dt.version() == first
     caught_up(tables)
     assert tick(tables) == first + 1  # A is still flagged: the worker hasn't fixed it
+    assert len({r["submission_id"] for r in landed(landing_dt)}) == 2  # one id per round, same NOW
 
 
 def test_tick_logs_its_commit_retries_to_its_own_events(tables, monkeypatch):  # PR #80 review

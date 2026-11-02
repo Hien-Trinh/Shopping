@@ -246,9 +246,11 @@ def _writer(path, part, n):
 
 
 def test_concurrent_writers_each_get_their_own_commit_version(db):
+    import multiprocessing
     from concurrent.futures import ProcessPoolExecutor
 
-    with ProcessPoolExecutor(2) as pool:
+    # Spawn, as load.py does: 3.12 forks by default on Linux, and a fork can't use delta-rs.
+    with ProcessPoolExecutor(2, mp_context=multiprocessing.get_context("spawn")) as pool:
         a, b = pool.map(_writer, [db.table_uri] * 2, [11, 12], [15, 15])
     assert len(set(a) | set(b)) == 30  # no two MERGEs report the same commit
     assert {fp[0] for fp in store.fingerprints(db).values()} == {15}

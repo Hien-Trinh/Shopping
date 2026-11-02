@@ -13,6 +13,8 @@ from itertools import count
 import pytest
 import uvicorn
 from fastapi.testclient import TestClient
+from hypothesis import given
+from hypothesis import strategies as st
 from support import delete, up
 from test_supervisor import wait_for
 
@@ -410,6 +412,16 @@ def report(client, submission, *outcomes, at=LATER):
 
 def uuid7_at(ms):
     return str(api.uuid7_at(ms))
+
+
+@given(st.integers(0, 2**48 - 1))
+def test_uuid7_at_is_a_uuidv7_of_that_millisecond_with_random_bits(ms):
+    """uuid.uuid7() is 3.14+, so api lays out RFC 9562 itself: 48-bit ms, version 7, variant 10."""
+    ids = {api.uuid7_at(ms) for _ in range(100)}
+    assert len(ids) == 100  # unique within one millisecond
+    assert {(u.int >> 80, u.version, u.variant) for u in ids} == {(ms, 7, uuid.RFC_4122)}
+    random_bits = [*range(62), *range(64, 76)]  # rand_b, rand_a
+    assert all(len({u.int >> b & 1 for u in ids}) == 2 for b in random_bits)  # each one varies
 
 
 def test_the_submission_id_carries_the_api_clock(client):

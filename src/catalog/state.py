@@ -140,7 +140,7 @@ def load_pin(state: Path) -> tuple[int, datetime] | None:
         if since.utcoffset() is None:
             return None
         return int(saved["version"]), since
-    except CorruptState, TypeError, KeyError, ValueError:
+    except (CorruptState, TypeError, KeyError, ValueError):
         return None
 
 
@@ -243,6 +243,6 @@ def last_beat(state: Path, worker: str) -> float | None:
     """
     try:
         ts = load(_heartbeat_file(state, worker), {})["ts"]
-    except CorruptState, KeyError, TypeError:
+    except (CorruptState, KeyError, TypeError):
         return None
     return ts if isinstance(ts, int | float) else None

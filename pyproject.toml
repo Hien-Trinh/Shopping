@@ -3,7 +3,7 @@ name = "catalog"
 version = "0.1.0"
 description = "Commerce ingestion pipeline: Listings in, categorized current catalog out."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "deltalake>=1.6.6",
     "fastapi>=0.142.2",

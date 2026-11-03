@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import shutil
 import signal
 import socket
 import subprocess
@@ -310,14 +311,15 @@ def test_a_failed_submission_log_append_is_a_500_and_the_landed_rows_stay(client
     assert client.recorded() == [] and client.events() == []
 
 
-def test_commit_retries_are_logged_to_a_file_of_their_own(client, tmp_path, monkeypatch):
-    real = landing.append  # PR #80 review: the commit runs in a thread, beside the request's emits
+@pytest.mark.parametrize("log", [(landing, "append"), (tables, "record")])  # both logs' commits
+def test_commit_retries_are_logged_to_a_file_of_their_own(client, tmp_path, monkeypatch, log):
+    real = getattr(*log)  # PR #80 review: the commit runs in a thread, beside the request's emits
 
     def racing(dt, entries, events=None):
         events.emit([{"type": "append_retry", "rows": len(entries), "ms": 1}])
         return real(dt, entries, events)
 
-    monkeypatch.setattr(landing, "append", racing)
+    monkeypatch.setattr(*log, racing)
     assert client.post({"changes": [change("a")]}).status_code == 202
     files = {kind: {f for f in tmp_path.rglob("*.jsonl") if kind in f.read_text()}
              for kind in ("append_retry", "accepted")}  # fmt: skip
@@ -359,15 +361,21 @@ def test_the_cli_refuses_to_start_without_a_registry(tmp_path, capsys):
     assert not (tmp_path / "data").exists()
 
 
-def test_the_api_refuses_to_start_without_its_tables_and_creates_none(tmp_path, capsys):
-    """Two replicas starting on an empty store must not both create the Landing log (A1)."""
+@pytest.mark.parametrize("missing", ["landing_log", "submission_log"])
+def test_the_api_refuses_to_start_without_its_tables_and_creates_none(
+    tmp_path, capsys, monkeypatch, missing
+):
+    """A replica never creates a table: two starting on an empty store would both try (A1)."""
     db = tmp_path / "data" / "merchants.sqlite"
     merchants.create(db, "USD")
+    tables.init(tmp_path / "data")
+    shutil.rmtree(tmp_path / "data" / missing)  # as after an init killed before it
+    monkeypatch.setattr(api.uvicorn.Server, "run", lambda _: pytest.fail("served without it"))
     with pytest.raises(SystemExit) as stopped:
         api.main(["--data", str(tmp_path / "data"), "--db", str(db)])
     assert stopped.value.code == 2
     assert f"python -m ingestion.tables --data {tmp_path / 'data'}" in capsys.readouterr().err
-    assert not {"landing_log", "submission_log"} & {p.name for p in (tmp_path / "data").iterdir()}
+    assert not (tmp_path / "data" / missing).exists()
 
 
 def test_the_cli_serves_on_localhost_only(tmp_path, monkeypatch):

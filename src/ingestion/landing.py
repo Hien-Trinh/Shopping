@@ -10,7 +10,7 @@ import json
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -64,13 +64,16 @@ class Batch:
     offsets: dict[int, Position]  # save these once `changes` are processed
 
 
-WEEK = "interval 7 days"  # any stream outage under this resumes (docs/specs/step-a1.md)
+# Rows (the retention DELETE), removed files and history alike: any stream outage under this
+# resumes (docs/specs/step-a1.md).
+RETENTION = timedelta(days=7)
 
 
 def ensure(path: str) -> DeltaTable:
     """Unpartitioned, so a group commit writes one file; the `partition` column stays for v1's
-    workers. History and removed files are kept a week, as rows are."""
-    windows = {"delta.logRetentionDuration": WEEK, "delta.deletedFileRetentionDuration": WEEK}
+    workers. History and removed files are kept as long as rows are."""
+    kept = f"interval {RETENTION.days} days"
+    windows = {"delta.logRetentionDuration": kept, "delta.deletedFileRetentionDuration": kept}
     return delta.ensure(path, SCHEMA, partition_by=[], **delta.FEED, **windows)
 
 
@@ -115,8 +118,8 @@ def commit(dt: DeltaTable, table: pa.Table, events: EventLog | None = None) -> i
     """Append `table` in one commit, to the Landing log or the Submission log (tables.record);
     returns its version."""
     # Refreshed first: on a snapshot older than retention's DELETE, every append would fail. A
-    # DELETE or the other API replica's append landing between the refresh and the commit costs
-    # one retry.
+    # DELETE landing between the refresh and the commit costs one retry; another writer's append
+    # (the other API replica's) costs none, since delta-rs rebases a blind append by itself.
     dt.update_incremental()
     started = time.monotonic()
     try:

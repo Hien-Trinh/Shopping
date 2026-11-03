@@ -138,6 +138,22 @@ def test_a_retried_commit_race_is_in_the_events(log, monkeypatch, tmp_path):  # 
     assert len(events.read(tmp_path / "events")) == 1
 
 
+def test_another_writers_append_is_no_lost_race(log, monkeypatch, tmp_path):  # PR #178 review
+    """The other API replica commits between our refresh and our commit: delta-rs rebases a blind
+    append onto it, so nothing is retried or logged."""
+    refresh, other = log.update_incremental, landing.ensure(log.table_uri)
+
+    def refresh_then_another_append():
+        refresh()
+        add(other, up(B, 1))
+
+    monkeypatch.setattr(log, "update_incremental", refresh_then_another_append)
+    landing.append(log, [("s2", 0, up(A, 1), NOW)], events=EventLog(tmp_path / "events", "api"))
+    assert events.read(tmp_path / "events") == []
+    landed = landing.read(log, {3: START, 40: START}, limit=10).changes
+    assert sorted(c.change.key for c in landed) == [("m_1", A), ("m_1", B)]
+
+
 def test_a_full_disk_for_events_never_fails_the_retry(log, monkeypatch):  # PR #80 review
     class FullDisk:
         def emit(self, events):

@@ -25,7 +25,7 @@ from ingestion.events import EventLog, stopping
 from ingestion.keys import PARTITIONS
 
 INTERVAL = 600.0  # seconds between passes
-LANDING_RETENTION = timedelta(days=7)  # plan-v1 A13
+LANDING_RETENTION = landing.RETENTION  # plan-v1 A13; the table keeps its history as long
 # ponytail: received_at is stamped before the commit, so a commit stuck longer than this could
 # lose rows to the DELETE (B1's hang was 5 minutes). Upgrade path: delete by commit version.
 RECEIVE_LAG = timedelta(hours=1)
@@ -250,7 +250,8 @@ def _clean(
     old = [f for f in change_data.rglob("*.parquet") if f.stat().st_mtime < cutoff]
     for f in old:
         f.unlink()
-    # Log files older than the table's log retention (delta.LOG_RETENTION_HOURS, the floor).
+    # Log files older than the table's log retention: the floor's hour for the Listing Store, a
+    # week for the Landing log (landing.RETENTION).
     logs_cleaned = _read_before(unread, now - floor)
     if logs_cleaned:
         dt.cleanup_metadata()

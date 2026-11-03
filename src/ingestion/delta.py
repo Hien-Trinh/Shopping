@@ -9,7 +9,9 @@ import pyarrow as pa
 from deltalake import DeltaTable
 from deltalake.exceptions import TableNotFoundError
 
-LOG_RETENTION_HOURS = 1  # Delta log files kept; maintenance's guard uses the same hour
+# Log files kept unless the table sets more (the Landing log keeps a week); maintenance's guard
+# uses the same hour.
+LOG_RETENTION_HOURS = 1
 FEED = {"delta.enableChangeDataFeed": "true"}  # for a table a stream reads
 
 

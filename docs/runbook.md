@@ -8,7 +8,7 @@ How to run the pipeline on one Mac: start, stop, rescale, recover, reset and rea
 |---|---|---|
 | `Procfile` | the processes the supervisor runs: 4 workers, the API, Change Export, maintenance, Catalog Snapshots, the Backfill | no |
 | `data/merchants.sqlite` | Merchants, their key hashes, and the `audit` table | **no**: every Merchant would need a new key |
-| `data/landing_log/`, `data/listing_store/` | the two Delta tables | only in a reset |
+| `data/landing_log/`, `data/submission_log/`, `data/outcomes/`, `data/listing_store/` | the Delta tables; the supervisor creates the first three with `python -m ingestion.tables` | only in a reset |
 | `data/events/<hour>/` | one JSONL file per process run; kept 3 days | only in a reset |
 | `data/export/`, `data/snapshots/` | Change Export files (3 days) and Catalog Snapshots (7 days) | only in a reset |
 | `state/` | offsets, the export watermark, heartbeats, and the locks that keep one process per role | only in a reset, and only with `data/`'s tables |
@@ -87,7 +87,7 @@ A chaos run's processes match the pattern too, so let any chaos run finish first
 Starts the catalog empty and keeps the Merchants. Stop first, then:
 
 ```bash
-rm -rf data/landing_log data/listing_store data/events data/export data/snapshots state
+rm -rf data/landing_log data/submission_log data/outcomes data/listing_store data/events data/export data/snapshots state
 ```
 
 Delete `state/` with the tables, never alone and never without them: offsets saved against one Landing log are refused against another (worker exit 4).

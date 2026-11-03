@@ -72,7 +72,7 @@ Seeded from lean-review's finder angles.
 5. **`tables.hour(submission_id)`:** the UUIDv7's 48-bit millisecond timestamp, cut to the hour. A2 computes Outcomes' `hour` the same way. The Submission's hour, not the Outcome's, keeps all of a Submission's rows in one partition of each table, whenever its Outcomes land.
 6. **Outcomes** (`data/outcomes`): `hour`, `submission_id`, `change_index` and `outcome` (a string), all non-null, partitioned by `hour`, with the three properties above. These are the columns GET's best-Outcome rule and A9's `written` filter read. A2 adds any it needs, at no migration cost, since every run starts clean. The init creates it (version 0, no rows); after that only the Ingestion job writes it (rule 1).
 7. **The commit:** the API hands the group commit one record per Change, accepted or rejected: `(submission_id, change_index, merchant_id, the Change or None, received_at)`. The commit appends the accepted ones to the Landing log, then all of them to the Submission log, and only then does the 202 go out. A request whose Changes are all rejected now waits for the window too (up to 100 ms, plus the commit), instead of answering at once. `Appender` becomes generic in what it groups.
-8. **One retry rule for both logs:** v1's append with one retry moves from `landing.append` to `delta.append`. Its `append_retry` event gains `table` (the table's directory name), since two logs now retry.
+8. **One retry rule for both logs:** v1's append with one retry becomes `landing.commit`, which `landing.append` and the Submission log's `tables.record` both call. It stays in `landing.py` beside the `Appender`, which now drives both logs, so its history stays with it. Its `append_retry` event gains `table` (the table's directory name), since two logs now retry.
 9. **The API opens, never creates:** `create_app` opens the Landing log and the Submission log after the registry check, so a missing one fails before uvicorn binds, as a missing registry does. `main` turns `TableNotFoundError` into exit 2 with the init command. v1's other processes keep `landing.ensure` (create if missing, under the lock): they run only locally, after the supervisor's init, until S2.
 10. **v1's supervisor** runs `tables.init(state.DATA)` before it starts the Procfile, so local runs, `test_e2e` and v1's `stress-smoke` legs find the tables.
 11. **`landing.retained`** keeps `file_pruning_predicate`, which drops a file only when its statistics rule the partition out, and adds the row filter `partition == p` to the scan.
@@ -119,7 +119,7 @@ All in `make check`, on real local Delta tables:
 
 ## Size
 
-About 230 changed lines: `tables.py` about 70; `delta.py`, `landing.py`, `api.py` and `supervisor.py` about 50 between them; about 110 of tests.
+About 230 changed lines: `tables.py` about 70; `delta.py`, `landing.py`, `api.py` and `supervisor.py` about 50 between them; about 110 of tests. The step PR came to about 295.
 
 [t136]: https://github.com/Hien-Trinh/Shopping/issues/136
 [t161]: https://github.com/Hien-Trinh/Shopping/issues/161

@@ -524,10 +524,10 @@ def test_a_second_maintenance_is_refused_before_touching_anything(env):
 
 
 def test_new_tables_leave_log_cleanup_to_maintenance(env):
-    for dt in (env.log, env.store):
+    for dt, kept in ((env.log, "interval 7 days"), (env.store, "interval 1 hours")):
         config = dt.metadata().configuration
         assert config["delta.enableExpiredLogCleanup"] == "false"
-        assert config["delta.logRetentionDuration"] == "interval 1 hours"  # the tick's floor
+        assert config["delta.logRetentionDuration"] == kept  # the store's is the tick's floor
 
 
 def _emitted_at(env, when):

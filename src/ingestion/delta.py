@@ -1,6 +1,7 @@
 """Shared helpers for the local Delta tables (ADR-0002)."""
 
 import fcntl
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -8,10 +9,15 @@ import pyarrow as pa
 from deltalake import DeltaTable
 from deltalake.exceptions import TableNotFoundError
 
-LOG_RETENTION_HOURS = 1  # Delta log files kept; maintenance's guard uses the same hour
+# Log files kept unless the table sets more (the Landing log keeps a week); maintenance's guard
+# uses the same hour.
+LOG_RETENTION_HOURS = 1
+FEED = {"delta.enableChangeDataFeed": "true"}  # for a table a stream reads
 
 
-def ensure(path: str, schema: pa.Schema, **configuration: str) -> DeltaTable:
+def ensure(
+    path: str, schema: pa.Schema, partition_by: Sequence[str] = ("partition",), **configuration: str
+) -> DeltaTable:
     """Open the table, creating it first if it does not exist, with `configuration` as extra
     table properties.
 
@@ -28,9 +34,8 @@ def ensure(path: str, schema: pa.Schema, **configuration: str) -> DeltaTable:
             return DeltaTable.create(
                 path,
                 schema=schema,
-                partition_by=["partition"],
+                partition_by=list(partition_by),
                 configuration={
-                    "delta.enableChangeDataFeed": "true",
                     # Only maintenance removes log files, never past the slowest reader. Delta's
                     # own cleanup goes by age alone (docs/specs/step-5d.md, decision 4).
                     "delta.enableExpiredLogCleanup": "false",

@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import shutil
 import signal
 import socket
 import subprocess
@@ -12,13 +13,14 @@ from itertools import count
 
 import pytest
 import uvicorn
+from deltalake import DeltaTable
 from fastapi.testclient import TestClient
 from hypothesis import given
 from hypothesis import strategies as st
 from support import delete, up
 from test_supervisor import wait_for
 
-from ingestion import api, events, landing, merchants
+from ingestion import api, events, landing, merchants, tables
 from ingestion.events import EventLog
 from ingestion.keys import PARTITIONS
 from ingestion.landing import START
@@ -41,11 +43,18 @@ class Api:
         self.data = tmp_path / "data"
         self.db = self.data / "merchants.sqlite"
         self.merchant_id, self.key = merchants.create(self.db, currency)
+        tables.init(self.data)
         options = {"min_free": 0, "clock": NOW.timestamp, "window": 0.01} | limits
         app = api.create_app(self.data, self.db, **options)
         self.client = TestClient(app, raise_server_exceptions=False)
         self.client.__enter__()  # runs the lifespan, which starts the appender
         self.log = landing.ensure(str(self.data / "landing_log"))
+
+    def recorded(self):
+        """The Submission log's rows as tuples in column order, by submission and change."""
+        rows = DeltaTable(str(self.data / "submission_log")).to_pyarrow_table().to_pylist()
+        rows.sort(key=lambda r: (r["submission_id"], r["change_index"]))
+        return [tuple(r[c] for c in tables.SUBMISSION_LOG.names) for r in rows]
 
     def post(self, body=None, key=None, **kwargs):
         headers = {"Authorization": f"Bearer {key or self.key}"} | kwargs.pop("headers", {})
@@ -160,9 +169,16 @@ def test_invalid_changes_are_rejected_one_by_one_and_the_rest_land(client):
     assert fold(body["submission_id"], client.events()).outcomes == {
         0: "rejected", 1: "pending", 2: "rejected"
     }  # fmt: skip
+    # Before the 202, every Change in the Submission log, in the hour of its id (NOW's).
+    s, mid = body["submission_id"], client.merchant_id
+    assert client.recorded() == [
+        ("2026-09-30T12", s, 0, mid, False, NOW),
+        ("2026-09-30T12", s, 1, mid, True, NOW),
+        ("2026-09-30T12", s, 2, mid, False, NOW),
+    ]
 
 
-def test_a_batch_with_nothing_valid_still_gets_a_submission_but_no_commit(client):
+def test_a_batch_with_nothing_valid_is_recorded_but_lands_nothing(client):
     before = client.log.version()
     r = client.post({"changes": [change("a", 0), change("b", price_micros=0)]})
     assert r.status_code == 202
@@ -172,6 +188,9 @@ def test_a_batch_with_nothing_valid_still_gets_a_submission_but_no_commit(client
     assert fold(r.json()["submission_id"], client.events()).outcomes == {
         0: "rejected", 1: "rejected"
     }  # fmt: skip
+    assert [(i, accepted) for _, _, i, _, accepted, _ in client.recorded()] == [
+        (0, False), (1, False)
+    ]  # fmt: skip
 
 
 UNREAD = b"{not json"  # refused before the body is read, or this would be a 400
@@ -281,16 +300,26 @@ def test_a_failed_append_is_a_500_with_no_events(client, monkeypatch):
     monkeypatch.setattr(landing, "append", fail)
     assert client.post({"changes": [change("a"), change("b", 0)]}).status_code == 500
     assert client.events() == []  # never an accepted event for a Change that didn't land
+    assert client.recorded() == []  # nor a Submission log row
 
 
-def test_commit_retries_are_logged_to_a_file_of_their_own(client, tmp_path, monkeypatch):
-    real = landing.append  # PR #80 review: the commit runs in a thread, beside the request's emits
+def test_a_failed_submission_log_append_is_a_500_and_the_landed_rows_stay(client, monkeypatch):
+    monkeypatch.setattr(tables, "record", fail)
+    assert client.post({"changes": [change("a")]}).status_code == 500
+    # No 202 went out, so the Merchant resends; the duplicate replays as already_applied.
+    assert len(client.landed()) == 1
+    assert client.recorded() == [] and client.events() == []
+
+
+@pytest.mark.parametrize("log", [(landing, "append"), (tables, "record")])  # both logs' commits
+def test_commit_retries_are_logged_to_a_file_of_their_own(client, tmp_path, monkeypatch, log):
+    real = getattr(*log)  # PR #80 review: the commit runs in a thread, beside the request's emits
 
     def racing(dt, entries, events=None):
         events.emit([{"type": "append_retry", "rows": len(entries), "ms": 1}])
         return real(dt, entries, events)
 
-    monkeypatch.setattr(landing, "append", racing)
+    monkeypatch.setattr(*log, racing)
     assert client.post({"changes": [change("a")]}).status_code == 202
     files = {kind: {f for f in tmp_path.rglob("*.jsonl") if kind in f.read_text()}
              for kind in ("append_retry", "accepted")}  # fmt: skip
@@ -332,9 +361,27 @@ def test_the_cli_refuses_to_start_without_a_registry(tmp_path, capsys):
     assert not (tmp_path / "data").exists()
 
 
+@pytest.mark.parametrize("missing", ["landing_log", "submission_log"])
+def test_the_api_refuses_to_start_without_its_tables_and_creates_none(
+    tmp_path, capsys, monkeypatch, missing
+):
+    """A replica never creates a table: two starting on an empty store would both try (A1)."""
+    db = tmp_path / "data" / "merchants.sqlite"
+    merchants.create(db, "USD")
+    tables.init(tmp_path / "data")
+    shutil.rmtree(tmp_path / "data" / missing)  # as after an init killed before it
+    monkeypatch.setattr(api.uvicorn.Server, "run", lambda _: pytest.fail("served without it"))
+    with pytest.raises(SystemExit) as stopped:
+        api.main(["--data", str(tmp_path / "data"), "--db", str(db)])
+    assert stopped.value.code == 2
+    assert f"python -m ingestion.tables --data {tmp_path / 'data'}" in capsys.readouterr().err
+    assert not (tmp_path / "data" / missing).exists()
+
+
 def test_the_cli_serves_on_localhost_only(tmp_path, monkeypatch):
     db = tmp_path / "data" / "merchants.sqlite"
     merchants.create(db, "USD")
+    tables.init(tmp_path / "data")
     served = []
     monkeypatch.setattr(api.uvicorn.Server, "run", lambda server: served.append(server.config))
     api.main(["--data", str(tmp_path / "data"), "--db", str(db), "--port", "8123"])
@@ -345,6 +392,7 @@ def test_the_cli_serves_on_localhost_only(tmp_path, monkeypatch):
 def test_an_error_that_stops_the_server_is_in_the_events(tmp_path, monkeypatch):  # PR #79 review
     db = tmp_path / "data" / "merchants.sqlite"
     merchants.create(db, "USD")
+    tables.init(tmp_path / "data")
 
     def crash(server):
         raise OSError(48, "Address already in use")
@@ -359,6 +407,7 @@ def test_an_error_that_stops_the_server_is_in_the_events(tmp_path, monkeypatch):
 def test_the_cli_takes_the_disk_guard_from_min_free(tmp_path, monkeypatch):
     db = tmp_path / "data" / "merchants.sqlite"
     _, key = merchants.create(db, "USD")
+    tables.init(tmp_path / "data")
     served = []
     monkeypatch.setattr(api.uvicorn.Server, "run", lambda server: served.append(server.config))
     api.main(["--data", str(tmp_path / "data"), "--db", str(db), "--min-free", str(2**62)])
@@ -562,6 +611,7 @@ def test_a_404_goes_out_even_if_its_event_cant_be_written(client, monkeypatch):
 def test_a_plain_stop_is_logged_and_exits_0_like_the_others(tmp_path, sig):  # after step 7c.3
     db = tmp_path / "data" / "merchants.sqlite"
     merchants.create(db, "USD")
+    tables.init(tmp_path / "data")
     # --port 0: it binds a free port itself and logs which, so no other process can take it first
     argv = [sys.executable, "-m", "ingestion.api", "--data", str(tmp_path / "data"), "--db",
             str(db), "--port", "0", "--min-free", "0"]  # fmt: skip
@@ -582,6 +632,7 @@ def test_a_plain_stop_is_logged_and_exits_0_like_the_others(tmp_path, sig):  # a
 def test_an_api_that_cant_log_its_start_still_serves(tmp_path, monkeypatch):  # PR #143 review
     db = tmp_path / "data" / "merchants.sqlite"
     merchants.create(db, "USD")
+    tables.init(tmp_path / "data")
     app = api.create_app(tmp_path / "data", db, min_free=0)
     server = api._Server(uvicorn.Config(app, host="127.0.0.1", port=0), EventLog(tmp_path, "api"))
     monkeypatch.setattr(EventLog, "emit", fail)  # a full disk at boot
@@ -593,6 +644,7 @@ def test_an_api_that_cant_log_its_start_still_serves(tmp_path, monkeypatch):  # 
 def test_a_second_signal_still_stops_a_stuck_api(tmp_path, monkeypatch):  # PR #82 review
     db = tmp_path / "data" / "merchants.sqlite"
     merchants.create(db, "USD")
+    tables.init(tmp_path / "data")
     served, raised = [], []
     monkeypatch.setattr(api.uvicorn.Server, "run", lambda server: served.append(server))
     monkeypatch.setattr(signal, "raise_signal", raised.append)

@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from ingestion import entry, state
+from ingestion import entry, state, tables
 from ingestion.events import EventLog
 
 STALE = 60.0  # seconds without a sign of life (plan B1)
@@ -191,6 +191,7 @@ def main() -> int:
         with contextlib.suppress(OSError):  # stderr may be a broken pipe: still exit ANOTHER
             print(f"supervisor: another one holds {state.STATE}/supervisor.lock", file=sys.stderr)
         return ANOTHER
+    tables.init(state.DATA)  # the API only opens its tables (docs/specs/step-a1.md)
     procs = parse_procfile(Path("Procfile").read_text())
     stopping = []
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):  # list.append can't deadlock

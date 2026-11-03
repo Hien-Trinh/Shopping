@@ -132,9 +132,26 @@ def test_a_retried_commit_race_is_in_the_events(log, monkeypatch, tmp_path):  # 
     log_events = EventLog(tmp_path / "events", "api")
     landing.append(log, [("s2", 0, up(B, 1), NOW), ("s2", 1, up(A, 2), NOW)], events=log_events)
     [retry] = events.read(tmp_path / "events")
-    assert (retry["type"], retry["rows"]) == ("append_retry", 2) and retry["ms"] >= 0
+    assert (retry["type"], retry["table"], retry["rows"]) == ("append_retry", "landing", 2)
+    assert retry["ms"] >= 0
     landing.append(log, [("s3", 0, up(B, 2), NOW)], events=log_events)  # no race: no event
     assert len(events.read(tmp_path / "events")) == 1
+
+
+def test_another_writers_append_is_no_lost_race(log, monkeypatch, tmp_path):  # PR #178 review
+    """The other API replica commits between our refresh and our commit: delta-rs rebases a blind
+    append onto it, so nothing is retried or logged."""
+    refresh, other = log.update_incremental, landing.ensure(log.table_uri)
+
+    def refresh_then_another_append():
+        refresh()
+        add(other, up(B, 1))
+
+    monkeypatch.setattr(log, "update_incremental", refresh_then_another_append)
+    landing.append(log, [("s2", 0, up(A, 1), NOW)], events=EventLog(tmp_path / "events", "api"))
+    assert events.read(tmp_path / "events") == []
+    landed = landing.read(log, {3: START, 40: START}, limit=10).changes
+    assert sorted(c.change.key for c in landed) == [("m_1", A), ("m_1", B)]
 
 
 def test_a_full_disk_for_events_never_fails_the_retry(log, monkeypatch):  # PR #80 review
@@ -184,7 +201,7 @@ def test_naive_received_at_is_refused(log):
 def test_each_row_keeps_its_own_received_at(log):
     later = datetime(2026, 9, 30, 12, 0, 1, tzinfo=UTC)
     landing.append(log, [("s1", 0, up(A, 1), NOW), ("s2", 0, up(B, 1), later)])
-    # One file per partition, so the table's order isn't seq order.
+    # Sorted: a scan promises no row order.
     rows = log.to_pyarrow_table(columns=["seq", "received_at"]).sort_by("seq")
     assert rows["received_at"].to_pylist() == [NOW, later]
 

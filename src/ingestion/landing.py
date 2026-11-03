@@ -64,8 +64,14 @@ class Batch:
     offsets: dict[int, Position]  # save these once `changes` are processed
 
 
+WEEK = "interval 7 days"  # any stream outage under this resumes (docs/specs/step-a1.md)
+
+
 def ensure(path: str) -> DeltaTable:
-    return delta.ensure(path, SCHEMA)
+    """Unpartitioned, so a group commit writes one file; the `partition` column stays for v1's
+    workers. History and removed files are kept a week, as rows are."""
+    windows = {"delta.logRetentionDuration": WEEK, "delta.deletedFileRetentionDuration": WEEK}
+    return delta.ensure(path, SCHEMA, partition_by=[], **delta.FEED, **windows)
 
 
 def table_id(dt: DeltaTable) -> str:
@@ -102,9 +108,15 @@ def append(dt: DeltaTable, entries: Sequence[Entry], events: EventLog | None = N
         }
         for seq, (submission_id, index, c, received_at) in enumerate(entries)
     ]
-    table = pa.Table.from_pylist(rows, schema=SCHEMA)
+    return commit(dt, pa.Table.from_pylist(rows, schema=SCHEMA), events)
+
+
+def commit(dt: DeltaTable, table: pa.Table, events: EventLog | None = None) -> int:
+    """Append `table` in one commit, to the Landing log or the Submission log (tables.record);
+    returns its version."""
     # Refreshed first: on a snapshot older than retention's DELETE, every append would fail. A
-    # DELETE landing between the refresh and the commit costs one retry.
+    # DELETE or the other API replica's append landing between the refresh and the commit costs
+    # one retry.
     dt.update_incremental()
     started = time.monotonic()
     try:
@@ -112,8 +124,9 @@ def append(dt: DeltaTable, entries: Sequence[Entry], events: EventLog | None = N
     except CommitFailedError:
         if events:  # the conflict rate, and the time the lost attempt cost (5d.1 review)
             ms = round((time.monotonic() - started) * 1000)
+            retry = {"type": "append_retry", "table": delta.local(dt.table_uri).name}
             with contextlib.suppress(OSError):  # best effort; logged even if the retry fails
-                events.emit([{"type": "append_retry", "rows": len(entries), "ms": ms}])
+                events.emit([retry | {"rows": table.num_rows, "ms": ms}])
         dt.update_incremental()
         write_deltalake(dt, table, mode="append")
     return dt.version()
@@ -122,8 +135,9 @@ def append(dt: DeltaTable, entries: Sequence[Entry], events: EventLog | None = N
 WINDOW = 0.1  # seconds a request waits for others to share its commit (A10: at most 10 commits/s)
 
 
-class Appender:
-    """Group commit: one Landing log commit for every request that arrives within the window.
+class Appender[T]:
+    """Group commit: one call of `commit` (the API's: a Landing log commit, then a Submission log
+    one) for every request that arrives within the window.
 
     The window counts from the oldest waiting request, so commits never run back to back. The
     commit runs in a thread, and requests arriving meanwhile queue for the next one.
@@ -131,17 +145,15 @@ class Appender:
 
     def __init__(
         self,
-        commit: Callable[[list[Entry]], int],
+        commit: Callable[[list[T]], int],
         window: float = WINDOW,
         clock: Callable[[], float] = time.monotonic,
     ):
         self.commit, self.window, self.clock = commit, window, clock
         # (arrived, entries, the waiting request's future)
-        self.queue: asyncio.Queue[tuple[float, Sequence[Entry], asyncio.Future[int]]] = (
-            asyncio.Queue()
-        )
+        self.queue: asyncio.Queue[tuple[float, Sequence[T], asyncio.Future[int]]] = asyncio.Queue()
 
-    async def submit(self, entries: Sequence[Entry]) -> int:
+    async def submit(self, entries: Sequence[T]) -> int:
         """Waits for the commit holding `entries`; returns its version or raises its error."""
         done = asyncio.get_running_loop().create_future()
         self.queue.put_nowait((self.clock(), entries, done))
@@ -241,9 +253,10 @@ def retained(dt: DeltaTable, p: int) -> list[Landed]:
     # only same-version conflicts; a column written at append time would make it exact.
     # ponytail: the partition is read and sorted in memory (about 470k rows at 7 days of 50/s);
     # sort in DuckDB, which spills, if it matters.
-    rows = delta.plain(
-        dt.to_pyarrow_dataset(file_pruning_predicate=f"partition IN ({p})").to_table()
-    ).sort_by(REPLAY_ORDER)
+    # The predicate prunes files by their statistics, not rows: on the unpartitioned log a file
+    # holds every partition's rows, so the filter picks them (docs/specs/step-a1.md).
+    scan = dt.to_pyarrow_dataset(file_pruning_predicate=f"partition IN ({p})")
+    rows = delta.plain(scan.to_table(filter=pc.field("partition") == p)).sort_by(REPLAY_ORDER)
     return [_landed(r | {"_commit_version": dt.version()}) for r in rows.to_pylist()]
 
 

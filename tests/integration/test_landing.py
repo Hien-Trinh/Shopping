@@ -132,7 +132,8 @@ def test_a_retried_commit_race_is_in_the_events(log, monkeypatch, tmp_path):  # 
     log_events = EventLog(tmp_path / "events", "api")
     landing.append(log, [("s2", 0, up(B, 1), NOW), ("s2", 1, up(A, 2), NOW)], events=log_events)
     [retry] = events.read(tmp_path / "events")
-    assert (retry["type"], retry["rows"]) == ("append_retry", 2) and retry["ms"] >= 0
+    assert (retry["type"], retry["table"], retry["rows"]) == ("append_retry", "landing", 2)
+    assert retry["ms"] >= 0
     landing.append(log, [("s3", 0, up(B, 2), NOW)], events=log_events)  # no race: no event
     assert len(events.read(tmp_path / "events")) == 1
 
@@ -184,7 +185,7 @@ def test_naive_received_at_is_refused(log):
 def test_each_row_keeps_its_own_received_at(log):
     later = datetime(2026, 9, 30, 12, 0, 1, tzinfo=UTC)
     landing.append(log, [("s1", 0, up(A, 1), NOW), ("s2", 0, up(B, 1), later)])
-    # One file per partition, so the table's order isn't seq order.
+    # Sorted: a scan promises no row order.
     rows = log.to_pyarrow_table(columns=["seq", "received_at"]).sort_by("seq")
     assert rows["received_at"].to_pylist() == [NOW, later]
 

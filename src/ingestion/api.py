@@ -1,7 +1,9 @@
 """Ingestion API: POST /listings:batch and GET /submissions/{id} (docs/specs/step-4b.md, 4d.md).
 
-Accepted Changes land through the group commit (docs/specs/step-4c.md); only then do their events
-go out, and only then the 202, so no `accepted` event ever names a Change that didn't land.
+Every Change goes through the group commit (docs/specs/step-4c.md, step-a1.md): the accepted ones
+land in the Landing log, then all of them in the Submission log. Only then do their events go out,
+and only then the 202, so no `accepted` event or Submission log row names a Change that didn't
+land.
 """
 
 import argparse
@@ -20,11 +22,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import uvicorn
+from deltalake import DeltaTable
+from deltalake.exceptions import TableNotFoundError
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from ingestion import entry, envelope, landing, merchants, state, status
+from ingestion import entry, envelope, landing, merchants, state, status, tables
 from ingestion import events as event_files
 from ingestion.events import EventLog
 from ingestion.keys import partition
@@ -47,12 +51,23 @@ def create_app(
     # The query every request runs, so a missing or unreadable registry fails here, at startup.
     with contextlib.suppress(merchants.Denied):
         merchants.verify(db, "")
-    log = landing.ensure(str(data / "landing_log"))
+    # Opened, never created: two replicas starting on an empty store would both create them.
+    # The init step does (tables.init), and a missing one fails here, before uvicorn binds.
+    log = DeltaTable(str(data / "landing_log"))
+    submission_log = DeltaTable(str(data / "submission_log"))
     events = EventLog(data / "events", "api", clock)
     # Its own file: the commit runs in a thread, beside the event loop's emits on `events`.
     retries = EventLog(data / "events", "api", clock)
-    # Looked up at each commit, not bound here, so a test can make the append fail.
-    appender = landing.Appender(lambda entries: landing.append(log, entries, retries), window)
+
+    def commit(records: list[tables.Record]) -> int:
+        """The Landing log's commit first, so no Submission log row names a Change that didn't
+        land. Both are looked up at each commit, not bound here, so a test can make either fail."""
+        accepted = [(s, i, change, at) for s, i, _, change, at in records if change is not None]
+        version = landing.append(log, accepted, retries)
+        tables.record(submission_log, records, retries)
+        return version
+
+    appender = landing.Appender(commit, window)
 
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -113,9 +128,13 @@ def create_app(
             return refuse(400, "bad_batch", str(e), merchant.merchant_id)
         # Before the append, from the clock its events use: they fall in its hour or later (A12).
         submission = str(uuid7_at(int(received.timestamp() * 1000)))
-        if checked.accepted:  # shares a commit with the other requests in its window
-            await appender.submit([(submission, i, c, received) for i, c in checked.accepted])
-        events.emit(submission_events(submission, merchant.merchant_id, checked))
+        # Rejected Changes too: the Submission log records every Change before the 202. The
+        # commit is shared with the other requests in the window.
+        mid = merchant.merchant_id
+        records = [(submission, i, mid, c, received) for i, c in checked.accepted]
+        records += [(submission, i, mid, None, received) for i, _ in checked.rejected]
+        await appender.submit(records)
+        events.emit(submission_events(submission, mid, checked))
         rejected = [{"index": i, "errors": list(errors)} for i, errors in checked.rejected]
         reply = {"submission_id": submission, "accepted": len(checked.accepted)}
         return JSONResponse(reply | {"rejected": rejected}, 202)
@@ -207,6 +226,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         app = create_app(a.data, a.db, min_free=a.min_free)
     except sqlite3.Error as e:
         args.error(f"no usable merchant registry at {a.db} ({e}): run ingestion.merchants create")
+    except TableNotFoundError as e:
+        args.error(f"no tables in {a.data} ({e}): run python -m ingestion.tables --data {a.data}")
     # Never wider than localhost: there is no TLS and no rate limit yet (plan-v1, section C).
     log = EventLog(a.data / "events", "api")
     server = _Server(uvicorn.Config(app, host="127.0.0.1", port=a.port), log)

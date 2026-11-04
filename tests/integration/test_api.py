@@ -95,6 +95,13 @@ def handlers():
         signal.signal(sig, handler)
 
 
+@pytest.fixture(autouse=True)
+def no_real_server(monkeypatch):
+    """A test whose api.main reaches uvicorn without stubbing it fails at once: a real server never
+    returns, so a broken refusal would hang until CI's timeout and name no test."""
+    monkeypatch.setattr(api.uvicorn.Server, "run", lambda _: pytest.fail("api.main served"))
+
+
 @pytest.fixture
 def client(make_api):
     return make_api()
@@ -362,15 +369,12 @@ def test_the_cli_refuses_to_start_without_a_registry(tmp_path, capsys):
 
 
 @pytest.mark.parametrize("missing", ["landing_log", "submission_log"])
-def test_the_api_refuses_to_start_without_its_tables_and_creates_none(
-    tmp_path, capsys, monkeypatch, missing
-):
+def test_the_api_refuses_to_start_without_its_tables_and_creates_none(tmp_path, capsys, missing):
     """A replica never creates a table: two starting on an empty store would both try (A1)."""
     db = tmp_path / "data" / "merchants.sqlite"
     merchants.create(db, "USD")
     tables.init(tmp_path / "data")
     shutil.rmtree(tmp_path / "data" / missing)  # as after an init killed before it
-    monkeypatch.setattr(api.uvicorn.Server, "run", lambda _: pytest.fail("served without it"))
     with pytest.raises(SystemExit) as stopped:
         api.main(["--data", str(tmp_path / "data"), "--db", str(db)])
     assert stopped.value.code == 2
@@ -422,7 +426,6 @@ def test_a_malformed_supervisor_pid_is_refused_as_a_bad_flag(tmp_path, monkeypat
     db = tmp_path / "data" / "merchants.sqlite"
     merchants.create(db, "USD")
     monkeypatch.setenv("CATALOG_SUPERVISOR", pid)  # 0 or -1 would make the watch signal a group
-    monkeypatch.setattr(api.uvicorn.Server, "run", lambda _: pytest.fail("served unwatched"))
     with pytest.raises(SystemExit) as stopped:
         api.main(["--data", str(tmp_path / "data"), "--db", str(db)])
     assert stopped.value.code == 2

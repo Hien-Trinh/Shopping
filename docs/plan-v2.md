@@ -159,7 +159,7 @@ As in [plan-v1.md](plan-v1.md#review-process-from-oct-1): `/lean-review` on ever
 
 ## PR steps
 
-Each step is one PR of **under about 300 changed lines, tests included**, merged before the next one starts, as in v1. Code steps start with a mini PRD in `docs/specs/step-<id>.md` (`step-a2.md`, say). ⏸ means the loop stops for you, and ✅ marks a merged step.
+Each step is one PR of **under about 300 changed lines, tests included**, merged before the next one starts, as in v1. Code steps start with a mini PRD in `docs/specs/step-<id>.md` (`step-a2.md`, say). ⏸ means the loop stops for you, and ✅ marks a finished step.
 
 | Phase | Step | PR |
 | --- | --- | --- |

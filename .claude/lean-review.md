@@ -24,6 +24,8 @@ From docs/design-commerce-ingestion-pipeline.md and docs/adr/:
 ## Scale
 From docs/plan-v1.md: about 1M Listings in 64 partitions; about 50 changes/s with bulk batches of 10k items; worker batches up to 1,000 changes; status lookups over about 1M event lines per hour; p99 freshness under 5 minutes. Per-row Python where Arrow would do is waste at this scale.
 
+A delta-rs append adds a file per commit, and commit cost grows with live files: the Submission log went from 10 to 90 ms per commit over 3,000 commits, and back to 14 ms after one compaction (#178). So every table the API appends to needs a named compactor, and every lane checks a new append path for one, since the performance lane runs only on larger diffs. The Submission log's is A10's to settle.
+
 ## Data
 Delta schema nullability/widening/column order; string vs string_view; content_hash and key derivation must match between writer and reader; export, snapshot and backfill must read today's data.
 
@@ -46,7 +48,7 @@ Tests that exercise only FakeClassifier or monkeypatches, never the real contrac
 2. If the diff touches a pure module (`source_paths` under `[tool.mutmut]` in pyproject.toml): `make mutate`; surviving mutants in changed lines not on plan-v1.md's equivalent list must be fixed or explained.
 
 ## Running scratch scripts
-From the repo root with `uv run`, `PYTHONPATH=tests` for test helpers.
+From the repo root with `uv run`, `PYTHONPATH=tests` for test helpers. Run a script's body through `entry.exit_with(main)`, which flushes and exits hard: a process that scanned a Delta table can hang at interpreter exit (spikes/NOTES.md, "Exit hang").
 
 ## Defer target, round record, PR body
 - Defer findings to a named later step in docs/plan-v1.md.

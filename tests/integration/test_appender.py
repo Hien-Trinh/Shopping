@@ -51,6 +51,19 @@ def test_requests_within_the_window_share_one_commit_in_arrival_order():
     assert commits.groups == [["a0", "a1", "b0"]]
 
 
+def test_requests_past_the_group_bound_go_whole_into_the_next_commit_in_arrival_order():
+    commits = Commits()
+    # A group of exactly 10k; then 1 can't take a full request; a full request can't take the 1.
+    requests = [[f"{r}-{i}" for i in range(n)] for r, n in enumerate([4000, 6000, 1, 10_000, 1])]
+
+    async def scenario(appender):
+        return await asyncio.gather(*(appender.submit(r) for r in requests))
+
+    assert run(scenario, commits, window=0.01) == [1, 1, 2, 3, 4]
+    first, second, third, fourth, fifth = requests
+    assert commits.groups == [first + second, third, fourth, fifth]
+
+
 def test_a_request_after_the_window_goes_into_the_next_commit():
     commits = Commits()
 
@@ -91,6 +104,23 @@ def test_a_failed_commit_fails_every_request_in_it_and_the_appender_goes_on():
     failed, version = run(scenario, commit, window=0.01)
     assert [type(e) for e in failed] == [OSError, OSError]
     assert (version, groups) == (7, [["a0", "b0"], ["c0"]])
+
+
+def test_a_failed_commit_leaves_a_held_request_for_the_next_commit():
+    groups = []
+
+    def commit(entries):
+        groups.append(len(entries))
+        if len(groups) == 1:
+            raise OSError(28, "No space left on device")
+        return 7
+
+    async def scenario(appender):
+        both = [appender.submit(["a"] * 10_000), appender.submit(["b"])]
+        return await asyncio.gather(*both, return_exceptions=True)
+
+    failed, version = run(scenario, commit, window=0.01)
+    assert (type(failed), version, groups) == (OSError, 7, [10_000, 1])
 
 
 def test_a_request_cancelled_while_waiting_still_lands_and_breaks_no_other():

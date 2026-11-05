@@ -18,7 +18,7 @@ from deltalake import DeltaTable, write_deltalake
 from deltalake.exceptions import CommitFailedError
 
 from ingestion import delta
-from ingestion.envelope import Change, Content
+from ingestion.envelope import MAX_BATCH, Change, Content
 from ingestion.events import EventLog
 from ingestion.keys import PARTITIONS, partition
 
@@ -142,8 +142,11 @@ class Appender[T]:
     """Group commit: one call of `commit` (the API's: a Landing log commit, then a Submission log
     one) for every request that arrives within the window.
 
-    The window counts from the oldest waiting request, so commits never run back to back. The
-    commit runs in a thread, and requests arriving meanwhile queue for the next one.
+    The window counts from the oldest waiting request, so a request that already waited behind a
+    commit goes out at once. The commit runs in a thread, and requests arriving meanwhile queue for
+    the next one. A request that would take its group past MAX_BATCH entries waits, whole, for the
+    next commit as well, so a commit holds at most one full request and the ingest query's batch
+    stays bounded (docs/specs/step-a2.md, question 2).
     """
 
     def __init__(
@@ -164,11 +167,19 @@ class Appender[T]:
 
     async def run(self) -> None:
         """The appender's loop, one per process; only cancellation stops it."""
+        held = None  # the request that didn't fit in the last group: it starts the next one
         while True:
-            group = [await self.queue.get()]
+            group = [held or await self.queue.get()]
+            held = None
             await asyncio.sleep(group[0][0] + self.window - self.clock())
+            size = len(group[0][1])
             while not self.queue.empty():
-                group.append(self.queue.get_nowait())
+                request = self.queue.get_nowait()
+                size += len(request[1])
+                if size > MAX_BATCH:
+                    held = request
+                    break
+                group.append(request)
             try:
                 version = await asyncio.to_thread(
                     self.commit, [e for _, es, _ in group for e in es]

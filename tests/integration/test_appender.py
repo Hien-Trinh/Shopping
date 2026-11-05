@@ -51,6 +51,19 @@ def test_requests_within_the_window_share_one_commit_in_arrival_order():
     assert commits.groups == [["a0", "a1", "b0"]]
 
 
+def test_requests_past_the_group_bound_go_whole_into_the_next_commit_in_arrival_order():
+    commits = Commits()
+    # A group of exactly 10k; then 1 can't take a full request; a full request can't take the 1.
+    requests = [[f"{r}-{i}" for i in range(n)] for r, n in enumerate([4000, 6000, 1, 10_000, 1])]
+
+    async def scenario(appender):
+        return await asyncio.gather(*(appender.submit(r) for r in requests))
+
+    assert run(scenario, commits, window=0.01) == [1, 1, 2, 3, 4]
+    first, second, third, fourth, fifth = requests
+    assert commits.groups == [first + second, third, fourth, fifth]
+
+
 def test_a_request_after_the_window_goes_into_the_next_commit():
     commits = Commits()
 

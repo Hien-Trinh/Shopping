@@ -11,6 +11,11 @@ from functools import partial
 
 import pandas as pd
 import pyarrow as pa
+from delta.exceptions import (
+    ConcurrentAppendException,
+    ConcurrentDeleteDeleteException,
+    ConcurrentDeleteReadException,
+)
 from delta.tables import DeltaTable
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame, SparkSession
@@ -25,7 +30,14 @@ from ingestion.classify import FakeClassifier
 MAX_BYTES = 8_000_000  # a batch is this plus one commit; P4 retunes it (step-a2.md, question 2)
 MAX_FILES = 100_000  # so the byte cap binds
 TRIGGER = {"processingTime": "60 seconds"}
+MERGE_ATTEMPTS = 3  # then the query fails and the batch replays
 
+# By name: delta-spark's Python classes aren't subclasses of DeltaConcurrentModificationException.
+_CONFLICTS = (
+    ConcurrentAppendException,
+    ConcurrentDeleteReadException,
+    ConcurrentDeleteDeleteException,
+)
 _KEY = ("merchant_id", "merchant_product_id")
 _TABLE = [
     f for f in store.SCHEMA if f.name != "partition"
@@ -67,11 +79,20 @@ def plan_key(group: pd.DataFrame) -> pd.DataFrame:
 
 
 def merge(path: str, writes: DataFrame) -> None:
-    source = writes.withColumn("updated_at", F.current_timestamp())
-    table = DeltaTable.forPath(writes.sparkSession, path).alias("t")
+    source = writes.withColumn("updated_at", F.current_timestamp()).alias("s")
     on = " AND ".join(f"t.{c} = s.{c}" for c in _KEY)
-    merging = table.merge(source.alias("s"), on)
-    merging.whenMatchedUpdateAll(store.APPLY_IF).whenNotMatchedInsertAll().execute()
+    for attempt in range(1, MERGE_ATTEMPTS + 1):
+        table = DeltaTable.forPath(writes.sparkSession, path).alias("t")
+        merging = table.merge(source, on).whenMatchedUpdateAll(store.APPLY_IF)
+        try:
+            applied = merging.whenNotMatchedInsertAll().execute().first().num_affected_rows
+            break
+        except _CONFLICTS:  # a concurrent OPTIMIZE, say: the Write rows still hold
+            if attempt == MERGE_ATTEMPTS:
+                raise
+    planned = writes.count()
+    if applied < planned:  # another writer got there first: the replay reports these `stale`
+        raise RuntimeError(f"MERGE applied {applied} of {planned} rows")
 
 
 def append_outcomes(path: str, outcomes: DataFrame, query_id: str, batch_id: int) -> None:
@@ -102,12 +123,30 @@ def apply_batch(data: str, batch: DataFrame, batch_id: int) -> None:
 
 
 def start(spark: SparkSession, data: str, *, trigger: dict) -> StreamingQuery:
-    _ensure_store(spark, f"{data}/listing_store")
-    log, checkpoint = f"{data}/landing_log", f"{data}/checkpoints/ingest"
+    log, outcomes = f"{data}/landing_log", f"{data}/outcomes"
+    listing_store, checkpoint = f"{data}/listing_store", f"{data}/checkpoints/ingest"
+    # A missing init: forPath names the path, where readStream says only DELTA_SCHEMA_NOT_SET.
+    # Every start, since an append to lost Outcomes would create them without their properties.
+    landing_log = DeltaTable.forPath(spark, log)
+    reported = DeltaTable.forPath(spark, outcomes).toDF()
+    started = _holds_batch(spark, f"{checkpoint}/offsets")
+    if started and not DeltaTable.isDeltaTable(spark, listing_store):
+        raise RuntimeError(
+            f"{checkpoint} has recorded batches but {listing_store} is missing: a start would"
+            " create an empty store and lose what they applied"
+        )
+    if not started and not reported.isEmpty():
+        raise RuntimeError(
+            f"{outcomes} holds Outcomes but {checkpoint} has recorded no batch: a start would"
+            " report every Change again. A clean start wipes them both"
+        )
+    _ensure_store(spark, listing_store)
     reader = spark.readStream.format("delta").option("readChangeFeed", "true")
     reader = reader.option("maxBytesPerTrigger", MAX_BYTES).option("maxFilesPerTrigger", MAX_FILES)
-    if not _has_offsets(spark, checkpoint):  # a restart ignores it, and history reads every commit
-        earliest = DeltaTable.forPath(spark, log).history().agg(F.min("version")).first()[0]
+    # Batch 0's replay has no start offset either, so it needs this until batch 0 commits. A later
+    # restart ignores it, and history reads every commit.
+    if not _holds_batch(spark, f"{checkpoint}/commits"):
+        earliest = landing_log.history().agg(F.min("version")).first()[0]
         reader = reader.option("startingVersion", earliest)  # else a snapshot, in no landing order
     writer = reader.load(log).writeStream.foreachBatch(partial(apply_batch, data))
     return writer.option("checkpointLocation", checkpoint).trigger(**trigger).start()
@@ -127,11 +166,12 @@ def _query_id(spark: SparkSession, checkpoint: str) -> str:
     return spark.read.schema("id string").json(f"{checkpoint}/metadata").first().id
 
 
-def _has_offsets(spark: SparkSession, checkpoint: str) -> bool:
-    """Whether the query has recorded a batch. Spark writes `metadata` at the start and the first
-    offset at the first batch, so a kill between the two leaves a query that has read nothing."""
+def _holds_batch(spark: SparkSession, log: str) -> bool:
+    """Whether a checkpoint's `offsets` or `commits` log has recorded a batch. Spark writes
+    `metadata` at the start and the first offset at the first batch, so a kill between the two
+    leaves a query that has read nothing."""
     try:
-        return not spark.read.text(f"{checkpoint}/offsets").isEmpty()
+        return not spark.read.text(log).isEmpty()
     except AnalysisException as e:
         if e.getCondition() != "PATH_NOT_FOUND":
             raise

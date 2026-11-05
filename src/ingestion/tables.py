@@ -36,10 +36,12 @@ OUTCOMES = _schema(
 )
 # Spark writes Outcomes and delta-rs reads it, so nothing delta-rs can't read: no deletion
 # vectors, classic checkpoints. Only the Ingestion job writes it, and only appends (rule 1).
+# Optimized writes: one file a batch, not one per shuffle partition (174 at Spark's default).
 OUTCOMES_PROPERTIES = {
     "delta.appendOnly": "true",
     "delta.enableDeletionVectors": "false",
     "delta.checkpointPolicy": "classic",
+    "delta.autoOptimize.optimizeWrite": "true",
 }
 
 # submission_id, change_index, merchant_id, the Change if accepted (None if rejected), received_at

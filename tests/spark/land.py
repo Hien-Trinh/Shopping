@@ -24,6 +24,10 @@ def _commit(data: Path, rows: list[list]) -> int:
     return landing.append(DeltaTable(str(data / "landing_log")), entries)
 
 
+def _compact(data: Path) -> int:
+    return DeltaTable(str(data / "landing_log")).optimize.compact()["numFilesRemoved"]
+
+
 def _delete(data: Path, predicate: str) -> int:
     return DeltaTable(str(data / "landing_log")).delete(predicate)["num_deleted_rows"]
 
@@ -45,6 +49,7 @@ def main() -> None:
     steps = {
         "init": lambda: tables.init(data),
         "commit": lambda rows: _commit(data, rows),
+        "compact": lambda: _compact(data),
         "delete": lambda predicate: _delete(data, predicate),
         "outcomes": lambda: _outcomes(data),
     }

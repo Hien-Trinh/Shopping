@@ -38,9 +38,14 @@ def commit(n: int, changes: list[Change]) -> list:
     ]]  # fmt: skip
 
 
+def cached(spark) -> bool:
+    return not spark._jsparkSession.sharedState().cacheManager().isEmpty()
+
+
 def run(spark, data: Path):
     query = ingest.start(spark, str(data), trigger={"availableNow": True})
     query.awaitTermination()
+    assert not cached(spark)  # each batch released its plan
     return query
 
 
@@ -141,12 +146,16 @@ def test_a_price_past_a_floats_precision_stays_exact_and_replays_as_already_appl
     assert store.first().price_micros == 2**53 + 1
 
 
-def test_a_retention_delete_adds_no_outcome_and_no_commit(spark, tmp_path):
-    land(tmp_path, ["init"], commit(0, [up("plain", 1)]))
+def test_a_compaction_and_a_retention_delete_add_no_outcome_and_no_commit(spark, tmp_path):
+    land(tmp_path, ["init"], commit(0, [up("plain", 1)]), commit(1, [up("other", 1)]))
     run(spark, tmp_path)
     written = [tmp_path / "outcomes", tmp_path / "listing_store"]
     before = outcomes(spark, tmp_path), [version(spark, t) for t in written]
-    land(tmp_path, ["delete", "received_at < '2100-01-01T00:00:00+00:00'"])
+    # each did its work: two files compacted, two rows deleted
+    assert land(tmp_path, ["compact"], ["delete", "received_at < '2100-01-01T00:00:00+00:00'"]) == [
+        2,
+        2,
+    ]
     assert batches(run(spark, tmp_path)) == 1  # the query did read the DELETE's rows
     assert (outcomes(spark, tmp_path), [version(spark, t) for t in written]) == before
 
@@ -177,9 +186,32 @@ def test_a_plan_recomputed_after_its_merge_gives_the_same_outcomes(spark, tmp_pa
 
     def merge_then_drop_the_persist(path, writes):
         merge(path, writes)
+        assert cached(spark)
         spark.catalog.clearCache()
 
     monkeypatch.setattr(ingest, "merge", merge_then_drop_the_persist)
     land_backlog(tmp_path)
     run(spark, tmp_path)
     assert outcomes(spark, tmp_path) == BACKLOG_OUTCOMES
+
+
+def test_a_kill_before_the_first_offset_still_reads_commit_by_commit(spark, tmp_path):
+    land_backlog(tmp_path)
+    checkpoint = (
+        tmp_path / "checkpoints/ingest"
+    )  # as Spark leaves it from the start to the first batch
+    (checkpoint / "offsets").mkdir(parents=True)
+    (checkpoint / "metadata").write_text(f'{{"id":"{uuid.uuid4()}"}}\n')
+    run(spark, tmp_path)
+    assert outcomes(spark, tmp_path) == BACKLOG_OUTCOMES
+
+
+def test_a_batch_writes_one_file_per_table_whatever_its_shuffle_partitions(spark, tmp_path):
+    land(tmp_path, ["init"], commit(0, [up(f"p{n}", 1) for n in range(20)]))
+    spark.conf.set("spark.sql.shuffle.partitions", 8)  # conftest's 1 would hide it
+    try:
+        run(spark, tmp_path)
+    finally:
+        spark.conf.set("spark.sql.shuffle.partitions", 1)
+    assert len(list(tmp_path.glob("outcomes/*/*.parquet"))) == 1
+    assert len(list(tmp_path.glob("listing_store/*.parquet"))) == 1

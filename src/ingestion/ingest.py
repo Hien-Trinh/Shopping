@@ -83,9 +83,12 @@ def apply_batch(data: str, batch: DataFrame, batch_id: int) -> None:
     spark = batch.sparkSession
     listing_store = f"{data}/listing_store"
     head = DeltaTable.forPath(spark, listing_store).history(1).first().version
-    stored = spark.read.format("delta").option("versionAsOf", head).load(listing_store)
-    stored = stored.select(*(F.col(f.name).alias(f"s_{f.name}") for f in _WRITE))
     changes = batch.filter("_change_type = 'insert'")
+    stored = spark.read.format("delta").option("versionAsOf", head).load(listing_store)
+    # A left join can't broadcast the batch, so without this it shuffles the whole store.
+    keys = F.broadcast(changes.select(*_KEY).distinct())
+    stored = stored.join(keys, list(_KEY), "left_semi")
+    stored = stored.select(*(F.col(f.name).alias(f"s_{f.name}") for f in _WRITE))
     on = [changes[c] == stored[f"s_{c}"] for c in _KEY]
     plan = changes.join(stored, on, "left").groupBy(*_KEY).applyInPandas(plan_key, _PLAN).persist()
     try:
@@ -103,7 +106,7 @@ def start(spark: SparkSession, data: str, *, trigger: dict) -> StreamingQuery:
     log, checkpoint = f"{data}/landing_log", f"{data}/checkpoints/ingest"
     reader = spark.readStream.format("delta").option("readChangeFeed", "true")
     reader = reader.option("maxBytesPerTrigger", MAX_BYTES).option("maxFilesPerTrigger", MAX_FILES)
-    if _query_id(spark, checkpoint) is None:  # a restart ignores it, and history reads every commit
+    if not _has_offsets(spark, checkpoint):  # a restart ignores it, and history reads every commit
         earliest = DeltaTable.forPath(spark, log).history().agg(F.min("version")).first()[0]
         reader = reader.option("startingVersion", earliest)  # else a snapshot, in no landing order
     writer = reader.load(log).writeStream.foreachBatch(partial(apply_batch, data))
@@ -114,18 +117,25 @@ def _ensure_store(spark: SparkSession, path: str) -> None:
     builder = DeltaTable.createIfNotExists(spark).location(path)
     builder = builder.addColumns(from_arrow_schema(pa.schema(_TABLE))).clusterBy(*_KEY)
     builder = builder.property("delta.enableDeletionVectors", "true")
+    builder = builder.property("delta.autoOptimize.optimizeWrite", "true")  # as Outcomes has it
     builder.property("delta.enableChangeDataFeed", "true").execute()  # the change feed is A7's
 
 
-def _query_id(spark: SparkSession, checkpoint: str) -> str | None:
-    """The streaming query's id, kept across restarts; None before its first start. Read from the
-    checkpoint: a batch on serverless can't reach the query object (step-a2.md, decision 9)."""
+def _query_id(spark: SparkSession, checkpoint: str) -> str:
+    """The streaming query's id, kept across restarts. Read from the checkpoint: a batch on
+    serverless can't reach the query object (step-a2.md, decision 9)."""
+    return spark.read.schema("id string").json(f"{checkpoint}/metadata").first().id
+
+
+def _has_offsets(spark: SparkSession, checkpoint: str) -> bool:
+    """Whether the query has recorded a batch. Spark writes `metadata` at the start and the first
+    offset at the first batch, so a kill between the two leaves a query that has read nothing."""
     try:
-        return spark.read.schema("id string").json(f"{checkpoint}/metadata").first().id
+        return not spark.read.text(f"{checkpoint}/offsets").isEmpty()
     except AnalysisException as e:
         if e.getCondition() != "PATH_NOT_FOUND":
             raise
-        return None
+        return False
 
 
 def main(argv: Sequence[str] | None = None) -> None:

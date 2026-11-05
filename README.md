@@ -11,6 +11,8 @@ uv sync
 make hooks   # once per clone: runs ruff before every push, and refreshes graphify-out/ after a pull
 make check   # ruff + tests + coverage gates, same as CI
 make spark   # the Spark tests, in Runtime 18's libraries: needs JDK 21, and the first run fetches ~85 MB of jars
+make spark TEST='tests/spark/test_ingest.py -k crash'   # some of them
+scripts/red.py src/x.py 'OLD' 'NEW' tests/test_x.py   # a test of existing behaviour going red: runs it with one string swapped
 make repeat TEST=tests/x.py::test_y N=25 J=4   # reproduce a flake: stops at the first failure, keeps its log and temp dir
 gh workflow run linux.yml --ref <branch> -f test=tests/x.py::test_y   # the same on Linux (3.12), for what the Mac can't show
 ```

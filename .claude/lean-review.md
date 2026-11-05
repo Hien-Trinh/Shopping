@@ -11,14 +11,14 @@ Read from `main` (`git show main:<path>`):
 - docs/adr/
 - GLOSSARY.md (Listing, Change, Tombstone, Submission, Outcome)
 
-Unsourced-prose check (spec question 4) also covers report prose: docs/stress.md and specs' results sections, against the run's own files.
+Unsourced-prose check (spec question 4) also covers report prose: docs/stress.md and specs' results sections, against the run's own files. It also covers a spec's claims about how Spark or Delta behaves: each says `probed` or cites a source, and the probe ran the decision as written, so a spec PR's review intent names the folder holding its probes.
 
 ## Invariants
 From docs/design-commerce-ingestion-pipeline.md and docs/adr/:
 - exactly one writer per partition
 - landing order is (commit version, seq)
 - at-least-once delivery, with offsets saved only after the MERGE and events
-- every process-crash point is safe (`kill -9` then restart)
+- every process-crash point is safe (`kill -9` then restart), in a stream's first batch and a later one (docs/plan-v2.md, Testing rules)
 
 `storage` is true when the diff touches storage, state, events or worker code.
 
@@ -48,13 +48,15 @@ Tests that exercise only FakeClassifier or monkeypatches, never the real contrac
 
 ## Gates
 1. `make check`
-2. If the diff touches `src/` or `tests/spark/`: `JAVA_HOME=$(/usr/libexec/java_home -v 21) make spark`
+2. If the diff touches `src/` or `tests/spark/`: `make spark`
 3. If the diff touches a pure module (`source_paths` under `[tool.mutmut]` in pyproject.toml): `make mutate`; surviving mutants in changed lines not on plan-v1.md's equivalent list must be fixed or explained.
 
 ## Running scratch scripts
 From the repo root with `uv run`, `PYTHONPATH=tests` for test helpers. Run a script's body through `entry.exit_with(main)`, which flushes and exits hard: a process that scanned a Delta table can hang at interpreter exit (spikes/NOTES.md, "Exit hang").
 
-A Spark probe is a pytest file in your scratch dir. It gets the `spark` fixture, and `from test_ingest import land, commit, run` writes Landing logs with the API's delta-rs and runs the query: `JAVA_HOME=$(/usr/libexec/java_home -v 21) PYTHONPATH=tests/spark:tests .venv-spark/bin/pytest -p conftest <file>`.
+A Spark probe is a pytest file in your scratch dir. It gets the `spark` fixture, and `from test_ingest import land, commit, run` writes Landing logs with the API's delta-rs and runs the query: `JAVA_HOME=$(/usr/libexec/java_home -v 21) PYTHONPATH=tests/spark:tests .venv-spark/bin/pytest -p conftest <file>`. Lanes run side by side, and this skips the sync in `make spark`, which briefly removes the package from the env.
+
+Once the lanes are done, the session running the review settles a claim that a mutation survives with `scripts/red.py FILE OLD NEW TEST...`. It swaps the file in place, so a lane marks such a claim unreproduced.
 
 ## Defer target, round record, PR body
 - Defer findings to a named later step in docs/plan-v1.md.

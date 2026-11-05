@@ -142,11 +142,11 @@ class Appender[T]:
     """Group commit: one call of `commit` (the API's: a Landing log commit, then a Submission log
     one) for every request that arrives within the window.
 
-    The window counts from the oldest waiting request, so commits never run back to back. The
-    commit runs in a thread, and requests arriving meanwhile queue for the next one. A request that
-    would take its group past MAX_BATCH entries waits, whole, for the next commit as well, so a
-    commit holds at most one full request and the ingest query's batch stays bounded
-    (docs/specs/step-a2.md, question 2).
+    The window counts from the oldest waiting request, so a request that already waited behind a
+    commit goes out at once. The commit runs in a thread, and requests arriving meanwhile queue for
+    the next one. A request that would take its group past MAX_BATCH entries waits, whole, for the
+    next commit as well, so a commit holds at most one full request and the ingest query's batch
+    stays bounded (docs/specs/step-a2.md, question 2).
     """
 
     def __init__(

@@ -106,6 +106,23 @@ def test_a_failed_commit_fails_every_request_in_it_and_the_appender_goes_on():
     assert (version, groups) == (7, [["a0", "b0"], ["c0"]])
 
 
+def test_a_failed_commit_leaves_a_held_request_for_the_next_commit():
+    groups = []
+
+    def commit(entries):
+        groups.append(len(entries))
+        if len(groups) == 1:
+            raise OSError(28, "No space left on device")
+        return 7
+
+    async def scenario(appender):
+        both = [appender.submit(["a"] * 10_000), appender.submit(["b"])]
+        return await asyncio.gather(*both, return_exceptions=True)
+
+    failed, version = run(scenario, commit, window=0.01)
+    assert (type(failed), version, groups) == (OSError, 7, [10_000, 1])
+
+
 def test_a_request_cancelled_while_waiting_still_lands_and_breaks_no_other():
     commits = Commits()
 

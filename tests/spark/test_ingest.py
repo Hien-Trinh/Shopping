@@ -11,7 +11,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from delta.exceptions import ConcurrentAppendException
+from delta.exceptions import (
+    ConcurrentAppendException,
+    ConcurrentDeleteDeleteException,
+    ConcurrentDeleteReadException,
+)
 from delta.tables import DeltaMergeBuilder, DeltaTable
 from pyspark.errors import AnalysisException, StreamingQueryException
 from pyspark.sql import functions as F
@@ -380,12 +384,14 @@ def test_a_row_the_merges_condition_refuses_raises(spark, tmp_path):
     assert source_versions(spark, store) == {"a": 1, "b": 2, "c": 1}
 
 
-def count_attempts(monkeypatch) -> list:
+def count_attempts(monkeypatch, first_raises=None) -> list:
     attempts = []
     execute = DeltaMergeBuilder.execute
 
     def counted(builder):
         attempts.append(1)
+        if first_raises and len(attempts) == 1:
+            raise first_raises("raised by hand")
         return execute(builder)
 
     monkeypatch.setattr(DeltaMergeBuilder, "execute", counted)
@@ -394,8 +400,9 @@ def count_attempts(monkeypatch) -> list:
 
 def merge_at_a_gate(spark, store: str, gates: Path, during) -> None:
     """`ingest.merge` of the store's rows at their next version, doing `during(n)` while the
-    source's nth evaluation waits. The source has one partition: two gated ones would hold both of
-    local[2]'s slots, and an OPTIMIZE would hang."""
+    source's nth evaluation waits: once per attempt, then once for the check's count. The source
+    has one partition: two gated ones would hold both of local[2]'s slots, and an OPTIMIZE would
+    hang."""
     gates.mkdir()
 
     def wait(batches):
@@ -456,3 +463,16 @@ def test_a_conflict_on_every_attempt_raises_after_three(spark, tmp_path, monkeyp
     assert len(attempts) == 3
     seeded = {"a": 1, "b": 1, "c": 1}
     assert source_versions(spark, store) == seeded | {"new-1": 1, "new-2": 1, "new-3": 1}
+
+
+# A real OPTIMIZE or DELETE raises ConcurrentAppendException on this layout (probed), so by hand.
+@pytest.mark.parametrize(
+    "conflict", [ConcurrentDeleteReadException, ConcurrentDeleteDeleteException]
+)
+def test_the_conflicts_nothing_here_provokes_are_retried_as_well(
+    spark, tmp_path, monkeypatch, conflict
+):
+    store = seeded_store(spark, tmp_path)
+    attempts = count_attempts(monkeypatch, first_raises=conflict)
+    ingest.merge(store, spark.read.format("delta").load(store).drop("updated_at"))
+    assert len(attempts) == 2

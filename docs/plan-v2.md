@@ -152,14 +152,15 @@ v1's [testing rules](plan-v1.md#testing-rules) still hold: the coverage gates, t
 
 ## Review process
 
-As in [plan-v1.md](plan-v1.md#review-process-from-oct-1): `/lean-review` on every step PR, PR bodies through the `pr` skill, `/retro` after each round, and a measured ceiling gets a step. Two changes for v2:
+As in [plan-v1.md](plan-v1.md#review-process-from-oct-1): `/lean-review` on every step PR, PR bodies through the `pr` skill, `/retro` after each round, and a measured ceiling gets a step. Three changes for v2:
 
-- Rename-only and delete-only PRs (G4, S2) are exempt from the ~300-line cap.
+- The ~300-line cap leaves out tests and generated files, which v1 counted. 7 of the last 9 PRs broke it with tests counted, and 1 without ([#182](https://github.com/Hien-Trinh/Shopping/pull/182)).
+- Rename-only and delete-only PRs (G4, S2) are exempt from the cap.
 - G2 adds a v2 step's row in this plan to `.claude/lean-review.md`'s spec sources, so the first reviewed v2 step finds its spec. S3 points the profile's other v1 references at the v2 docs.
 
 ## PR steps
 
-Each step is one PR of **under about 300 changed lines, tests and generated files left out**, merged before the next one starts, as in v1. Code steps start with a mini PRD in `docs/specs/step-<id>.md` (`step-a2.md`, say). ⏸ means the loop stops for you, and ✅ marks a finished step.
+Each step is one PR of **under about 300 changed lines, tests and generated files left out**, merged before the next one starts. Code steps start with a mini PRD in `docs/specs/step-<id>.md` (`step-a2.md`, say). ⏸ means the loop stops for you, and ✅ marks a finished step.
 
 | Phase | Step | PR |
 | --- | --- | --- |

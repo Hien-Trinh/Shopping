@@ -33,7 +33,7 @@ def spark():
             "spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog"
         )
         .config("spark.databricks.delta.snapshotPartitions", 1)
-        .config("spark.sql.shuffle.partitions", 1)
+        .config("spark.sql.shuffle.partitions", 4)  # 1 would hide what each partition writes
         .config("spark.ui.enabled", False)
     )
     os.environ["PYSPARK_PYTHON"] = sys.executable  # workers: not PATH's python3 (a 3.15 on the Mac)

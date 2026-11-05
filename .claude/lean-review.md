@@ -6,6 +6,7 @@ Read by the user-scoped `/lean-review` skill and its `reviewer-*` agents.
 Read from `main` (`git show main:<path>`):
 - the PR's row in docs/plan-v1.md's "PR steps" table, and its phase section (tests, "Rules carried")
 - for a v2 step (G1–P7): its row in docs/plan-v2.md's "PR steps" table, its phase under "Phases", and that plan's "Rules that hold across steps" and "Testing rules"
+- for a step with a mini PRD: docs/specs/step-<id>.md, whose Out of scope names the step that owns each gap. A lane reports a gap only when the spec names no owner
 - the sections of docs/design-commerce-ingestion-pipeline.md the diff touches
 - docs/adr/
 - GLOSSARY.md (Listing, Change, Tombstone, Submission, Outcome)
@@ -26,6 +27,8 @@ From docs/plan-v1.md: about 1M Listings in 64 partitions; about 50 changes/s wit
 
 A delta-rs append adds a file per commit, and commit cost grows with live files: the Submission log went from 10 to 90 ms per commit over 3,000 commits, and back to 14 ms after one compaction (#178). So every table the API appends to needs a named compactor, and every lane checks a new append path for one, since the performance lane runs only on larger diffs. The Submission log's is A10's to settle.
 
+A Spark write makes one file per shuffle partition unless the table sets `delta.autoOptimize.optimizeWrite`: 174 files a batch per table at Spark's default 200 partitions (#181), where tests run at 4. So every lane counts files per batch on a new Spark write path.
+
 ## Data
 Delta schema nullability/widening/column order; string vs string_view; content_hash and key derivation must match between writer and reader; export, snapshot and backfill must read today's data.
 
@@ -45,10 +48,13 @@ Tests that exercise only FakeClassifier or monkeypatches, never the real contrac
 
 ## Gates
 1. `make check`
-2. If the diff touches a pure module (`source_paths` under `[tool.mutmut]` in pyproject.toml): `make mutate`; surviving mutants in changed lines not on plan-v1.md's equivalent list must be fixed or explained.
+2. If the diff touches `src/` or `tests/spark/`: `JAVA_HOME=$(/usr/libexec/java_home -v 21) make spark`
+3. If the diff touches a pure module (`source_paths` under `[tool.mutmut]` in pyproject.toml): `make mutate`; surviving mutants in changed lines not on plan-v1.md's equivalent list must be fixed or explained.
 
 ## Running scratch scripts
 From the repo root with `uv run`, `PYTHONPATH=tests` for test helpers. Run a script's body through `entry.exit_with(main)`, which flushes and exits hard: a process that scanned a Delta table can hang at interpreter exit (spikes/NOTES.md, "Exit hang").
+
+A Spark probe is a pytest file in your scratch dir. It gets the `spark` fixture, and `from test_ingest import land, commit, run` writes Landing logs with the API's delta-rs and runs the query: `JAVA_HOME=$(/usr/libexec/java_home -v 21) PYTHONPATH=tests/spark:tests .venv-spark/bin/pytest -p conftest <file>`.
 
 ## Defer target, round record, PR body
 - Defer findings to a named later step in docs/plan-v1.md.

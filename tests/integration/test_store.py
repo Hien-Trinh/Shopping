@@ -124,7 +124,7 @@ def test_null_keys_are_refused_by_the_table(db):
 def test_rows_written_under_older_limits_still_read(db):
     # A later release may tighten Content (e.g. a shorter title); stored rows must still decode.
     old = ("m_1", product_in(5, prefix="old"))
-    row = store._row(write(6, listing(), key=old), NOW) | {"title": "x" * 500}
+    row = store.row(write(6, listing(), key=old)) | {"updated_at": NOW, "title": "x" * 500}
     write_deltalake(db, pa.Table.from_pylist([row], schema=store.SCHEMA), mode="append")
     assert store.read(db, [old])[old].listing.title == "x" * 500
 

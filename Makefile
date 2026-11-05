@@ -2,6 +2,10 @@
 # A stale uv.lock fails the gate instead of being re-resolved silently (here and in CI).
 export UV_LOCKED := 1
 
+# JDK 21, as on Runtime 18, for make spark: a Mac finds it here, and CI sets its own.
+JAVA_HOME ?= $(shell /usr/libexec/java_home -v 21 2>/dev/null)
+export JAVA_HOME
+
 PURE := src/ingestion/keys.py,src/ingestion/envelope.py,src/ingestion/plan.py,src/ingestion/replay.py,src/ingestion/status.py,src/ingestion/collapse.py
 
 .PHONY: check lint test hooks mutate repeat bench requirements spark
@@ -27,11 +31,12 @@ requirements:
 
 # The Spark tests, in Runtime 18's libraries with the package --no-deps, as on the cluster (JDK 21).
 # --exact also removes what the files no longer list, so a reused env matches a fresh one.
+# TEST runs some of them: make spark TEST='tests/spark/test_ingest.py -k crash'
 spark:
 	uv venv -q --allow-existing --python 3.12 .venv-spark
 	uv pip install -q --exact -p .venv-spark -r requirements/databricks.txt -r requirements/spark.txt -c requirements/runtime-18.txt
 	uv pip install -q -p .venv-spark --no-deps -e .
-	.venv-spark/bin/pytest tests/spark
+	.venv-spark/bin/pytest $(or $(TEST),tests/spark)
 
 # Mutation testing of the pure modules (~1 min). Not part of `check`; CI reports it without blocking.
 mutate:

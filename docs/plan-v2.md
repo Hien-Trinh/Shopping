@@ -146,7 +146,8 @@ v1's [testing rules](plan-v1.md#testing-rules) still hold: the coverage gates, t
 - **Spark tests run in `make spark`,** not `make check`: the Spark env, one shared session with `spark.databricks.delta.snapshotPartitions=1`, and no xdist, since each JVM holds about 850 MB.
 - **No mocks of delta-spark or delta-rs.** Spark tests run against real local Delta tables, as v1's integration tests do.
 - **The ADLS path is tested against Azurite,** never against a mock of object_store.
-- **Crash points are local Spark tests,** step-precise, including the one between the MERGE and the Outcomes append. The shipped job carries no fault hooks; the paid chaos window injects faults from outside.
+- **Crash points are local Spark tests,** step-precise, including the one between the MERGE and the Outcomes append, each in a stream's first batch and in a later one, since only the first batch's replay has no start offset ([#183](https://github.com/Hien-Trinh/Shopping/pull/183)). A crash test lands in the PR that ships the code it crashes. The shipped job carries no fault hooks; the paid chaos window injects faults from outside.
+- **A test of behaviour that already exists shows its red through a mutation:** `scripts/red.py` runs it with one string swapped.
 - **The `fake` classifier everywhere** except the `model` job's bge-small tests and its one real-student test.
 - **Timings come from the paid trial,** each with a method line: commit, workflow run, region, node type × count, runtime, store size, classifier and profile. Free Edition prints pass or fail, never a duration.
 

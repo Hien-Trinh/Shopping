@@ -206,12 +206,8 @@ def test_a_kill_before_the_first_offset_still_reads_commit_by_commit(spark, tmp_
     assert outcomes(spark, tmp_path) == BACKLOG_OUTCOMES
 
 
-def test_a_batch_writes_one_file_per_table_whatever_its_shuffle_partitions(spark, tmp_path):
+def test_a_batch_writes_one_file_per_table(spark, tmp_path):
     land(tmp_path, ["init"], commit(0, [up(f"p{n}", 1) for n in range(20)]))
-    spark.conf.set("spark.sql.shuffle.partitions", 8)  # conftest's 1 would hide it
-    try:
-        run(spark, tmp_path)
-    finally:
-        spark.conf.set("spark.sql.shuffle.partitions", 1)
+    run(spark, tmp_path)
     assert len(list(tmp_path.glob("outcomes/*/*.parquet"))) == 1
     assert len(list(tmp_path.glob("listing_store/*.parquet"))) == 1

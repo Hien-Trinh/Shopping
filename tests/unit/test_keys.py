@@ -4,7 +4,7 @@ from collections import Counter
 
 import duckdb
 import pytest
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from ingestion.keys import PARTITIONS, owned, owner, partition
@@ -56,6 +56,7 @@ def test_partition_spreads_evenly():
     assert min(counts.values()) > 850 and max(counts.values()) < 1150  # expected 1000
 
 
+@settings(deadline=None)  # a DuckDB connection per example can pass the 200 ms default under load
 @given(st.lists(st.tuples(merchant_ids, product_ids), min_size=1, max_size=50))
 def test_partition_matches_duckdb(keys):
     con = duckdb.connect()

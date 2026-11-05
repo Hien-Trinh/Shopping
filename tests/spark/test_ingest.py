@@ -66,7 +66,8 @@ def version(spark, table: Path) -> int:
     return DeltaTable.forPath(spark, str(table)).history(1).first().version
 
 
-# Two commits, each Change with the Outcome it gets: "tie" holds a higher seq in the earlier commit.
+# Each Change with the Outcome it gets. "tie" holds a higher seq in the earlier commit, and at a
+# tiny cap the last commit reads "gone"'s stored Tombstone.
 BACKLOG = [
     [
         (up("plain", 1), O.WRITTEN),
@@ -83,6 +84,10 @@ BACKLOG = [
         (up("spoiled", 1), O.WRITTEN),
         (poison("spoiled", 2), O.FAILED),
         (up("spoiled", 3), O.WRITTEN),
+    ],
+    [
+        (up("gone", 1), O.STALE),
+        (up("gone", 3), O.WRITTEN),
     ],
 ]
 

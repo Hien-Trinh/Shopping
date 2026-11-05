@@ -227,7 +227,7 @@ def read(
     rows = feed.filter(pc.and_(pc.equal(feed["_change_type"], "insert"), pending)).sort_by(
         [("_commit_version", "ascending"), ("seq", "ascending")]
     )
-    changes = [_landed(r) for r in rows.slice(0, limit).to_pylist()]
+    changes = [landed(r) for r in rows.slice(0, limit).to_pylist()]
     # Rows are in global landing order, so every owned row before the cut was returned.
     if rows.num_rows > limit:
         v, seq = changes[-1].position
@@ -260,10 +260,10 @@ def retained(dt: DeltaTable, p: int) -> list[Landed]:
     # holds every partition's rows, so the filter picks them (docs/specs/step-a1.md).
     scan = dt.to_pyarrow_dataset(file_pruning_predicate=f"partition IN ({p})")
     rows = delta.plain(scan.to_table(filter=pc.field("partition") == p)).sort_by(REPLAY_ORDER)
-    return [_landed(r | {"_commit_version": dt.version()}) for r in rows.to_pylist()]
+    return [landed(r | {"_commit_version": dt.version()}) for r in rows.to_pylist()]
 
 
-def _landed(r: dict) -> Landed:
+def landed(r: dict) -> Landed:
     # Trusted data: decode without re-validating, so tightening a limit later can't strand old rows.
     listing = None if r["listing"] is None else Content.model_construct(**json.loads(r["listing"]))
     change = Change(

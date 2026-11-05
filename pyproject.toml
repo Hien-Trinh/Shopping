@@ -50,6 +50,7 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = ["ingestion"]
+omit = ["*/ingestion/ingest.py"]  # imports pyspark: runs in `make spark`, with no gate
 
 [tool.coverage.report]
 fail_under = 90

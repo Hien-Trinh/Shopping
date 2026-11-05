@@ -56,7 +56,7 @@ _FINGERPRINT = [
 
 # One writer per partition makes this a safety net against a zombie worker, not the main rule.
 # An equal version with equal content is the same Listing state (a reclassify keeps both).
-_APPLY_IF = (
+APPLY_IF = (
     "s.source_version > t.source_version"
     " OR (s.source_version = t.source_version AND s.content_hash = t.content_hash)"
 )
@@ -92,7 +92,7 @@ def read(dt: DeltaTable, keys: Collection[Key]) -> dict[Key, Stored]:
     )
     wanted = set(keys)
     return {
-        k: _stored(r)
+        k: stored(r)
         for r in candidates.to_pylist()
         if (k := (r["merchant_id"], r["merchant_product_id"])) in wanted
     }
@@ -105,7 +105,7 @@ def merge(dt: DeltaTable, writes: Sequence[Write], updated_at: datetime) -> Merg
     dt.update_incremental()
     if not writes:
         return Merged(0, dt.version())
-    rows = [_row(w, updated_at) for w in writes]
+    rows = [row(w) | {"updated_at": updated_at} for w in writes]
     parts = ", ".join(str(p) for p in sorted({r["partition"] for r in rows}))
     metrics = (
         dt.merge(
@@ -118,7 +118,7 @@ def merge(dt: DeltaTable, writes: Sequence[Write], updated_at: datetime) -> Merg
             source_alias="s",
             target_alias="t",
         )
-        .when_matched_update_all(predicate=_APPLY_IF)
+        .when_matched_update_all(predicate=APPLY_IF)
         .when_not_matched_insert_all()
         .execute()
     )
@@ -201,21 +201,21 @@ def _content(listing: Content | None) -> dict:
 _CHECKED = pa.schema([SCHEMA.field(c) for c in ("content_hash", *_CONTENT, "attributes")])
 
 
-def _row(w: Write, updated_at: datetime) -> dict:
-    row = {
+def row(w: Write) -> dict:
+    """A Write's Listing Store columns, but `updated_at`: each MERGE sets its own."""
+    columns = {
         "partition": partition(*w.key),
         "merchant_id": w.key[0],
         "merchant_product_id": w.key[1],
         "source_version": w.source_version,
         "is_tombstone": w.listing is None,
         "needs_reclassify": False,
-        "updated_at": updated_at,
     } | _content(w.listing)
     if w.listing is None:
-        return row  # content columns are left null
+        return columns  # content columns are left null
     if w.classification is None:
         raise ValueError(f"{w.key}: classify (or mark Uncategorized) before merging")
-    return row | {
+    return columns | {
         "primary_category": w.classification.category,
         "classify_confidence": w.classification.confidence,
         "taxonomy_version": w.classification.taxonomy_version,
@@ -223,7 +223,7 @@ def _row(w: Write, updated_at: datetime) -> dict:
     }
 
 
-def _stored(r: dict) -> Stored:
+def stored(r: dict) -> Stored:
     if r["is_tombstone"]:
         return Stored(r["source_version"], None)
     # Trusted data: decode without re-validating, so tightening a limit later can't strand rows.

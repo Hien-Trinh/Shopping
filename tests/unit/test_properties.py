@@ -1,6 +1,8 @@
 """The replay property (plan-v1.md, Testing rules): whatever the batching, duplicates, order
 or crash replays, plan() lands the Listing Store exactly where the independent oracle says."""
 
+from operator import attrgetter
+
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from support import TAX, classified, listing
@@ -36,6 +38,13 @@ changes = st.lists(
     max_size=40,
 )
 cuts = st.lists(st.integers(0, 40), max_size=8)
+stored_rows = st.dictionaries(
+    st.tuples(st.sampled_from(["m_1", "m_2"]), st.sampled_from(["a", "b", "c"])),
+    st.one_of(
+        st.builds(Stored, st.integers(1, 6), st.sampled_from(CONTENTS), st.just(classified())),
+        st.builds(Stored, st.integers(1, 6), st.none()),  # a Tombstone
+    ),
+)
 
 
 def batches(seq, cut_points):
@@ -102,3 +111,24 @@ def test_crash_replay_changes_nothing(seq, cut_points, start, length):
     original = fold("s", events(outcomes))
     with_replay = fold("s", events(outcomes) + events(replay_outcomes, offset=start))
     assert with_replay == original
+
+
+def plan_per_key(seq, stored):
+    """As the ingest job plans (docs/specs/step-a2.md): each key alone, with its own stored row."""
+    outcomes, writes = {}, []
+    for key in {c.key for c in seq}:
+        positions = [i for i, c in enumerate(seq) if c.key == key]
+        own = {key: stored[key]} if key in stored else {}
+        planned = plan([seq[i] for i in positions], own, TAX)
+        outcomes.update(zip(positions, planned.outcomes, strict=True))
+        writes += planned.writes
+    return [outcomes[i] for i in range(len(seq))], writes
+
+
+@settings(max_examples=2_000)
+@given(changes, stored_rows)
+def test_planning_each_key_alone_equals_planning_the_whole_batch(seq, stored):
+    whole = plan(seq, stored, TAX)
+    outcomes, writes = plan_per_key(seq, stored)
+    assert outcomes == list(whole.outcomes)
+    assert sorted(writes, key=attrgetter("key")) == sorted(whole.writes, key=attrgetter("key"))

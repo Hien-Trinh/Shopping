@@ -15,6 +15,7 @@ make spark TEST='tests/spark/test_ingest.py -k crash'   # some of them
 scripts/red.py src/x.py 'OLD' 'NEW' tests/test_x.py   # a test of existing behaviour going red: runs it with one string swapped
 make repeat TEST=tests/x.py::test_y N=25 J=4   # reproduce a flake: stops at the first failure, keeps its log and temp dir
 gh workflow run linux.yml --ref <branch> -f test=tests/x.py::test_y   # the same on Linux (3.12), for what the Mac can't show
+gh workflow run free-edition.yml --ref <branch>   # the Ingestion job's checks on Databricks Free Edition; pass or fail only
 ```
 
 ## Run

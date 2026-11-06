@@ -67,14 +67,19 @@ class Batch:
 # Rows (the retention DELETE), removed files and history alike: any stream outage under this
 # resumes (docs/specs/step-a1.md).
 RETENTION = timedelta(days=7)
+_KEPT = f"interval {RETENTION.days} days"
+# History and removed files are kept as long as rows are.
+PROPERTIES = {
+    **delta.FEED,
+    "delta.logRetentionDuration": _KEPT,
+    "delta.deletedFileRetentionDuration": _KEPT,
+}
 
 
 def ensure(path: str) -> DeltaTable:
     """Unpartitioned, so a group commit writes one file; the `partition` column stays for v1's
-    workers. History and removed files are kept as long as rows are."""
-    kept = f"interval {RETENTION.days} days"
-    windows = {"delta.logRetentionDuration": kept, "delta.deletedFileRetentionDuration": kept}
-    return delta.ensure(path, SCHEMA, partition_by=[], **delta.FEED, **windows)
+    workers."""
+    return delta.ensure(path, SCHEMA, partition_by=[], **PROPERTIES)
 
 
 def table_id(dt: DeltaTable) -> str:
@@ -96,7 +101,12 @@ def append(dt: DeltaTable, entries: Sequence[Entry], events: EventLog | None = N
         raise ValueError("received_at must be timezone-aware")
     if not entries:
         return dt.version()
-    rows = [
+    return commit(dt, rows(entries), events)
+
+
+def rows(entries: Sequence[Entry]) -> pa.Table:
+    """One commit's Landing log rows, in landing order."""
+    listed = [
         {
             "partition": partition(*c.key),
             "seq": seq,
@@ -111,7 +121,7 @@ def append(dt: DeltaTable, entries: Sequence[Entry], events: EventLog | None = N
         }
         for seq, (submission_id, index, c, received_at) in enumerate(entries)
     ]
-    return commit(dt, pa.Table.from_pylist(rows, schema=SCHEMA), events)
+    return pa.Table.from_pylist(listed, schema=SCHEMA)
 
 
 def commit(dt: DeltaTable, table: pa.Table, events: EventLog | None = None) -> int:

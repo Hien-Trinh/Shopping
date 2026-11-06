@@ -72,11 +72,7 @@ def main() -> int:
 
     root = f"/Volumes/{catalog}/{schema}/shopping/probe/{SHA}-{ATTEMPT}"
     wheel = glob.glob("dist/*.whl")[0]
-    uploads = {
-        os.path.join(HERE, "probe.py"): f"{root}/probe.py",
-        "tests/support.py": f"{root}/support.py",
-        wheel: f"{root}/{os.path.basename(wheel)}",
-    }
+    uploads = {wheel: f"{root}/{os.path.basename(wheel)}"}
     for i, (local, remote) in enumerate(uploads.items()):
         with open(local, "rb") as f:
             status, payload = api("PUT", f"/api/2.0/fs/files{remote}?overwrite=true", raw=f.read())
@@ -94,7 +90,11 @@ def main() -> int:
             {
                 "task_key": "probe",
                 "environment_key": "wheel",
-                "spark_python_task": {"python_file": f"{root}/probe.py", "parameters": [root]},
+                "python_wheel_task": {
+                    "package_name": "ingestion",
+                    "entry_point": "probe",
+                    "parameters": [root],
+                },
             }
         ],
         "environments": [

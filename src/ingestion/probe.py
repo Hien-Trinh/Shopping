@@ -13,8 +13,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
-ROOT = sys.argv[1]
-sys.path.insert(0, ROOT)  # support.py sits next to this file
+ROOT = sys.argv[1] if len(sys.argv) > 1 else ""  # a Python worker imports this module too
 RESULTS = f"{ROOT}/results.txt"
 HOUR = "2023-11-14T22"
 lines: list[str] = []
@@ -255,7 +254,7 @@ def main() -> int:
 
     import pyarrow as pa
     from pyspark.sql.pandas.types import from_arrow_schema
-    from support import delete, listing, poison, up
+    from ingestion.probe_support import delete, listing, poison, up
 
     from ingestion import ingest, landing, replay, tables
     from ingestion.keys import partition
@@ -393,7 +392,7 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__":
+def run() -> None:
     Path(ROOT).mkdir(parents=True, exist_ok=True)
     from ingestion import entry
 

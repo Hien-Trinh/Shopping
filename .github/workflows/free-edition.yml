@@ -1,0 +1,16 @@
+name: free-edition
+
+# A stub until A3's code PR fills it in (docs/specs/step-a3.md, decision 9). GitHub dispatches a
+# workflow only once its file is on main, and then from any branch, so that PR can show a real run.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "A3's code PR fills this in."

@@ -119,10 +119,6 @@ def main() -> int:
 
     spark = session()
 
-    @check("session")
-    def _():
-        return f"spark {spark.version}, connect {spark.conf.get('spark.databricks.clusterUsageTags.clusterName', 'n/a') != 'n/a'}"
-
     from delta.tables import DeltaTable
     from pyspark.errors import AnalysisException
     from pyspark.sql import functions as F
@@ -388,12 +384,28 @@ def main() -> int:
     def _():
         full_run(str(data_rs))
 
+    @check("rmtree of a Delta table on the volume")
+    def _():
+        shutil.rmtree(data_spark)
+        assert not Path(data_spark).exists()
+
     say("DONE")
     return 0
 
 
 def run() -> None:
     Path(ROOT).mkdir(parents=True, exist_ok=True)
-    from ingestion import entry
-
-    entry.exit_with(main)
+    mode = sys.argv[2] if len(sys.argv) > 2 else "all"
+    if mode == "all":
+        main()
+        return
+    marks = Path(ROOT) / "marks"  # one file per execution, in case the platform runs it again
+    marks.mkdir(exist_ok=True)
+    (marks / str(uuid.uuid4())).write_text("x")
+    print(f"MODE {mode}", flush=True)
+    if mode == "raise":
+        raise RuntimeError("boom")
+    if mode == "exit1":
+        sys.exit(1)
+    if mode == "os_exit0":
+        os._exit(0)

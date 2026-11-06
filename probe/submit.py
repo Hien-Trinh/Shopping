@@ -82,9 +82,35 @@ def main() -> int:
         if status >= 300:
             return 1
 
+    details, output = one_run("all", root, [root], uploads[wheel])
+    logs = output.get("logs") or ""
+    logged = sum(line.startswith(("PASS ", "FAIL ")) for line in logs.splitlines())
+    say(
+        f"logs: {len(logs) > 0}, PASS or FAIL lines in them {logged}, truncated {output.get('logs_truncated')}"
+    )
+    status, payload = api("GET", f"/api/2.0/fs/files{root}/results.txt")
+    say(f"results.txt: {status}")
+    if status == 200:
+        print("--- results", flush=True)
+        for line in payload.decode().splitlines():
+            say(line)
+        print("--- end of results", flush=True)
+    for mode in ("raise", "exit1", "os_exit0"):
+        other = f"{root}-{mode}"
+        _, output = one_run(mode, other, [other, mode], uploads[wheel])
+        logs = output.get("logs") or ""
+        status, payload = api("GET", f"/api/2.0/fs/directories{other}/marks")
+        marks = (
+            len(json.loads(payload).get("contents", [])) if status == 200 else f"status {status}"
+        )
+        say(f"{mode}: executions {marks}, logs has MODE {'MODE' in logs}")
+    return 0 if details.get("code") == "SUCCESS" else 1
+
+
+def one_run(name: str, root: str, parameters: list[str], wheel_path: str) -> tuple[dict, dict]:
     submit = {
-        "run_name": "shopping-probe",
-        "idempotency_token": f"probe-{SHA}-{ATTEMPT}",
+        "run_name": f"shopping-probe-{name}",
+        "idempotency_token": f"probe-{SHA}-{ATTEMPT}-{name}",
         "timeout_seconds": 1800,
         "tasks": [
             {
@@ -93,7 +119,7 @@ def main() -> int:
                 "python_wheel_task": {
                     "package_name": "ingestion",
                     "entry_point": "probe",
-                    "parameters": [root],
+                    "parameters": parameters,
                 },
             }
         ],
@@ -102,58 +128,37 @@ def main() -> int:
                 "environment_key": "wheel",
                 "spec": {
                     "environment_version": os.environ.get("ENVIRONMENT", "5"),
-                    "dependencies": [uploads[wheel]],
+                    "dependencies": [wheel_path],
                 },
             }
         ],
     }
     status, payload = api("POST", "/api/2.2/jobs/runs/submit", body=submit)
-    say(f"runs/submit: {status} {'' if status == 200 else error_of(payload)}")
+    say(f"[{name}] runs/submit: {status} {'' if status == 200 else error_of(payload)}")
     if status != 200:
-        return 1
+        return {}, {}
     run_id = json.loads(payload)["run_id"]
-
     run = {}
     deadline = time.monotonic() + 2100
     while time.monotonic() < deadline:
-        time.sleep(20)
+        time.sleep(15)
         status, payload = api("GET", f"/api/2.2/jobs/runs/get?run_id={run_id}")
         if status != 200:
-            say(f"runs/get: {status} {error_of(payload)}")
-            return 1
+            say(f"[{name}] runs/get: {status} {error_of(payload)}")
+            return {}, {}
         run = json.loads(payload)
         if run.get("status", {}).get("state") == "TERMINATED":
             break
     details = run.get("status", {}).get("termination_details", {})
     say(
-        f"state: {run.get('status', {}).get('state')} code {details.get('code')} type {details.get('type')}"
+        f"[{name}] state: {run.get('status', {}).get('state')} code {details.get('code')} type {details.get('type')}"
     )
-    say(f"message: {str(details.get('message'))[:1500]}")
-
+    say(f"[{name}] message: {str(details.get('message'))[:600]}")
     tasks = run.get("tasks", [])
-    task_id = tasks[0]["run_id"] if tasks else run_id
-    status, payload = api("GET", f"/api/2.2/jobs/runs/get-output?run_id={task_id}")
-    say(f"get-output by task id: {status}")
-    logged = 0
-    if status == 200:
-        output = json.loads(payload)
-        logs = output.get("logs") or ""
-        logged = sum(line.startswith(("PASS ", "FAIL ")) for line in logs.splitlines())
-        say(
-            f"logs: {len(logs) > 0}, PASS or FAIL lines in them {logged}, truncated {output.get('logs_truncated')}"
-        )
-        say(f"error: {str(output.get('error'))[:1500]}")
-        say(f"error_trace tail: {str(output.get('error_trace'))[-1500:]}")
-    status, _ = api("GET", f"/api/2.2/jobs/runs/get-output?run_id={run_id}")
-    say(f"get-output by the parent's id: {status}")
-
-    status, payload = api("GET", f"/api/2.0/fs/files{root}/results.txt")
-    say(f"results.txt: {status}")
-    if status == 200:
-        print("--- results", flush=True)
-        for line in payload.decode().splitlines():
-            say(line)
-    return 0 if details.get("code") == "SUCCESS" else 1
+    status, payload = api("GET", f"/api/2.2/jobs/runs/get-output?run_id={tasks[0]['run_id']}")
+    output = json.loads(payload) if status == 200 else {}
+    say(f"[{name}] get-output: {status} error: {str(output.get('error'))[:400]}")
+    return details, output
 
 
 if __name__ == "__main__":

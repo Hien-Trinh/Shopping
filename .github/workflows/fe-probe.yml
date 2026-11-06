@@ -1,0 +1,19 @@
+name: fe-probe
+
+# A throwaway: this branch never merges (docs/specs/step-a3.md's probes).
+on:
+  push:
+    branches: [probe/free-edition]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
+      - run: sed -i '/^dependencies = \[/,/^\]/d' pyproject.toml && uv build -q --wheel
+      - run: python3 probe/submit.py
+        env:
+          FREE_EDITION_HOST: ${{ secrets.FREE_EDITION_HOST }}
+          FREE_EDITION_TOKEN: ${{ secrets.FREE_EDITION_TOKEN }}

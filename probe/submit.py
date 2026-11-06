@@ -82,29 +82,10 @@ def main() -> int:
         if status >= 300:
             return 1
 
-    details, output = one_run("all", root, [root], uploads[wheel])
-    logs = output.get("logs") or ""
-    logged = sum(line.startswith(("PASS ", "FAIL ")) for line in logs.splitlines())
-    say(
-        f"logs: {len(logs) > 0}, PASS or FAIL lines in them {logged}, truncated {output.get('logs_truncated')}"
-    )
-    status, payload = api("GET", f"/api/2.0/fs/files{root}/results.txt")
-    say(f"results.txt: {status}")
-    if status == 200:
-        print("--- results", flush=True)
-        for line in payload.decode().splitlines():
-            say(line)
-        print("--- end of results", flush=True)
-    for mode in ("raise", "exit1", "os_exit0"):
-        other = f"{root}-{mode}"
-        _, output = one_run(mode, other, [other, mode], uploads[wheel])
-        logs = output.get("logs") or ""
-        status, payload = api("GET", f"/api/2.0/fs/directories{other}/marks")
-        marks = (
-            len(json.loads(payload).get("contents", [])) if status == 200 else f"status {status}"
-        )
-        say(f"{mode}: executions {marks}, logs has MODE {'MODE' in logs}")
-    return 0 if details.get("code") == "SUCCESS" else 1
+    details, output = one_run("raise", root, [root, "raise"], uploads[wheel])
+    say(f"logs repr: {(output.get('logs') or '')[:1500]!r}")
+    say(f"truncated {output.get('logs_truncated')}")
+    return 0
 
 
 def one_run(name: str, root: str, parameters: list[str], wheel_path: str) -> tuple[dict, dict]:

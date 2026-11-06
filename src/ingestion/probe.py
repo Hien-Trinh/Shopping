@@ -404,6 +404,9 @@ def run() -> None:
     (marks / str(uuid.uuid4())).write_text("x")
     print(f"MODE {mode}", flush=True)
     if mode == "raise":
+        mark = uuid.uuid4().hex[:6]
+        print(f"PASS one {mark}", flush=True)
+        print(f"FAIL two {mark}: details", flush=True)
         raise RuntimeError("boom")
     if mode == "exit1":
         sys.exit(1)

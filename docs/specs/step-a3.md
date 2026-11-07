@@ -31,7 +31,7 @@ gh workflow run free-edition.yml [--ref <branch>]
       create the Landing log and Outcomes with Spark, land a backlog
       ingest.start(availableNow), then the checks: one PASS or FAIL line each
       raise if any failed
-  print the PASS and FAIL lines and the run's code; exit 1 unless SUCCESS
+  print the PASS and FAIL lines and the run's code; exit 1 unless SUCCESS with no FAIL line
 ```
 
 ## User stories
@@ -47,7 +47,7 @@ Seeded from lean-review's finder angles.
 | Scenario | Expected |
 |---|---|
 | A check fails | Its FAIL line prints, the later checks still run, and `main` raises. The platform runs the task again (probed), and the wipe gives that pass a clean start ([probed][fail-once]). The workflow prints the first pass's lines and exits 1 |
-| A check fails on the first pass only | The run ends `SUCCESS` ([probed][fail-once]), and the workflow exits 0 with the first pass's FAIL line in its log. Accepted: this workflow checks the runtime, and `make spark` is the gate for flakes |
+| A check fails on the first pass only | The run ends `SUCCESS` ([probed][fail-once]), with the first pass's FAIL line in the log. The workflow exits 1 (answered on #186, Nov 6), so a retry can't hide a surprise. If it's a flake, run it again |
 | The Python process dies | `error` holds "Fatal error" (probed). The code, the message and the error print, with no check lines, and the workflow exits 1 |
 | The token expired or was revoked, or the account went inactive | The first API call fails, and its status and error code print. The fix is a new token and `gh secret set FREE_EDITION_TOKEN`. An unused token is [revoked after 90 days][pat], and an account can go [inactive after 60 days without a login][aup] |
 | The quota ran out, which [stops compute for the day][limits] | The run ends with an error code, which prints. Run it again tomorrow |
@@ -80,7 +80,7 @@ Seeded from lean-review's finder angles.
 
    Each later step of Phase A adds its own.
 4. **The default cap and `availableNow`.** `start` already takes the trigger, and serverless [refuses `processingTime`][limits]. The query itself is unchanged.
-5. **`scripts/free-edition.py`** (new), standard library only, so it needs no env. It creates the volume, uploads the wheel, submits the run (`POST /api/2.2/jobs/runs/submit`), polls every 15 s until `status.state` is `TERMINATED`, and reads `runs/get-output` by the task's run id, since the parent's id returns 400 (probed). It prints the `PASS ` and `FAIL ` lines from `logs`, which holds stdout on serverless (probed), then `termination_details.code` and, on a failure, the message and `error`. It prints no `*_time`, `*_duration`, `run_page_url` or `creator_user_name`. A failed call prints its method, path and status. Its exit code is 0 only on `SUCCESS` with at least one check line.
+5. **`scripts/free-edition.py`** (new), standard library only, so it needs no env. It creates the volume, uploads the wheel, submits the run (`POST /api/2.2/jobs/runs/submit`), polls every 15 s until `status.state` is `TERMINATED`, and reads `runs/get-output` by the task's run id, since the parent's id returns 400 (probed). It prints the `PASS ` and `FAIL ` lines from `logs`, which holds stdout on serverless (probed), then `termination_details.code` and, on a failure, the message and `error`. It prints no `*_time`, `*_duration`, `run_page_url` or `creator_user_name`. A failed call prints its method, path and status. Its exit code is 0 only on `SUCCESS` with at least one check line and no FAIL line.
 6. **Environment 5,** pinned in the script. Its libraries are Runtime 18's (probed above), where environment 6's [deltalake is 1.5.1][env6], and `persist` needs 5 or later.
 7. **`.github/workflows/free-edition.yml`:** `workflow_dispatch` only, `contents: read`, one `concurrency` group, `timeout-minutes: 40`. It strips `dependencies` (question 1), runs `uv build --wheel`, fails if the wheel's `METADATA` has `Requires-Dist`, and runs the script with the secrets in its env.
 8. **Secrets:** `FREE_EDITION_HOST` and `FREE_EDITION_TOKEN`, already set. GitHub masks the URL in logs.
@@ -96,7 +96,7 @@ Seeded from lean-review's finder angles.
   3. `main` twice on one `--data` passes both times, as a second pass must. Red: no wipe.
 - **`tests/integration/test_free_edition_script.py`** (new), in `make check`: the script as a subprocess, as `test_red.py` runs `red.py`, against a stub HTTP server on a free port:
   4. On `SUCCESS` it exits 0 and prints the check lines and the code. It prints nothing else, although the stub's replies hold `start_time`, `run_duration`, `run_page_url`, `creator_user_name` and non-check log lines. The stub also asserts the requests: the volume, the upload under `wheels/<sha>/`, a submit with environment 5, the wheel task and `--data`, and get-output by the task's id.
-  5. On a failed run it exits 1 and prints the code, the message and `error`, with the email replaced, in a check line too, and an email across the line's cut doesn't strand. It polls on through a running state, a dropped connection and a 5xx. `SUCCESS` with no check lines exits 1, and a failed `get-output` still prints the code.
+  5. On a failed run it exits 1 and prints the code, the message and `error`, with the email replaced, in a check line too, and an email across the line's cut doesn't strand. It polls on through a running state, a dropped connection and a 5xx. `SUCCESS` with no check lines or with a FAIL line exits 1, and a failed `get-output` still prints the code.
   6. A volume that exists carries on. Any other failed call stops with its status and exits 1, submitting nothing.
 - **The first run** is on the code PR's branch, and its lines go in the PR's Evidence. Only it shows the wheel step and the whole workflow.
 

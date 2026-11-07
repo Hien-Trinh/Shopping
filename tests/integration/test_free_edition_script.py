@@ -194,6 +194,14 @@ def test_success_with_no_check_lines_exits_1(script, output):
     assert done.stdout.splitlines() == ["run: SUCCESS"]
 
 
+def test_success_with_a_fail_line_exits_1_since_a_retry_can_hide_a_failure(script):
+    table = replies()
+    table["GET", OUTPUT] = (200, {"logs": "PASS one\nFAIL two: ValueError: x\n"})
+    _, done = script(table)
+    assert done.returncode == 1
+    assert done.stdout.splitlines() == ["PASS one", "FAIL two: ValueError: x", "run: SUCCESS"]
+
+
 @pytest.mark.parametrize(
     ("failure", "first_line"),
     [

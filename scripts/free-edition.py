@@ -4,7 +4,8 @@
 
 These logs are public, so it prints only the checks' PASS and FAIL lines and the run's code, and on
 a failure the run's message and error with any email replaced. It exits 0 only on SUCCESS with
-check lines.
+check lines, all PASS: logs holds a failed task's first pass and the code its last, so a retry can
+end SUCCESS after a FAIL.
 """
 
 import glob
@@ -122,7 +123,7 @@ def report(run: dict, output: dict) -> int:
     details = run["status"].get("termination_details", {})
     code = details.get("code")
     print(f"run: {code}")
-    if code == "SUCCESS" and checks:
+    if code == "SUCCESS" and checks and all(line.startswith("PASS ") for line in checks):
         return 0
     for text in (details.get("message"), output.get("error")):
         if text:

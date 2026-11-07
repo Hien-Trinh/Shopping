@@ -14,6 +14,9 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.scripts]
+ingestion-smoke = "ingestion.free_edition:main"  # the Free Edition run's wheel task
+
 [dependency-groups]
 dev = [
     "duckdb>=1.5.6",
@@ -50,7 +53,7 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = ["ingestion"]
-omit = ["*/ingestion/ingest.py"]  # imports pyspark: runs in `make spark`, with no gate
+omit = ["*/ingestion/ingest.py", "*/ingestion/free_edition.py"]  # import pyspark: run in `make spark`, with no gate
 
 [tool.coverage.report]
 fail_under = 90

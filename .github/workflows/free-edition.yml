@@ -1,16 +1,28 @@
 name: free-edition
 
-# A stub until A3's code PR fills it in (docs/specs/step-a3.md, decision 9). GitHub dispatches a
-# workflow only once its file is on main, and then from any branch, so that PR can show a real run.
+# The Ingestion job's checks on Databricks Free Edition (docs/specs/step-a3.md), by hand only:
+#   gh workflow run free-edition.yml --ref <branch>
 on:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# One --data on the volume, and the quota is unpublished.
+concurrency: free-edition
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 40
     steps:
-      - run: echo "A3's code PR fills this in."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
+      # Databricks installs a wheel's dependencies, and has no --no-deps, so this wheel lists none
+      # and the environment's own libraries run it (question 1).
+      - run: sed -i '/^dependencies = \[/,/^\]/d' pyproject.toml && uv build -q --wheel
+      - run: "! unzip -p dist/*.whl '*/METADATA' | grep '^Requires-Dist'"  # a reformat beats the sed
+      - run: scripts/free-edition.py
+        env:
+          FREE_EDITION_HOST: ${{ secrets.FREE_EDITION_HOST }}
+          FREE_EDITION_TOKEN: ${{ secrets.FREE_EDITION_TOKEN }}

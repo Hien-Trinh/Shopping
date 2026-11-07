@@ -10,7 +10,7 @@ Seven facts shape this step. "Probed" means on the real workspace on Nov 6, on e
 
 - **The query runs as it is.** Probed: `ingest.start` with `availableNow`, on a volume path, gave the store oracle's result and every Outcome, and a restart changed nothing. `ingest.py` needs no change. Of the items step-a2.md left for this run, `delta.exceptions` imports, `execute()` returns `num_affected_rows` and `deltalake` loads in a Python worker. `persist` works, as the docs now say from [environment 5][cache], though the Oct 12 research said it raised.
 - **`os._exit` fails a run.** Probed: after every check passed, `entry.exit_with` ended it `RUN_EXECUTION_ERROR`, "The Python process exited unexpectedly". The same run returning normally ended `SUCCESS`.
-- **A failed task runs twice.** Probed: raising, `sys.exit(1)` and `os._exit(0)` each left two execution marks, although the [API page][jobs] says submitted runs don't retry. The second pass meets the first's files: `DELTA_PATH_EXISTS`, and a second copy of any backlog.
+- **A failed task runs twice.** Probed: raising, `sys.exit(1)` and `os._exit(0)` each left two execution marks, although the [API page][jobs] says submitted runs don't retry. The second pass meets the first's files: `DELTA_PATH_EXISTS`, and a second copy of any backlog. `logs` holds the first pass's lines, and the run's code is the last pass's ([a check that always fails][fail-always], [a check that fails once][fail-once]).
 - **`--no-deps` doesn't exist on Databricks.** A `dependencies` entry is a pip requirements line ([Jobs API][jobs]), and [that format][pip] has no such option. No page documents another way, on serverless or for a classic cluster's `whl` library. A wheel that lists no dependencies ran on environment 5's own deltalake 1.1.4, numpy 2.1.3, pandas 2.2.3, pyarrow 21.0.0 and pydantic 2.10.6 (probed), the pins in `requirements/runtime-18.txt`.
 - **delta-rs can't commit on a volume.** Probed: `landing.append` fails with "Unable to rename file", "Operation not permitted". So Spark writes the Landing log here, and risk B1 stays with the local tests and P3.
 - **A script can't run from a volume.** Probed: `python_file` at a `/Volumes` path ended `RESOURCE_NOT_FOUND`, "Cannot read the python file". A wheel task runs.
@@ -46,8 +46,8 @@ Seeded from lean-review's finder angles.
 
 | Scenario | Expected |
 |---|---|
-| A check fails | Its FAIL line prints, the later checks still run, and `main` raises. The platform runs the task again (probed), and the wipe gives that pass a clean start. The workflow prints the lines and exits 1 |
-| A check fails on the first pass only | The run ends `SUCCESS`. Accepted: this workflow checks the runtime, and `make spark` is the gate for flakes |
+| A check fails | Its FAIL line prints, the later checks still run, and `main` raises. The platform runs the task again (probed), and the wipe gives that pass a clean start ([probed][fail-once]). The workflow prints the first pass's lines and exits 1 |
+| A check fails on the first pass only | The run ends `SUCCESS` ([probed][fail-once]), and the workflow exits 0 with the first pass's FAIL line in its log. Accepted: this workflow checks the runtime, and `make spark` is the gate for flakes |
 | The Python process dies | `error` holds "Fatal error" (probed). The code, the message and the error print, with no check lines, and the workflow exits 1 |
 | The token expired or was revoked, or the account went inactive | The first API call fails, and its status and error code print. The fix is a new token and `gh secret set FREE_EDITION_TOKEN`. An unused token is [revoked after 90 days][pat], and an account can go [inactive after 60 days without a login][aup] |
 | The quota ran out, which [stops compute for the day][limits] | The run ends with an error code, which prints. Run it again tomorrow |
@@ -151,6 +151,8 @@ About 230 changed lines were estimated. It came to about 400: `free_edition.py` 
 [t162]: https://github.com/Hien-Trinh/Shopping/issues/162
 [probe]: https://github.com/Hien-Trinh/Shopping/tree/probe/free-edition
 [run]: https://github.com/Hien-Trinh/Shopping/actions/runs/42271134443
+[fail-always]: https://github.com/Hien-Trinh/Shopping/actions/runs/42328071982
+[fail-once]: https://github.com/Hien-Trinh/Shopping/actions/runs/42328570218
 [jobs]: https://docs.databricks.com/api/workspace/jobs/submit
 [pip]: https://pip.pypa.io/en/stable/reference/requirements-file-format/
 [cache]: https://docs.databricks.com/aws/en/compute/serverless/dataframe-cache

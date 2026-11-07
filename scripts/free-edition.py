@@ -3,7 +3,8 @@
 (docs/specs/step-a3.md). Standard library only, so it needs no env.
 
 These logs are public, so it prints only the checks' PASS and FAIL lines and the run's code, and on
-a failure the run's message and error with any email replaced. It exits 0 only on SUCCESS.
+a failure the run's message and error with any email replaced. It exits 0 only on SUCCESS with
+check lines.
 """
 
 import glob
@@ -19,11 +20,14 @@ CATALOG, SCHEMA, VOLUME = "workspace", "default", "shopping"
 ROOT = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
 ENVIRONMENT = "5"  # Runtime 18's libraries, and persist needs 5 or later (decision 6)
 TIMEOUT_SECONDS = 1800
+POLL_SECONDS = float(os.environ.get("FREE_EDITION_POLL_SECONDS", 15))  # tests poll at once
+LINE = 1500  # each printed line's limit, cut after scrub so it can't strand part of an email
 
 
 class ApiError(Exception):
     def __init__(self, status: int, text: str):
-        self.status, self.text = status, text
+        super().__init__(text)
+        self.status = status
 
 
 def api(method: str, path: str, body: dict | None = None, data: bytes | None = None) -> dict:
@@ -37,7 +41,8 @@ def api(method: str, path: str, body: dict | None = None, data: bytes | None = N
         with urllib.request.urlopen(request, timeout=120) as response:
             reply = response.read()
     except urllib.error.HTTPError as e:
-        raise ApiError(e.code, e.read().decode(errors="replace")) from None
+        reply = e.read().decode(errors="replace")
+        raise ApiError(e.code, f"{method} {path}: {e.code} {reply}") from None
     return json.loads(reply) if reply else {}
 
 
@@ -56,7 +61,7 @@ def ensure_volume() -> None:
     try:
         api("POST", "/api/2.1/unity-catalog/volumes", volume)
     except ApiError as e:
-        if "RESOURCE_ALREADY_EXISTS" not in e.text:
+        if "RESOURCE_ALREADY_EXISTS" not in str(e):
             raise
 
 
@@ -85,25 +90,43 @@ def submit(wheel_path: str) -> int:
 
 
 def wait(run_id: int) -> dict:
+    """A failed poll isn't the run's failure: stopping would leave it writing to --data for the next
+    dispatch to wipe. A lasting one ends at the job's timeout."""
     while True:
-        run = api("GET", f"/api/2.2/jobs/runs/get?run_id={run_id}")
-        if run["status"]["state"] == "TERMINATED":
-            return run
-        time.sleep(15)
+        try:
+            run = api("GET", f"/api/2.2/jobs/runs/get?run_id={run_id}")
+            if run["status"]["state"] == "TERMINATED":
+                return run
+        except OSError:
+            pass
+        except ApiError as e:
+            if e.status < 500:
+                raise
+        time.sleep(POLL_SECONDS)
+
+
+def task_output(run: dict) -> dict:
+    """By the task's run id, since the parent's returns 400. Failing, it leaves report the code."""
+    try:
+        return api("GET", f"/api/2.2/jobs/runs/get-output?run_id={run['tasks'][0]['run_id']}")
+    except (ApiError, OSError) as e:
+        print(scrub(str(e))[:LINE])
+        return {}
 
 
 def report(run: dict, output: dict) -> int:
-    for line in (output.get("logs") or "").splitlines():
-        if line.startswith(("PASS ", "FAIL ")):
-            print(scrub(line))
-    details = run["status"]["termination_details"]
+    logs = (output.get("logs") or "").splitlines()
+    checks = [line for line in logs if line.startswith(("PASS ", "FAIL "))]
+    for line in checks:
+        print(scrub(line)[:LINE])
+    details = run["status"].get("termination_details", {})
     code = details.get("code")
     print(f"run: {code}")
-    if code == "SUCCESS":
+    if code == "SUCCESS" and checks:
         return 0
     for text in (details.get("message"), output.get("error")):
         if text:
-            print(scrub(text)[:1500])
+            print(scrub(text)[:LINE])
     return 1
 
 
@@ -112,12 +135,10 @@ def main() -> int:
     try:
         ensure_volume()
         run = wait(submit(upload(wheel)))
-        # By the task's run id: the parent's returns 400.
-        output = api("GET", f"/api/2.2/jobs/runs/get-output?run_id={run['tasks'][0]['run_id']}")
     except ApiError as e:
-        print(scrub(f"{e.status} {e.text}")[:1500])
+        print(scrub(str(e))[:LINE])
         return 1
-    return report(run, output)
+    return report(run, task_output(run))
 
 
 if __name__ == "__main__":

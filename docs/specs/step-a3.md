@@ -53,13 +53,17 @@ Seeded from lean-review's finder angles.
 | The quota ran out, which [stops compute for the day][limits] | The run ends with an error code, which prints. Run it again tomorrow |
 | An install fails | `LIBRARY_INSTALLATION_ERROR` prints, and the workflow exits 1 |
 | The run hangs | `timeout_seconds` = 1800 ends it, and the workflow reports it like any other end. The job's `timeout-minutes` = 40 covers an API that stops answering |
+| One poll fails with a network error or a 5xx | The script polls again, since stopping would leave the run writing to `--data` for the next dispatch to wipe. A 4xx stops it |
+| `get-output` fails, with a status or a dropped connection | Its error prints, and so do the run's code and message. The workflow exits 1, even on `SUCCESS` |
+| A run ends `SUCCESS` with no check lines | The workflow exits 1, since nothing shows the checks ran |
+| The wipe fails | `main` raises before any check, rather than starting on leftover tables |
 | Two dispatches at once | A `concurrency` group queues the second, since both use one `--data` |
 | The workflow is cancelled mid-run | The Databricks run carries on until it ends. A dispatch started before then could wipe under it and report a false FAIL. Accepted: run it again |
 | Same commit run again | The upload overwrites the same bytes (`overwrite` is the [default][files]) |
 | New code, same wheel version | The path holds the commit, since the [docs warn][deps] a job may not pick up a changed package otherwise |
 | A reformatted `pyproject.toml` defeats the wheel's `sed` | The next step finds `Requires-Dist` and fails the job before any upload |
 | The volume exists | The create returns 400 `RESOURCE_ALREADY_EXISTS` (probed), which is fine. Any other failure stops the workflow |
-| An error holds the email | The script replaces it with `<email>` |
+| An error holds the email | The script replaces it with `<email>`, in check lines too, and cuts each line at 1500 characters only after that, so a cut can't strand part of an address |
 | Spark's own output in `logs` | Only lines starting `PASS ` or `FAIL ` print, so nothing else from the driver reaches the public log |
 | Serverless picks another architecture | The wheel is `py3-none-any`. The run probed was on aarch64, and [it can change][deps] |
 
@@ -76,7 +80,7 @@ Seeded from lean-review's finder angles.
 
    Each later step of Phase A adds its own.
 4. **The default cap and `availableNow`.** `start` already takes the trigger, and serverless [refuses `processingTime`][limits]. The query itself is unchanged.
-5. **`scripts/free-edition.py`** (new), standard library only, so it needs no env. It creates the volume, uploads the wheel, submits the run (`POST /api/2.2/jobs/runs/submit`), polls every 15 s until `status.state` is `TERMINATED`, and reads `runs/get-output` by the task's run id, since the parent's id returns 400 (probed). It prints the `PASS ` and `FAIL ` lines from `logs`, which holds stdout on serverless (probed), then `termination_details.code` and, on a failure, the message and `error`. It prints no `*_time`, `*_duration`, `run_page_url` or `creator_user_name`. Its exit code is 0 only on `SUCCESS`.
+5. **`scripts/free-edition.py`** (new), standard library only, so it needs no env. It creates the volume, uploads the wheel, submits the run (`POST /api/2.2/jobs/runs/submit`), polls every 15 s until `status.state` is `TERMINATED`, and reads `runs/get-output` by the task's run id, since the parent's id returns 400 (probed). It prints the `PASS ` and `FAIL ` lines from `logs`, which holds stdout on serverless (probed), then `termination_details.code` and, on a failure, the message and `error`. It prints no `*_time`, `*_duration`, `run_page_url` or `creator_user_name`. A failed call prints its method, path and status. Its exit code is 0 only on `SUCCESS` with at least one check line.
 6. **Environment 5,** pinned in the script. Its libraries are Runtime 18's (probed above), where environment 6's [deltalake is 1.5.1][env6], and `persist` needs 5 or later.
 7. **`.github/workflows/free-edition.yml`:** `workflow_dispatch` only, `contents: read`, one `concurrency` group, `timeout-minutes: 40`. It strips `dependencies` (question 1), runs `uv build --wheel`, fails if the wheel's `METADATA` has `Requires-Dist`, and runs the script with the secrets in its env.
 8. **Secrets:** `FREE_EDITION_HOST` and `FREE_EDITION_TOKEN`, already set. GitHub masks the URL in logs.
@@ -88,11 +92,11 @@ Seeded from lean-review's finder angles.
 
 - **`tests/spark/test_free_edition.py`** (new), in `make spark`, on local Spark:
   1. On the real query, `main` prints only PASS lines, one per check, and returns. Red: no module.
-  2. With `ingest.merge` replaced by a no-op, the store check prints FAIL, the later checks still print, and `main` raises. Red: a run that stops at the first failure, or one that doesn't raise.
+  2. With `ingest.merge` replaced by a no-op, the store check prints FAIL, the later checks still print, and `main` raises. Red: a run that stops at the first failure, or one that doesn't raise. Each later check also fails on what it checks, called directly on tampered data. A wipe that fails stops the run.
   3. `main` twice on one `--data` passes both times, as a second pass must. Red: no wipe.
 - **`tests/integration/test_free_edition_script.py`** (new), in `make check`: the script as a subprocess, as `test_red.py` runs `red.py`, against a stub HTTP server on a free port:
   4. On `SUCCESS` it exits 0 and prints the check lines and the code. It prints nothing else, although the stub's replies hold `start_time`, `run_duration`, `run_page_url`, `creator_user_name` and non-check log lines. The stub also asserts the requests: the volume, the upload under `wheels/<sha>/`, a submit with environment 5, the wheel task and `--data`, and get-output by the task's id.
-  5. On a failed run it exits 1 and prints the code, the message and `error`, with the email replaced.
+  5. On a failed run it exits 1 and prints the code, the message and `error`, with the email replaced, in a check line too, and an email across the line's cut doesn't strand. It polls on through a running state, a dropped connection and a 5xx. `SUCCESS` with no check lines exits 1, and a failed `get-output` still prints the code.
   6. A volume that exists carries on. Any other failed call stops with its status and exits 1, submitting nothing.
 - **The first run** is on the code PR's branch, and its lines go in the PR's Evidence. Only it shows the wheel step and the whole workflow.
 
@@ -140,7 +144,7 @@ Seeded from lean-review's finder angles.
 
 ## Size
 
-About 230 changed lines: `free_edition.py` about 110, the script about 70, the workflow about 30, and `landing.py`, `pyproject.toml`, the README and plan-v2 about 20. About 150 of tests.
+About 230 changed lines were estimated. It came to about 400: `free_edition.py` about 190, the script about 150, and the workflow, `landing.py`, `pyproject.toml`, the README and plan-v2 about 50. About 290 of tests. Two PRs would have kept it under the cap: the checks on local Spark first, then the workflow and its script.
 
 [t129]: https://github.com/Hien-Trinh/Shopping/issues/129
 [t141]: https://github.com/Hien-Trinh/Shopping/issues/141

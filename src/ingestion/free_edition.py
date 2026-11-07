@@ -8,6 +8,7 @@ normally rather than through entry.exit_with, since os._exit fails a Databricks 
 """
 
 import argparse
+import os
 import shutil
 import uuid
 from collections.abc import Sequence
@@ -167,7 +168,8 @@ def _passes(name: str, check, spark: SparkSession, data: str) -> bool:
     try:
         check(spark, data)
     except Exception as e:  # one failure must not hide the later checks' lines
-        print(f"FAIL {name}: {type(e).__name__}: {' '.join(str(e).split())[:500]}", flush=True)
+        # On one line, whole: the workflow's script cuts it after replacing any email.
+        print(f"FAIL {name}: {type(e).__name__}: {' '.join(str(e).split())}", flush=True)
         return False
     print(f"PASS {name}", flush=True)
     return True
@@ -177,7 +179,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="ingestion-smoke")
     args.add_argument("--data", required=True)  # a string, as ingest.start takes it
     data = args.parse_args(argv).data
-    shutil.rmtree(data, ignore_errors=True)  # a failed task runs twice, on this same path
+    if os.path.exists(data):  # a failed task runs twice, on this same path
+        shutil.rmtree(data)
     spark = SparkSession.builder.getOrCreate()
     results = [_passes(name, check, spark, data) for name, check in CHECKS.items()]
     if not all(results):

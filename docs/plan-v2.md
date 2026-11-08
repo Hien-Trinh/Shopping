@@ -149,6 +149,7 @@ v1's [testing rules](plan-v1.md#testing-rules) still hold: the coverage gates, t
 - **Crash points are local Spark tests,** step-precise, including the one between the MERGE and the Outcomes append, each in a stream's first batch and in a later one, since only the first batch's replay has no start offset ([#183](https://github.com/Hien-Trinh/Shopping/pull/183)). A crash test lands in the PR that ships the code it crashes. The shipped job carries no fault hooks; the paid chaos window injects faults from outside.
 - **The `fake` classifier everywhere** except the `model` job's bge-small tests and its one real-student test.
 - **Each Phase A code PR that changes what runs on Spark runs the Free Edition workflow on its branch,** with `gh workflow run free-edition.yml --ref <branch>`, and cites the result in its Evidence ([step-a3.md](specs/step-a3.md)).
+- **A check that a PR adds or changes on a real platform is seen red there before merge,** from a throwaway branch: a Free Edition check, or a paid run's gate. On Databricks that takes two runs, one failing on every pass and one on the first pass only, since a failed task runs twice and `logs` holds the first pass while the run's code comes from the last ([#186](https://github.com/Hien-Trinh/Shopping/pull/186)).
 - **Timings come from the paid trial,** each with a method line: commit, workflow run, region, node type × count, runtime, store size, classifier and profile. Free Edition prints pass or fail, never a duration.
 
 ## Review process
@@ -161,7 +162,7 @@ As in [plan-v1.md](plan-v1.md#review-process-from-oct-1): `/lean-review` on ever
 
 ## PR steps
 
-Each step is one PR of **under about 300 changed lines, tests and generated files left out**, merged before the next one starts. Code steps start with a mini PRD in `docs/specs/step-<id>.md` (`step-a2.md`, say). ⏸ means the loop stops for you, and ✅ marks a finished step.
+Each step is one PR of **under about 300 changed lines, tests and generated files left out**, merged before the next one starts. Code steps start with a mini PRD in `docs/specs/step-<id>.md` (`step-a2.md`, say). A mini PRD whose Size passes about 200 of those lines splits the step into numbered PRs (A2.1, A2.2), since A1 to A3 each came in 22–77% over their estimate (A3: 230, then 407). ⏸ means the loop stops for you, and ✅ marks a finished step.
 
 | Phase | Step | PR |
 | --- | --- | --- |

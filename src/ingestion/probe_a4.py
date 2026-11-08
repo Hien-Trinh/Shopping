@@ -114,7 +114,9 @@ def main(argv=None) -> None:
             return
     wrong = {r.title: r.category for r in rows if r.category != EXPECTED[r.title]}
     say(("PASS" if not wrong else f"FAIL {wrong}") + " the student's categories on executors")
-    say(f"INFO executor arch {sorted({r.arch for r in rows})}, partitions {sorted({r.part for r in rows})}")
+    say(
+        f"INFO executor arch {sorted({r.arch for r in rows})}, partitions {sorted({r.part for r in rows})}"
+    )
     loads: dict = {}
     for r in rows:
         loads[r.pid] = max(loads.get(r.pid, 0), r.loads)

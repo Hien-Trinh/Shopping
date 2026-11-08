@@ -43,7 +43,9 @@ def api(method, path, body=None, data=None):
         with urllib.request.urlopen(request, timeout=600) as response:
             reply = response.read()
     except urllib.error.HTTPError as e:
-        raise ApiError(e.code, f"{method} {path}: {e.code} {e.read().decode(errors='replace')[:300]}") from None
+        raise ApiError(
+            e.code, f"{method} {path}: {e.code} {e.read().decode(errors='replace')[:300]}"
+        ) from None
     return json.loads(reply) if reply else {}
 
 
@@ -64,21 +66,32 @@ def put(local: str, remote: str) -> None:
 
 def main() -> int:
     try:
-        api("POST", "/api/2.1/unity-catalog/volumes", {
-            "catalog_name": "workspace", "schema_name": "default", "name": "shopping",
-            "volume_type": "MANAGED",
-        })
+        api(
+            "POST",
+            "/api/2.1/unity-catalog/volumes",
+            {
+                "catalog_name": "workspace",
+                "schema_name": "default",
+                "name": "shopping",
+                "volume_type": "MANAGED",
+            },
+        )
     except ApiError as e:
         if "RESOURCE_ALREADY_EXISTS" not in str(e):
             raise
     (index,) = glob.glob("models/student/index-*.npz")
-    files = [f"{SNAPSHOT}/{n}" for n in ("config.json", "tokenizer.json", "tokenizer_config.json", "onnx/model.onnx")]
+    files = [
+        f"{SNAPSHOT}/{n}"
+        for n in ("config.json", "tokenizer.json", "tokenizer_config.json", "onnx/model.onnx")
+    ]
     for local in [*files, index]:
         remote = f"{ROOT}/{local}"
         found = exists(remote)
         if not found:
             put(local, remote)
-        say(f"INFO {'kept' if found else 'uploaded'} {local}: HEAD said {'200' if found else '404'}")
+        say(
+            f"INFO {'kept' if found else 'uploaded'} {local}: HEAD said {'200' if found else '404'}"
+        )
     (wheel,) = glob.glob("dist/*.whl")
     wheel_path = f"{ROOT}/wheels/{os.environ['GITHUB_SHA']}/{os.path.basename(wheel)}"
     put(wheel, wheel_path)
@@ -92,16 +105,25 @@ def main() -> int:
     task = {
         "package_name": "ingestion",
         "entry_point": "probe-a4",
-        "parameters": ["--models", f"{ROOT}/models", "--index", f"{ROOT}/{index}", "--version", version],
+        "parameters": [
+            "--models",
+            f"{ROOT}/models",
+            "--index",
+            f"{ROOT}/{index}",
+            "--version",
+            version,
+        ],
     }
     body = {
         "run_name": "probe-a4",
         "timeout_seconds": 1800,
         "tasks": [{"task_key": "probe", "environment_key": "wheel", "python_wheel_task": task}],
-        "environments": [{
-            "environment_key": "wheel",
-            "spec": {"environment_version": "5", "dependencies": [wheel_path, *pins]},
-        }],
+        "environments": [
+            {
+                "environment_key": "wheel",
+                "spec": {"environment_version": "5", "dependencies": [wheel_path, *pins]},
+            }
+        ],
     }
     run_id = api("POST", "/api/2.2/jobs/runs/submit", body)["run_id"]
     while True:

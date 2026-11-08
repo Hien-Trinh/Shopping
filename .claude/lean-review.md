@@ -11,7 +11,7 @@ Read from `main` (`git show main:<path>`):
 - docs/adr/
 - GLOSSARY.md (Listing, Change, Tombstone, Submission, Outcome)
 
-Unsourced-prose check (spec question 4) also covers report prose: docs/stress.md and specs' results sections, against the run's own files. It also covers a spec's claims about how Spark or Delta behaves: each says `probed` or cites a source, and the probe ran the decision as written, so a spec PR's review intent names the folder holding its probes.
+Unsourced-prose check (spec question 4) also covers report prose: docs/stress.md and specs' results sections, against the run's own files. It also covers a spec's claims about how Spark, Delta, Databricks or GitHub Actions behaves, its Failure scenarios rows included: each says `probed` or cites a source, and the probe ran the decision as written, so a spec PR's review intent names the folder holding its probes.
 
 ## Invariants
 From docs/design-commerce-ingestion-pipeline.md and docs/adr/:
@@ -37,6 +37,8 @@ docs/design-commerce-ingestion-pipeline.md, Observability: events carry submissi
 
 ## Trust boundaries
 Merchant-controlled values: f-strings into SQL or Delta predicates, merchant/product/submission IDs reaching the filesystem, cross-Merchant access (IDOR), constant-time key comparison, unbounded input reaching the classifier.
+
+Public CI logs, such as the free-edition workflow's: text from a remote reply goes through `scrub` (scripts/free-edition.py) before any cut, and no duration, email, workspace host or run URL prints. Every lane checks a new print path, since the security lane runs only on larger diffs.
 
 ## Coding rules
 There is no CODING_STANDARDS.md. The rules:

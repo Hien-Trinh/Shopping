@@ -1,0 +1,29 @@
+name: fe-probe-a4
+
+# A throwaway: this branch never merges (docs/specs/step-a4.md's probes).
+on:
+  push:
+    branches: [probe/a4]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: models
+          key: probe-a4-models-${{ hashFiles('train/**', 'src/ingestion/student.py') }}
+      - run: uv run python -m ingestion.student --download
+      - run: uv run python -c "from ingestion import student, taxonomy; print(student.version(taxonomy.load().version))" > version.txt
+      - run: sed -i '/^dependencies = \[/,/^\]/d' pyproject.toml && uv build -q --wheel
+      - run: "! unzip -p dist/*.whl '*/METADATA' | grep '^Requires-Dist'"
+      - run: python3 probe/submit_a4.py
+        env:
+          FREE_EDITION_HOST: ${{ secrets.FREE_EDITION_HOST }}
+          FREE_EDITION_TOKEN: ${{ secrets.FREE_EDITION_TOKEN }}

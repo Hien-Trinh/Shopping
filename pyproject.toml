@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 ingestion-smoke = "ingestion.free_edition:main"  # the Free Edition run's wheel task
+probe-a4 = "ingestion.probe_a4:main"  # a throwaway probe (never merged)
 
 [dependency-groups]
 dev = [

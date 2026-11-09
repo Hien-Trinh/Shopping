@@ -162,7 +162,7 @@ As in [plan-v1.md](plan-v1.md#review-process-from-oct-1): `/lean-review` on ever
 
 ## PR steps
 
-Each step is one PR of **under about 300 changed lines, tests and generated files left out**, merged before the next one starts. Code steps start with a mini PRD in `docs/specs/step-<id>.md` (`step-a2.md`, say). A mini PRD whose Size passes about 200 of those lines splits the step into numbered PRs (A2.1, A2.2), since A1 to A3 each came in 22–77% over their estimate (A3: 230, then 407). ⏸ means the loop stops for you, and ✅ marks a finished step.
+Each step is one PR of **under about 300 changed lines, tests and generated files left out**, merged before the next one starts. A changed line is an addition or a deletion, as lean-review counts them, so an edited or moved line counts twice. Code steps start with a mini PRD in `docs/specs/step-<id>.md` (`step-a2.md`, say). A mini PRD whose Size passes about 200 of those lines splits the step into numbered PRs (A2.1, A2.2), since A1 to A3 each came in 22–77% over their estimate (A3: 230, then 407), and A4.1 109% (150, then 313, most of it in edits to existing modules). ⏸ means the loop stops for you, and ✅ marks a finished step.
 
 | Phase | Step | PR |
 | --- | --- | --- |

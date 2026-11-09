@@ -53,7 +53,9 @@ markers = [
 [tool.coverage.run]
 branch = true
 source = ["ingestion"]
-omit = ["*/ingestion/ingest.py", "*/ingestion/free_edition.py", "*/ingestion/classify_udf.py"]  # import pyspark: run in `make spark`, with no gate
+# These import pyspark: `make check` can't run them and `make spark` has no gate. Keep them a thin
+# imperative shell of Spark calls, with the logic in modules this gate covers (plan-v2 Code layout).
+omit = ["*/ingestion/ingest.py", "*/ingestion/free_edition.py", "*/ingestion/classify_udf.py"]
 
 [tool.coverage.report]
 fail_under = 90

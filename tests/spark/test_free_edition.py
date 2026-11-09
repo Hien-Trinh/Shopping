@@ -8,9 +8,9 @@ from ingestion import classify_udf, free_edition, ingest
 
 def checks_passed(capsys, data):
     free_edition.main(["--data", str(data)])
+    n = len(free_edition.CHECKS)
     lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == len(free_edition.CHECKS)
-    assert all(line.startswith("PASS ") for line in lines), lines
+    assert lines == [f"PASS {name}" for name in free_edition.CHECKS] + [f"{n} of {n} checks passed"]
 
 
 def test_every_check_passes_and_a_second_pass_on_the_same_data_starts_clean(
@@ -28,7 +28,8 @@ def test_a_failed_check_prints_fail_the_later_checks_still_print_and_main_raises
         free_edition.main(["--data", str(tmp_path)])
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].startswith("FAIL the backlog lands as the store oracle says")
-    assert len(lines) == len(free_edition.CHECKS)
+    assert len(lines) == len(free_edition.CHECKS) + 1
+    assert lines[-1].endswith(" of 5 checks passed")  # printed before main raises
 
 
 def test_a_wipe_that_fails_stops_the_run(tmp_path):
@@ -82,11 +83,12 @@ def test_models_that_cant_load_print_fail_beside_the_other_checks_and_main_raise
     lines = capsys.readouterr().out.splitlines()
     assert lines[:5] == [f"PASS {name}" for name in free_edition.CHECKS]
     assert lines[5].startswith(f"FAIL {free_edition.STUDENT}: ModelMissing")
-    assert len(lines) == 6
+    assert lines[6:] == ["5 of 6 checks passed"]
 
 
 @pytest.mark.model
-def test_main_with_the_real_models_prints_only_pass_lines(spark, tmp_path, capsys):
+def test_main_with_the_real_models_passes_every_check(spark, tmp_path, capsys):
     free_edition.main(["--data", str(tmp_path), "--models", str(ROOT / "models")])
     lines = capsys.readouterr().out.splitlines()
-    assert lines == [f"PASS {name}" for name in [*free_edition.CHECKS, free_edition.STUDENT]]
+    names = [*free_edition.CHECKS, free_edition.STUDENT]
+    assert lines == [f"PASS {name}" for name in names] + ["6 of 6 checks passed"]

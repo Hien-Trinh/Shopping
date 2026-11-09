@@ -6,8 +6,8 @@ env.
 These logs are public, so it prints only the checks' PASS and FAIL lines, main's count line and the
 run's code, and on a failure the run's message and error with any email replaced. It exits 0 only
 on SUCCESS whose logs hold "n of n checks passed" for their n check lines: logs holds a failed
-task's first pass and the code its last, so a retry can end SUCCESS after a FAIL, or after a crash
-that left only PASS lines.
+task's first pass and the code its last, so a retry can end SUCCESS after a FAIL, or after a first
+pass that exited partway with only PASS lines.
 """
 
 import glob

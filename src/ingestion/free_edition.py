@@ -2,7 +2,8 @@
 Edition's own storage (docs/specs/step-a3.md). Each check prints one PASS or FAIL line, and never a
 time, since the acceptable use policy forbids publishing benchmark results and these logs are
 public. `main` ends with "k of n checks passed", which the workflow's script requires, since a
-failed task runs twice and a first pass that crashed partway leaves only PASS lines.
+failed task runs twice and a first pass that exits partway with no FAIL line (a SystemExit from a
+check, say) leaves only PASS lines.
 
 Spark writes the Landing log here, since delta-rs can't commit on a volume. `main` returns
 normally rather than through entry.exit_with, since os._exit fails a Databricks run.

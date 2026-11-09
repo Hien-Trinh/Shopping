@@ -267,9 +267,12 @@ def test_success_with_a_fail_line_exits_1_since_a_retry_can_hide_a_failure(scrip
     ]
 
 
-def test_success_whose_logs_stop_before_the_count_exits_1_since_a_retry_can_hide_a_crash(script):
+def test_success_whose_logs_end_before_the_count_exits_1(script):
     table = replies()
-    table["GET", OUTPUT] = (200, {"logs": "PASS one\nPASS two\n"})  # a pass that died partway
+    table["GET", OUTPUT] = (
+        200,
+        {"logs": "PASS one\nPASS two\n"},
+    )  # a first pass that exited partway
     _, done = script(table)
     assert done.returncode == 1
     assert done.stdout.splitlines() == [

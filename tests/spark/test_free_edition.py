@@ -1,16 +1,26 @@
 """The Free Edition run's checks, on local Spark (docs/specs/step-a3.md, step-a4.md)."""
 
+import runpy
+
 import pytest
 from test_ingest import ROOT
 
 from ingestion import classify_udf, free_edition, ingest
 
+# The workflow's verdict on a run's logs (scripts/free-edition.py), so main's count line and the
+# script's copy of it are checked together.
+REPORT = runpy.run_path(str(ROOT / "scripts" / "free-edition.py"))["report"]
+SUCCESS = {"status": {"termination_details": {"code": "SUCCESS"}}}
+
 
 def checks_passed(capsys, data):
     free_edition.main(["--data", str(data)])
     n = len(free_edition.CHECKS)
-    lines = capsys.readouterr().out.splitlines()
+    out = capsys.readouterr().out
+    lines = out.splitlines()
     assert lines == [f"PASS {name}" for name in free_edition.CHECKS] + [f"{n} of {n} checks passed"]
+    assert REPORT(SUCCESS, {"logs": out}) == 0
+    assert capsys.readouterr().out == out + "run: SUCCESS\n"  # main's lines, then the code
 
 
 def test_every_check_passes_and_a_second_pass_on_the_same_data_starts_clean(

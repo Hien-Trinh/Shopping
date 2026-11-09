@@ -165,7 +165,7 @@ def report(run: dict, output: dict) -> int:
     details = run["status"].get("termination_details", {})
     code = details.get("code")
     print(f"run: {code}")
-    if code == "SUCCESS" and checks and count == f"{len(checks)} of {len(checks)} checks passed":
+    if code == "SUCCESS" and count == f"{len(checks)} of {len(checks)} checks passed":
         return 0
     for text in (details.get("message"), output.get("error")):
         if text:

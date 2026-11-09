@@ -1,6 +1,7 @@
 """The classifier on executors, through the real ingest query (docs/specs/step-a4.md)."""
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -10,7 +11,8 @@ from pyspark.errors import StreamingQueryException
 from support import listing, up
 from test_ingest import ROOT, commit, land, outcomes, run
 
-from ingestion import classify_udf, student, taxonomy
+from ingestion import classify_udf, ingest, student, taxonomy
+from ingestion.classify import ModelMissing
 from ingestion.envelope import Change, Content
 from ingestion.taxonomy import UNCATEGORIZED
 
@@ -111,6 +113,19 @@ def test_each_python_worker_keeps_one_classifier_over_batches(spark, tmp_path):
     run(spark, tmp_path)
     assert held() == first
     assert first and all(len(ids) == 1 for _, ids in first)
+
+
+def test_a_new_spec_replaces_the_workers_classifier(monkeypatch):  # two students won't fit 1 GB
+    monkeypatch.setattr(classify_udf, "_loaded", {})
+    classify_udf.loaded(classify_udf.FAKE)
+    down = classify_udf.loaded(classify_udf.DOWN)
+    assert classify_udf._loaded == {classify_udf.DOWN: down}
+
+
+def test_main_runs_the_student_by_default_with_train_beside_the_models_folder(spark, tmp_path):
+    (tmp_path / "models").mkdir()
+    with pytest.raises(ModelMissing, match=re.escape(str(tmp_path / student.TRAIN[0]))):
+        ingest.main(["--data", str(tmp_path / "data"), "--models", str(tmp_path / "models")])
 
 
 def test_classified_repartitions_to_the_slot_count_when_spark_gives_one(spark):

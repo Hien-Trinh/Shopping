@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from time import monotonic
 
 from ingestion import entry, store
-from ingestion.envelope import Key
+from ingestion.envelope import Content, Key
 from ingestion.keys import partition
 from ingestion.landing import Landed
 from ingestion.plan import Classification, Stored, Write, plan
@@ -120,6 +120,26 @@ def _classify(writes: Sequence[Write], classifier, clock) -> tuple[list[Write], 
         for w in writes
     ]
     return classified, notes
+
+
+def answers(classifier, version: str, listings: Sequence[Content]) -> list[Classification | None]:
+    """The ingest query's classify (step-a4.md, decision 4): one answer per Listing, None where
+    the classifier gave none, so it keeps its provisional answer. One call; if it fails (raises,
+    or answers the wrong count or out of contract), one call per Listing, so only the Listings
+    the classifier can't classify fall back, where `_classify` fails the whole call."""
+    if not listings:
+        return []
+    try:
+        found = classifier.classify(listings)
+        if len(found) != len(listings):
+            raise ValueError(f"{len(found)} answers for {len(listings)} Listings")
+        return [None if a is None else validated(a, version) for a in found]
+    except entry.Fatal:  # ModelMissing, say: no batch can succeed, so this one fails (question 3)
+        raise
+    except Exception:  # an outage or a bad answer: never fail the batch for it
+        if len(listings) == 1:
+            return [None]
+        return [a for x in listings for a in answers(classifier, version, [x])]
 
 
 def provisional(write: Write, version: str) -> Classification:

@@ -6,7 +6,7 @@ builds the classifier once (`loaded`) and classifies only the rows the plan mark
 can't classify keeps the plan's provisional answer, flagged for the Backfill.
 """
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,9 +15,8 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.functions import pandas_udf
 
-from ingestion import classify, decide, entry, student, taxonomy
+from ingestion import classify, decide, student, taxonomy
 from ingestion.envelope import Content
-from ingestion.plan import Classification
 
 ANSWER = ["primary_category", "classify_confidence", "taxonomy_version", "needs_reclassify"]
 _SCHEMA = "primary_category string, classify_confidence double, taxonomy_version string," + (
@@ -93,27 +92,9 @@ def _answered(classifier, version: str, rows: pd.DataFrame) -> pd.DataFrame:
         Content.model_construct(title=t, description=d)
         for t, d in zip(marked["title"], marked["description"], strict=True)
     ]
-    for i, found in zip(marked.index, _answers(classifier, version, listings), strict=True):
-        if found:
-            out.loc[i, ANSWER] = [found.category, found.confidence, found.taxonomy_version, False]
+    found = decide.answers(classifier, version, listings)
+    hit = [i for i, f in zip(marked.index, found, strict=True) if f]
+    if hit:  # one assignment: a .loc per row costs about 2 s per 10k rows
+        answered = [[f.category, f.confidence, f.taxonomy_version, False] for f in found if f]
+        out.loc[hit, ANSWER] = answered
     return out
-
-
-def _answers(classifier, version: str, listings: Sequence[Content]) -> list[Classification | None]:
-    """One answer per Listing, None where the classifier gave none (keep the provisional one).
-    One call for the batch; if it fails (raises, or answers the wrong count or out of contract),
-    one call per Listing, so only the Listings it can't classify fall back. v1 failed the whole
-    call (step-a4.md, decision 4)."""
-    if not listings:
-        return []
-    try:
-        found = classifier.classify(listings)
-        if len(found) != len(listings):
-            raise ValueError(f"{len(found)} answers for {len(listings)} Listings")
-        return [None if a is None else decide.validated(a, version) for a in found]
-    except entry.Fatal:  # ModelMissing, say: no batch can succeed, so this one fails (question 3)
-        raise
-    except Exception:  # an outage or a bad answer: never fail the batch for it
-        if len(listings) == 1:
-            return [None]
-        return [a for x in listings for a in _answers(classifier, version, [x])]

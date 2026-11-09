@@ -3,10 +3,11 @@
 free-edition workflow (docs/specs/step-a3.md, step-a4.md). Standard library only, so it needs no
 env.
 
-These logs are public, so it prints only the checks' PASS and FAIL lines and the run's code, and on
-a failure the run's message and error with any email replaced. It exits 0 only on SUCCESS with
-check lines, all PASS: logs holds a failed task's first pass and the code its last, so a retry can
-end SUCCESS after a FAIL.
+These logs are public, so it prints only the checks' PASS and FAIL lines, main's count line and the
+run's code, and on a failure the run's message and error with any email replaced. It exits 0 only
+on SUCCESS whose logs hold "n of n checks passed" for their n check lines: logs holds a failed
+task's first pass and the code its last, so a retry can end SUCCESS after a FAIL, or after a crash
+that left only PASS lines.
 """
 
 import glob
@@ -24,6 +25,7 @@ ENVIRONMENT = "5"  # Runtime 18's libraries, and persist needs 5 or later (decis
 TIMEOUT_SECONDS = 1800
 POLL_SECONDS = float(os.environ.get("FREE_EDITION_POLL_SECONDS", 15))  # tests poll at once
 LINE = 1500  # each printed line's limit, cut after scrub so it can't strand part of an email
+COUNT = re.compile(r"\d+ of \d+ checks passed")  # main's last line (ingestion.free_edition)
 # The student's files as the model job's cache holds them (step-a4.md, decision 9): the encoder at
 # each revision in the cache, and the index.
 ENCODER = "models/models--Hien-Trinh--listing-student-ft/snapshots"
@@ -158,10 +160,12 @@ def report(run: dict, output: dict) -> int:
     checks = [line for line in logs if line.startswith(("PASS ", "FAIL "))]
     for line in checks:
         print(scrub(line)[:LINE])
+    count = next((line for line in logs if COUNT.fullmatch(line)), None)
+    print(count or "no 'checks passed' line in the logs")
     details = run["status"].get("termination_details", {})
     code = details.get("code")
     print(f"run: {code}")
-    if code == "SUCCESS" and checks and all(line.startswith("PASS ") for line in checks):
+    if code == "SUCCESS" and checks and count == f"{len(checks)} of {len(checks)} checks passed":
         return 0
     for text in (details.get("message"), output.get("error")):
         if text:

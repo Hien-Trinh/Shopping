@@ -5,7 +5,7 @@ from support import listing, poison, product_in, reclassify, up
 
 from ingestion import jev, state, store
 from ingestion.classify import Classifier, FakeClassifier
-from ingestion.decide import decide
+from ingestion.decide import decide, planned, provisional
 from ingestion.keys import partition
 from ingestion.landing import Landed
 from ingestion.plan import Classification, Stored
@@ -212,3 +212,15 @@ def test_a_long_error_is_truncated():
     changes = [poison(A, 1, price_micros="x" * 5000)]  # Arrow echoes the value in its message
     (failed,) = run(changes).events(42)
     assert len(failed["error"]) == 500
+
+
+def test_planned_leaves_the_writes_marked_and_provisional_is_what_a_failure_leaves():  # A4
+    stored = {("m_1", A): Stored(1, listing("Shirt"), SHIRT)}
+    changes = [reclassify(A), up(B, 1, listing("Hat"))]
+    p = planned(landed(*changes), stored, "fake-1")
+    assert (p.outcomes, p.notes) == (run(changes, stored).outcomes, ())
+    assert [w.needs_classify for w in p.writes] == [True, True]
+    assert [provisional(w, "fake-1") for w in p.writes] == [
+        Classification("Fake > S", 0.9, "fake-1", True),  # its inputs unchanged: kept, flagged
+        Classification(UNCATEGORIZED, 0.0, "fake-1", True),
+    ]

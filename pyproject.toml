@@ -46,14 +46,14 @@ testpaths = ["tests"]
 pythonpath = ["tests"]
 addopts = "--strict-markers -m 'not model and not slow'"
 markers = [
-    "model: needs a real ML model (MLX / embeddings); runs in the macOS CI job",
+    "model: needs a real ML model (embeddings); runs in the model CI job",
     "slow: stress suite; runs in stress-smoke CI and locally",
 ]
 
 [tool.coverage.run]
 branch = true
 source = ["ingestion"]
-omit = ["*/ingestion/ingest.py", "*/ingestion/free_edition.py"]  # import pyspark: run in `make spark`, with no gate
+omit = ["*/ingestion/ingest.py", "*/ingestion/free_edition.py", "*/ingestion/classify_udf.py"]  # import pyspark: run in `make spark`, with no gate
 
 [tool.coverage.report]
 fail_under = 90

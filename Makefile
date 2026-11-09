@@ -8,7 +8,7 @@ export JAVA_HOME
 
 PURE := src/ingestion/keys.py,src/ingestion/envelope.py,src/ingestion/plan.py,src/ingestion/replay.py,src/ingestion/status.py,src/ingestion/collapse.py
 
-.PHONY: check lint test hooks mutate repeat bench requirements spark
+.PHONY: check lint test hooks mutate repeat bench requirements spark spark-env
 
 check: lint test
 
@@ -29,13 +29,16 @@ hooks:
 requirements:
 	uv pip compile -q requirements/databricks.in -c requirements/runtime-18.txt --python-version 3.12 --python-platform x86_64-manylinux_2_39 --upgrade --exclude-newer 2026-11-01T00:00:00Z -o requirements/databricks.txt
 
-# The Spark tests, in Runtime 18's libraries with the package --no-deps, as on the cluster (JDK 21).
-# --exact also removes what the files no longer list, so a reused env matches a fresh one.
-# TEST runs some of them: make spark TEST='tests/spark/test_ingest.py -k crash'
-spark:
+# The Spark env: Runtime 18's libraries with the package --no-deps, as on the cluster. --exact
+# also removes what the files no longer list, so a reused env matches a fresh one.
+spark-env:
 	uv venv -q --allow-existing --python 3.12 .venv-spark
 	uv pip install -q --exact -p .venv-spark -r requirements/databricks.txt -r requirements/spark.txt -c requirements/runtime-18.txt
 	uv pip install -q -p .venv-spark --no-deps -e .
+
+# The Spark tests in the Spark env (JDK 21). TEST runs some of them:
+# make spark TEST='tests/spark/test_ingest.py -k crash'
+spark: spark-env
 	.venv-spark/bin/pytest $(or $(TEST),tests/spark)
 
 # Mutation testing of the pure modules (~1 min). Not part of `check`; CI reports it without blocking.

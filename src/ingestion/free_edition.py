@@ -5,6 +5,9 @@ public.
 
 Spark writes the Landing log here, since delta-rs can't commit on a volume. `main` returns
 normally rather than through entry.exit_with, since os._exit fails a Databricks run.
+
+These checks run on `fake`. With `--models`, one more runs the student on the executors, over
+Listings it knows (docs/specs/step-a4.md, decision 9).
 """
 
 import argparse
@@ -13,6 +16,7 @@ import shutil
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pyarrow as pa
 from delta.tables import DeltaTable
@@ -70,6 +74,21 @@ _LATER = [
     (_up("gone", 1), O.STALE),
     (_up("newer", 3), O.ALREADY_APPLIED),
 ]
+# The student's answers on the Mac and on Free Edition's executors (step-a4.md, fact 8).
+KNOWN = {
+    "Men's cotton crew-neck t-shirt": "Apparel & Accessories > Clothing > Clothing Tops",
+    "Stainless steel chef's knife, 8 inch": (
+        "Home & Garden > Kitchen & Dining > Kitchen Tools & Utensils"
+    ),
+    "Wireless bluetooth earbuds with charging case": "Electronics > Audio > Audio Components",
+    "Organic green tea, 100 bags": "Food, Beverages & Tobacco > Beverages > Tea & Infusions",
+    "Kids' waterproof rain boots": "Apparel & Accessories > Shoes > Baby & Children's Shoes",
+    "Yoga mat, non-slip, 6 mm": (
+        "Sporting Goods > Fitness & General Exercise Equipment > Yoga & Pilates"
+    ),
+    "Ceramic coffee mug 350 ml": "Home & Garden > Kitchen & Dining > Tableware",
+    "Laptop backpack 15.6 inch": "Luggage & Bags > Backpacks > Laptop Backpacks",
+}
 
 
 def _outcome_rows(n: int, changes: list) -> list[tuple]:
@@ -88,6 +107,11 @@ def _create(
     builder.execute()
 
 
+def _tables(spark: SparkSession, data: str) -> None:
+    _create(spark, f"{data}/landing_log", landing.SCHEMA, landing.PROPERTIES)
+    _create(spark, f"{data}/outcomes", tables.OUTCOMES, tables.OUTCOMES_PROPERTIES, "hour")
+
+
 def _land(spark: SparkSession, data: str, n: int, changes: list) -> None:
     now = datetime.now(UTC)
     entries = [(_submission(n), i, change, now) for i, (change, _) in enumerate(changes)]
@@ -95,8 +119,10 @@ def _land(spark: SparkSession, data: str, n: int, changes: list) -> None:
     table.write.format("delta").mode("append").save(f"{data}/landing_log")
 
 
-def _run_query(spark: SparkSession, data: str) -> None:
-    query = ingest.start(spark, data, trigger={"availableNow": True}, classifier=classify_udf.FAKE)
+def _run_query(
+    spark: SparkSession, data: str, classifier: classify_udf.Spec = classify_udf.FAKE
+) -> None:
+    query = ingest.start(spark, data, trigger={"availableNow": True}, classifier=classifier)
     query.awaitTermination()
 
 
@@ -114,8 +140,7 @@ def _expect(actual, expected) -> None:
 
 
 def backlog_lands(spark: SparkSession, data: str) -> None:
-    _create(spark, f"{data}/landing_log", landing.SCHEMA, landing.PROPERTIES)
-    _create(spark, f"{data}/outcomes", tables.OUTCOMES, tables.OUTCOMES_PROPERTIES, "hour")
+    _tables(spark, data)
     for n, changes in enumerate(_BACKLOG):
         _land(spark, data, n, changes)
     _run_query(spark, data)
@@ -156,6 +181,22 @@ def store_has_its_layout(spark: SparkSession, data: str) -> None:
     _expect(metrics.get("numTargetDeletionVectorsAdded"), "1")
 
 
+def student_classifies(spark: SparkSession, data: str, spec: classify_udf.Spec) -> None:
+    """The Listings in KNOWN, through the ingest query on `spec`: each stored with its category,
+    at the student's version and not flagged."""
+    path = f"{data}/student"
+    _tables(spark, path)
+    titles = list(KNOWN)
+    _land(spark, path, 0, [(_up(f"p{i}", 1, title), O.WRITTEN) for i, title in enumerate(titles)])
+    _run_query(spark, path, spec)
+    rows = spark.read.format("delta").load(f"{path}/listing_store").collect()
+    got = {
+        r.merchant_product_id: (r.primary_category, r.taxonomy_version, r.needs_reclassify)
+        for r in rows
+    }
+    _expect(got, {f"p{i}": (KNOWN[t], spec.version, False) for i, t in enumerate(titles)})
+
+
 CHECKS = {
     "the backlog lands as the store oracle says": backlog_lands,
     "one Outcome per Change": one_outcome_per_change,
@@ -163,6 +204,7 @@ CHECKS = {
     "a later commit reads its stored rows": later_commit_reads_its_stored_rows,
     "the store has its layout": store_has_its_layout,
 }
+STUDENT = "the student classifies on the executors"
 
 
 def _passes(name: str, check, spark: SparkSession, data: str) -> bool:
@@ -179,10 +221,14 @@ def _passes(name: str, check, spark: SparkSession, data: str) -> bool:
 def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="ingestion-smoke")
     args.add_argument("--data", required=True)  # a string, as ingest.start takes it
-    data = args.parse_args(argv).data
-    if os.path.exists(data):  # a failed task runs twice, on this same path
-        shutil.rmtree(data)
+    args.add_argument("--models", type=Path)  # with train/ beside it: adds the student's check
+    a = args.parse_args(argv)
+    if os.path.exists(a.data):  # a failed task runs twice, on this same path
+        shutil.rmtree(a.data)
     spark = SparkSession.builder.getOrCreate()
-    results = [_passes(name, check, spark, data) for name, check in CHECKS.items()]
+    checks = dict(CHECKS)
+    if a.models:  # its Spec inside the check, so a missing file prints FAIL beside the other lines
+        checks[STUDENT] = lambda s, d: student_classifies(s, d, classify_udf.Spec.student(a.models))
+    results = [_passes(name, check, spark, a.data) for name, check in checks.items()]
     if not all(results):
         raise RuntimeError(f"{results.count(False)} of {len(results)} checks failed")

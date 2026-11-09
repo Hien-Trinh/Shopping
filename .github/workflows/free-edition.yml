@@ -1,6 +1,7 @@
 name: free-edition
 
-# The Ingestion job's checks on Databricks Free Edition (docs/specs/step-a3.md), by hand only:
+# The Ingestion job's checks on Databricks Free Edition (docs/specs/step-a3.md), the student's
+# included (step-a4.md), by hand only:
 #   gh workflow run free-edition.yml --ref <branch>
 on:
   workflow_dispatch:
@@ -14,12 +15,26 @@ concurrency: free-edition
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60  # a cache miss builds the student's index: about 15 minutes
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
+      # The student's models/, by ci.yml's `model` job key. Restore only: a dispatch's cache would
+      # be its branch's, which no PR restores.
+      - run: make spark-env
+      - id: student
+        run: |
+          version=$(.venv-spark/bin/python -c 'from ingestion import student, taxonomy; print(student.version(taxonomy.load().version))')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - id: models
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: models
+          key: models-bge-small-en-v1.5-${{ steps.student.outputs.version }}
+      - if: steps.models.outputs.cache-hit != 'true'  # the student alone: this run has no bge-small
+        run: .venv-spark/bin/python -m ingestion.student --download
       # Databricks installs a wheel's dependencies, and has no --no-deps, so this wheel lists none
-      # and the environment's own libraries run it (question 1).
+      # (step-a3.md, question 1), and the run's environment lists the compiled pins instead.
       - run: sed -i '/^dependencies = \[/,/^\]/d' pyproject.toml && uv build -q --wheel
       - run: "! unzip -p dist/*.whl '*/METADATA' | grep '^Requires-Dist'"  # a reformat beats the sed
       - run: scripts/free-edition.py

@@ -280,6 +280,13 @@ def test_success_whose_logs_stop_before_the_count_exits_1_since_a_retry_can_hide
     ]
 
 
+def test_a_count_that_misses_a_check_line_exits_1(script):
+    table = replies()
+    table["GET", OUTPUT] = (200, {"logs": "PASS one\n2 of 2 checks passed\n"})  # a line short
+    _, done = script(table)
+    assert done.returncode == 1
+
+
 def test_a_run_that_failed_after_every_check_passed_still_exits_1(script):
     table = replies()
     table["GET", GET] = run_reply("RUN_EXECUTION_ERROR", "the task failed")

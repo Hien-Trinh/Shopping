@@ -13,12 +13,25 @@ import pytest
 SCRIPT = Path(__file__).parents[2] / "scripts" / "free-edition.py"
 SHA = "abc123"
 WHEEL = "ingestion-0.1.0-py3-none-any.whl"
-WHEEL_PATH = f"/Volumes/workspace/default/shopping/wheels/{SHA}/{WHEEL}"
+ROOT = "/Volumes/workspace/default/shopping"
+WHEEL_PATH = f"{ROOT}/wheels/{SHA}/{WHEEL}"
 VOLUMES = "/api/2.1/unity-catalog/volumes"
 UPLOAD = f"/api/2.0/fs/files{WHEEL_PATH}?overwrite=true"
 SUBMIT = "/api/2.2/jobs/runs/submit"
 GET = "/api/2.2/jobs/runs/get?run_id=7"
 OUTPUT = "/api/2.2/jobs/runs/get-output?run_id=8"  # the task's id: the parent's returns 400
+# The student's files as the model job's cache holds them, and train/ (step-a4.md, decision 9).
+ENCODER = "models/models--Hien-Trinh--listing-student-ft/snapshots/rev/onnx/model.onnx"
+INDEX = "models/student/index-rev-fp32-hash.npz"
+TRAIN = "train/shopify.jsonl.gz"
+LOCAL = {
+    ENCODER: b"encoder",
+    INDEX: b"index",
+    TRAIN: b"train",
+    "models/models--Qdrant--bge-small-en-v1.5-onnx-Q/model.onnx": b"bge-small",  # not the student's
+    "models/student/vectors-rev.npy": b"vectors",  # nor the index
+}
+PINS = "# compiled\nfastembed==0.9.0\n    # via\n    #   -c runtime-18.txt\n\nnumpy==2.1.3\n"
 
 DROP = object()  # the stub closes the connection instead of replying
 # An email across the 1500-character cut, so a cut before the scrub would strand its first part.
@@ -63,9 +76,10 @@ class Stub:
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
-                self.wfile.write(payload)
+                if self.command != "HEAD":  # a HEAD reply has no body
+                    self.wfile.write(payload)
 
-            do_GET = do_POST = do_PUT = answer
+            do_GET = do_POST = do_PUT = do_HEAD = answer
 
             def log_message(self, *args):
                 pass
@@ -80,10 +94,18 @@ class Stub:
         return [r[:2] for r in self.requests]
 
 
+def files(method, local):
+    """A Files API call on the volume's copy of `local`."""
+    return method, f"/api/2.0/fs/files{ROOT}/{local}" + (
+        "?overwrite=true" if method == "PUT" else ""
+    )
+
+
 def replies(**overrides):
     base = {
         ("POST", VOLUMES): (200, {"full_name": "workspace.default.shopping"}),
         ("PUT", UPLOAD): (204, None),
+        **{files("PUT", local): (204, None) for local in (ENCODER, INDEX, TRAIN)},
         ("POST", SUBMIT): (200, {"run_id": 7}),
         ("GET", GET): run_reply("SUCCESS"),
         ("GET", OUTPUT): (200, {"logs": "noise\nPASS one\nPASS two\ntook 12 s\n", **LEAKS}),
@@ -95,6 +117,11 @@ def replies(**overrides):
 def script(tmp_path):
     (tmp_path / "dist").mkdir()
     (tmp_path / "dist" / WHEEL).write_bytes(b"wheel bytes")
+    for local, data in LOCAL.items():
+        (tmp_path / local).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / local).write_bytes(data)
+    (tmp_path / "requirements").mkdir()
+    (tmp_path / "requirements" / "databricks.txt").write_text(PINS)
     stubs = []
 
     def start(table):
@@ -123,12 +150,19 @@ def test_a_passing_run_prints_only_its_check_lines_and_code_and_exits_0(script):
     assert stub.called() == [
         ("POST", VOLUMES),
         ("PUT", UPLOAD),
+        files("HEAD", ENCODER),
+        files("PUT", ENCODER),
+        files("HEAD", INDEX),
+        files("PUT", INDEX),
+        files("PUT", TRAIN),
         ("POST", SUBMIT),
         ("GET", GET),
         ("GET", OUTPUT),
     ]
     assert {r[2] for r in stub.requests} == {"Bearer the-token"}
     assert stub.body("PUT", UPLOAD) == b"wheel bytes"
+    uploaded = [stub.body(*files("PUT", local)) for local in (ENCODER, INDEX, TRAIN)]
+    assert uploaded == [b"encoder", b"index", b"train"]
     assert json.loads(stub.body("POST", VOLUMES)) == {
         "catalog_name": "workspace",
         "schema_name": "default",
@@ -140,7 +174,10 @@ def test_a_passing_run_prints_only_its_check_lines_and_code_and_exits_0(script):
     assert submit["environments"] == [
         {
             "environment_key": "wheel",
-            "spec": {"environment_version": "5", "dependencies": [WHEEL_PATH]},
+            "spec": {
+                "environment_version": "5",
+                "dependencies": [WHEEL_PATH, "fastembed==0.9.0", "numpy==2.1.3"],
+            },
         }
     ]
     task = submit["tasks"][0]
@@ -148,7 +185,7 @@ def test_a_passing_run_prints_only_its_check_lines_and_code_and_exits_0(script):
     assert task["python_wheel_task"] == {
         "package_name": "ingestion",
         "entry_point": "ingestion-smoke",
-        "parameters": ["--data", "/Volumes/workspace/default/shopping/smoke"],
+        "parameters": ["--data", f"{ROOT}/smoke", "--models", f"{ROOT}/models"],
     }
 
 
@@ -232,8 +269,10 @@ def test_a_volume_that_exists_carries_on(script):
     [
         (("POST", VOLUMES), 403, "PERMISSION_DENIED", 1),
         (("PUT", UPLOAD), 500, "INTERNAL_ERROR", 2),
-        (("POST", SUBMIT), 400, "INVALID_PARAMETER_VALUE", 3),
-        (("GET", GET), 403, "PERMISSION_DENIED", 4),
+        (files("PUT", INDEX), 500, "INTERNAL_ERROR", 6),
+        (files("PUT", TRAIN), 500, "INTERNAL_ERROR", 7),
+        (("POST", SUBMIT), 400, "INVALID_PARAMETER_VALUE", 8),
+        (("GET", GET), 403, "PERMISSION_DENIED", 9),
     ],
 )
 def test_any_other_failed_call_stops_with_its_status_and_exits_1(
@@ -247,3 +286,24 @@ def test_any_other_failed_call_stops_with_its_status_and_exits_1(
     assert done.stdout.startswith(f"{failing[0]} {failing[1]}: {status} ")  # names the call
     assert code in done.stdout
     assert "someone@example.com" not in done.stdout + done.stderr
+
+
+def test_a_student_file_the_volume_holds_stays_and_train_uploads_again(script):
+    table = replies()
+    table[files("HEAD", ENCODER)] = (200, None)
+    table[files("HEAD", INDEX)] = (200, None)
+    stub, done = script(table)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert [call for call in stub.called() if call[0] == "PUT"] == [
+        ("PUT", UPLOAD),
+        files("PUT", TRAIN),
+    ]
+
+
+def test_a_failed_head_other_than_404_stops_the_run(script):
+    table = replies()
+    table[files("HEAD", INDEX)] = (403, None)
+    stub, done = script(table)
+    assert done.returncode == 1
+    assert len(stub.requests) == 5  # nothing after the failed call
+    assert done.stdout.startswith(f"HEAD {files('HEAD', INDEX)[1]}: 403")

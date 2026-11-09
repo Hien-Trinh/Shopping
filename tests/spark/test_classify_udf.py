@@ -16,22 +16,6 @@ from ingestion.classify import ModelMissing
 from ingestion.envelope import Change, Content
 from ingestion.taxonomy import UNCATEGORIZED
 
-# The student's answers on the Mac and on Free Edition's executors (step-a4.md, fact 8).
-KNOWN = {
-    "Men's cotton crew-neck t-shirt": "Apparel & Accessories > Clothing > Clothing Tops",
-    "Stainless steel chef's knife, 8 inch": (
-        "Home & Garden > Kitchen & Dining > Kitchen Tools & Utensils"
-    ),
-    "Wireless bluetooth earbuds with charging case": "Electronics > Audio > Audio Components",
-    "Organic green tea, 100 bags": "Food, Beverages & Tobacco > Beverages > Tea & Infusions",
-    "Kids' waterproof rain boots": "Apparel & Accessories > Shoes > Baby & Children's Shoes",
-    "Yoga mat, non-slip, 6 mm": (
-        "Sporting Goods > Fitness & General Exercise Equipment > Yoga & Pilates"
-    ),
-    "Ceramic coffee mug 350 ml": "Home & Garden > Kitchen & Dining > Tableware",
-    "Laptop backpack 15.6 inch": "Luggage & Bags > Backpacks > Laptop Backpacks",
-}
-
 
 def answers(spark, data: Path) -> dict[str, tuple]:
     rows = spark.read.format("delta").load(f"{data}/listing_store").collect()
@@ -148,20 +132,3 @@ def test_spec_student_names_the_train_files_beside_the_models_folder(tmp_path):
     with (tmp_path / student.TRAIN[1]).open("a") as f:
         f.write("\n")
     assert classify_udf.Spec.student(tmp_path / "models").version != spec.version
-
-
-@pytest.mark.model
-def test_the_student_classifies_known_listings_on_the_executors(spark, tmp_path):
-    spec = classify_udf.Spec.student(Path("models"))
-    titles = list(KNOWN)
-    land(
-        tmp_path,
-        ["init"],
-        commit(0, [up(f"p{i}", 1, listing(title=t)) for i, t in enumerate(titles)]),
-    )
-    run(spark, tmp_path, spec)
-    got = {
-        k: (category, version, flag)
-        for k, (category, _, version, flag) in answers(spark, tmp_path).items()
-    }
-    assert got == {f"p{i}": (KNOWN[t], spec.version, False) for i, t in enumerate(titles)}

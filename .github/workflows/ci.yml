@@ -72,12 +72,13 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          if git diff --name-only "$BASE"...HEAD | grep -qE '(^|/)(classif(y|iers)|taxonomy|student|ingest)[^/]*$|^src/ingestion/data/|^eval/|^train/|^requirements/|^tests/model/|^tests/spark/test_classify_udf\.py$|^pyproject\.toml$|^uv\.lock$|^Makefile$|^\.github/workflows/'; then
+          if git diff --name-only "$BASE"...HEAD | grep -qE '(^|/)(classif(y|iers)|taxonomy|student|ingest|free_edition)[^/]*$|^src/ingestion/data/|^eval/|^train/|^requirements/|^tests/model/|^tests/spark/test_free_edition\.py$|^pyproject\.toml$|^uv\.lock$|^Makefile$|^\.github/workflows/'; then
             echo model=true >> "$GITHUB_OUTPUT"
           fi
 
   # The real models (tests marked `model`, docs/specs/step-a4.md): bge-small in the uv env, and
-  # the student through the classifier UDF on local Spark, in Runtime 18's libraries.
+  # the student through the Free Edition run's checks on local Spark, in Runtime 18's libraries.
+  # Required on main.
   model:
     needs: changes
     if: needs.changes.outputs.model == 'true'

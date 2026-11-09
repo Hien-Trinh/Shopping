@@ -1,8 +1,9 @@
-"""The Free Edition run's checks, on local Spark (docs/specs/step-a3.md)."""
+"""The Free Edition run's checks, on local Spark (docs/specs/step-a3.md, step-a4.md)."""
 
 import pytest
+from test_ingest import ROOT
 
-from ingestion import free_edition, ingest
+from ingestion import classify_udf, free_edition, ingest
 
 
 def checks_passed(capsys, data):
@@ -62,3 +63,18 @@ def test_each_later_check_fails_on_what_it_checks(spark, tmp_path, monkeypatch):
     spark.sql(f"ALTER TABLE delta.`{data}/listing_store` {feed_off}")
     with pytest.raises(ValueError):
         free_edition.store_has_its_layout(spark, data)
+
+
+def test_the_student_check_on_fake_prints_fail(spark, tmp_path, capsys):
+    def on_fake(session, data):
+        free_edition.student_classifies(session, data, classify_udf.FAKE)
+
+    assert not free_edition._passes(free_edition.STUDENT, on_fake, spark, str(tmp_path))
+    assert capsys.readouterr().out.startswith(f"FAIL {free_edition.STUDENT}: ValueError: expected")
+
+
+@pytest.mark.model
+def test_main_with_the_real_models_prints_only_pass_lines(spark, tmp_path, capsys):
+    free_edition.main(["--data", str(tmp_path), "--models", str(ROOT / "models")])
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == [f"PASS {name}" for name in [*free_edition.CHECKS, free_edition.STUDENT]]

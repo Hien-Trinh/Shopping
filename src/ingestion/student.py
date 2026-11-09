@@ -6,6 +6,13 @@ scores a student trained on `train/`; `python -m ingestion.student` writes `eval
 student alone, then the cascade (the student where it is sure, Jev or Opus below a threshold).
 `python -m ingestion.student --download` fetches the fine-tuned encoder and head at FT_REVISION and
 builds the index the workers' `--classifier student` loads: `pipeline()`.
+
+Its files, as `--download` leaves them: the encoder and head in the Hub cache layout,
+`models/models--Hien-Trinh--listing-student-ft/snapshots/<revision>/`, and the index at
+`index_path()`. Copies outside Python, each pinned by a test in
+tests/integration/test_free_edition_script.py: the `models/` cache key, which holds
+`version()`, in ci.yml's `model` job and in free-edition.yml; and scripts/free-edition.py's
+upload globs.
 """
 
 from __future__ import annotations  # Softmax's methods return Softmax, unbound in its own body

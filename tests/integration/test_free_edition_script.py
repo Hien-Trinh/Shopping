@@ -114,7 +114,10 @@ def replies(**overrides):
         **{files("PUT", local): (204, None) for local in (ENCODER, INDEX, TRAIN)},
         ("POST", SUBMIT): (200, {"run_id": 7}),
         ("GET", GET): run_reply("SUCCESS"),
-        ("GET", OUTPUT): (200, {"logs": "noise\nPASS one\nPASS two\ntook 12 s\n", **LEAKS}),
+        ("GET", OUTPUT): (
+            200,
+            {"logs": "noise\nPASS one\nPASS two\n2 of 2 checks passed\ntook 12 s\n", **LEAKS},
+        ),
     }
     return base | {key: value for key, value in overrides.items()}
 
@@ -149,10 +152,15 @@ def script(tmp_path):
         stub.server.shutdown()
 
 
-def test_a_passing_run_prints_only_its_check_lines_and_code_and_exits_0(script):
+def test_a_passing_run_prints_its_check_lines_count_and_code_and_exits_0(script):
     stub, done = script(replies())
     assert done.returncode == 0, done.stderr
-    assert done.stdout.splitlines() == ["PASS one", "PASS two", "run: SUCCESS"]
+    assert done.stdout.splitlines() == [
+        "PASS one",
+        "PASS two",
+        "2 of 2 checks passed",
+        "run: SUCCESS",
+    ]
     assert stub.called() == [
         ("POST", VOLUMES),
         ("PUT", UPLOAD),
@@ -201,7 +209,7 @@ def test_a_failed_run_prints_its_code_message_and_error_with_the_email_replaced_
     table["GET", OUTPUT] = (
         200,
         {
-            "logs": f"PASS one\nFAIL two: ValueError: {LONG_ERROR}\n",
+            "logs": f"PASS one\nFAIL two: ValueError: {LONG_ERROR}\n1 of 2 checks passed\n",
             "error": "RuntimeError: 1 of 2 checks failed",
         },
     )
@@ -211,6 +219,7 @@ def test_a_failed_run_prints_its_code_message_and_error_with_the_email_replaced_
     assert done.stdout.splitlines() == [
         "PASS one",
         f"FAIL two: ValueError: {'x' * 1473} <email>"[:1500],
+        "1 of 2 checks passed",
         "run: RUN_EXECUTION_ERROR",
         "Task failed for <email>",
         "RuntimeError: 1 of 2 checks failed",
@@ -224,7 +233,12 @@ def test_polling_goes_on_through_a_running_state_a_dropped_connection_and_a_5xx(
     table["GET", GET] = [running, DROP, busy, run_reply("SUCCESS")]
     stub, done = script(table)
     assert done.returncode == 0, done.stdout + done.stderr
-    assert done.stdout.splitlines() == ["PASS one", "PASS two", "run: SUCCESS"]
+    assert done.stdout.splitlines() == [
+        "PASS one",
+        "PASS two",
+        "2 of 2 checks passed",
+        "run: SUCCESS",
+    ]
     assert stub.called().count(("GET", GET)) == 4
 
 
@@ -234,15 +248,58 @@ def test_success_with_no_check_lines_exits_1(script, output):
     table["GET", OUTPUT] = output
     _, done = script(table)
     assert done.returncode == 1
-    assert done.stdout.splitlines() == ["run: SUCCESS"]
+    assert done.stdout.splitlines() == ["no 'checks passed' line in the logs", "run: SUCCESS"]
 
 
 def test_success_with_a_fail_line_exits_1_since_a_retry_can_hide_a_failure(script):
     table = replies()
-    table["GET", OUTPUT] = (200, {"logs": "PASS one\nFAIL two: ValueError: x\n"})
+    table["GET", OUTPUT] = (
+        200,
+        {"logs": "PASS one\nFAIL two: ValueError: x\n1 of 2 checks passed\n"},
+    )
     _, done = script(table)
     assert done.returncode == 1
-    assert done.stdout.splitlines() == ["PASS one", "FAIL two: ValueError: x", "run: SUCCESS"]
+    assert done.stdout.splitlines() == [
+        "PASS one",
+        "FAIL two: ValueError: x",
+        "1 of 2 checks passed",
+        "run: SUCCESS",
+    ]
+
+
+def test_success_whose_logs_end_before_the_count_exits_1(script):
+    table = replies()
+    table["GET", OUTPUT] = (
+        200,
+        {"logs": "PASS one\nPASS two\n"},
+    )  # a first pass that exited partway
+    _, done = script(table)
+    assert done.returncode == 1
+    assert done.stdout.splitlines() == [
+        "PASS one",
+        "PASS two",
+        "no 'checks passed' line in the logs",
+        "run: SUCCESS",
+    ]
+
+
+def test_a_count_that_misses_a_check_line_exits_1(script):
+    table = replies()
+    table["GET", OUTPUT] = (200, {"logs": "PASS one\n2 of 2 checks passed\n"})  # a line short
+    _, done = script(table)
+    assert done.returncode == 1
+
+
+def test_a_run_that_failed_after_every_check_passed_still_exits_1(script):
+    table = replies()
+    table["GET", GET] = run_reply("RUN_EXECUTION_ERROR", "the task failed")
+    _, done = script(table)
+    assert done.returncode == 1
+    assert done.stdout.splitlines()[2:] == [
+        "2 of 2 checks passed",
+        "run: RUN_EXECUTION_ERROR",
+        "the task failed",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -260,7 +317,11 @@ def test_a_failed_get_output_still_prints_the_runs_code_and_message(script, fail
     assert done.returncode == 1
     lines = done.stdout.splitlines()
     assert lines[0].startswith(first_line)
-    assert lines[1:] == ["run: LIBRARY_INSTALLATION_ERROR", "the install failed"]
+    assert lines[1:] == [
+        "no 'checks passed' line in the logs",
+        "run: LIBRARY_INSTALLATION_ERROR",
+        "the install failed",
+    ]
 
 
 def test_a_volume_that_exists_carries_on(script):

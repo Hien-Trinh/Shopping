@@ -1,7 +1,9 @@
 """The checks of the Free Edition run: the ingest query on Databricks' own runtime, on Free
 Edition's own storage (docs/specs/step-a3.md). Each check prints one PASS or FAIL line, and never a
 time, since the acceptable use policy forbids publishing benchmark results and these logs are
-public.
+public. `main` ends with "k of n checks passed", which the workflow's script requires, since a
+failed task runs twice and a first pass that exits partway with no FAIL line (a SystemExit from a
+check, say) leaves only PASS lines.
 
 Spark writes the Landing log here, since delta-rs can't commit on a volume. `main` returns
 normally rather than through entry.exit_with, since os._exit fails a Databricks run.
@@ -230,5 +232,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     if a.models:  # its Spec inside the check, so a missing file prints FAIL beside the other lines
         checks[STUDENT] = lambda s, d: student_classifies(s, d, classify_udf.Spec.student(a.models))
     results = [_passes(name, check, spark, a.data) for name, check in checks.items()]
+    print(f"{results.count(True)} of {len(results)} checks passed", flush=True)
     if not all(results):
         raise RuntimeError(f"{results.count(False)} of {len(results)} checks failed")

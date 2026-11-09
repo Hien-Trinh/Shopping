@@ -73,6 +73,18 @@ def test_the_student_check_on_fake_prints_fail(spark, tmp_path, capsys):
     assert capsys.readouterr().out.startswith(f"FAIL {free_edition.STUDENT}: ValueError: expected")
 
 
+def test_models_that_cant_load_print_fail_beside_the_other_checks_and_main_raises(
+    spark, tmp_path, capsys
+):
+    models = tmp_path / "models"  # no train/ beside it, so the student's Spec raises
+    with pytest.raises(RuntimeError, match="1 of 6 checks failed"):
+        free_edition.main(["--data", str(tmp_path / "data"), "--models", str(models)])
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[:5] == [f"PASS {name}" for name in free_edition.CHECKS]
+    assert lines[5].startswith(f"FAIL {free_edition.STUDENT}: ModelMissing")
+    assert len(lines) == 6
+
+
 @pytest.mark.model
 def test_main_with_the_real_models_prints_only_pass_lines(spark, tmp_path, capsys):
     free_edition.main(["--data", str(tmp_path), "--models", str(ROOT / "models")])

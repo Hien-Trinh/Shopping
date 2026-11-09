@@ -176,7 +176,7 @@ def main() -> int:
         wheel_path = upload(wheel)
         upload_student()
         run = wait(submit(wheel_path))
-    except ApiError as e:
+    except (ApiError, OSError) as e:  # OSError: a dropped or timed-out upload, say
         print(scrub(str(e))[:LINE])
         return 1
     return report(run, task_output(run))

@@ -2,13 +2,19 @@
 (docs/specs/step-a3.md)."""
 
 import json
+import re
+import runpy
 import subprocess
 import sys
 import threading
+from fnmatch import fnmatch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from huggingface_hub.file_download import repo_folder_name
+
+from ingestion import student
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "free-edition.py"
 SHA = "abc123"
@@ -307,3 +313,29 @@ def test_a_failed_head_other_than_404_stops_the_run(script):
     assert done.returncode == 1
     assert len(stub.requests) == 5  # nothing after the failed call
     assert done.stdout.startswith(f"HEAD {files('HEAD', INDEX)[1]}: 403")
+
+
+def test_a_dropped_upload_stops_with_one_line_and_no_traceback(script):
+    table = replies()
+    table[files("PUT", INDEX)] = DROP
+    stub, done = script(table)
+    assert done.returncode == 1
+    assert "Traceback" not in done.stderr
+    assert done.stdout.splitlines() == ["Remote end closed connection without response"]
+    assert stub.called()[-1] == files("PUT", INDEX)  # nothing after the failed call
+
+
+def test_the_workflow_restores_the_model_jobs_cache_by_its_key():
+    workflows = SCRIPT.parents[1] / ".github" / "workflows"
+    ci, run = ((workflows / name).read_text() for name in ("ci.yml", "free-edition.yml"))
+    for pattern in (r"version=\$\(.*\)", r"key: models-.*"):  # how ci.yml names the cache
+        (line,) = set(re.findall(pattern, ci))
+        assert set(re.findall(pattern, run)) == {line}
+
+
+def test_the_scripts_globs_name_the_students_files():
+    names = runpy.run_path(str(SCRIPT))
+    models = Path("models")
+    folder = repo_folder_name(repo_id=student.FT_REPO, repo_type="model")
+    assert names["ENCODER"] == str(models / folder / "snapshots")
+    assert fnmatch(str(student.index_path(models, student.FT_REVISION)), names["INDEX"])

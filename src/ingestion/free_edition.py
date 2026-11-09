@@ -119,7 +119,9 @@ def _land(spark: SparkSession, data: str, n: int, changes: list) -> None:
     table.write.format("delta").mode("append").save(f"{data}/landing_log")
 
 
-def _run_query(spark: SparkSession, data: str, classifier=classify_udf.FAKE) -> None:
+def _run_query(
+    spark: SparkSession, data: str, classifier: classify_udf.Spec = classify_udf.FAKE
+) -> None:
     query = ingest.start(spark, data, trigger={"availableNow": True}, classifier=classifier)
     query.awaitTermination()
 

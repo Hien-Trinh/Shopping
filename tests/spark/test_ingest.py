@@ -21,7 +21,7 @@ from pyspark.errors import AnalysisException, StreamingQueryException
 from pyspark.sql import functions as F
 from support import delete, listing, poison, up
 
-from ingestion import ingest, replay
+from ingestion import classify_udf, ingest, replay
 from ingestion.envelope import Change
 from ingestion.status import Outcome as O
 
@@ -54,8 +54,8 @@ def cached(spark) -> bool:
     return not spark._jsparkSession.sharedState().cacheManager().isEmpty()
 
 
-def run(spark, data: Path):
-    query = ingest.start(spark, str(data), trigger={"availableNow": True})
+def run(spark, data: Path, classifier=classify_udf.FAKE):
+    query = ingest.start(spark, str(data), trigger={"availableNow": True}, classifier=classifier)
     query.awaitTermination()
     assert not cached(spark)  # each batch released its plan
     return query
@@ -231,8 +231,8 @@ def test_outcomes_stay_readable_by_delta_rs_past_sparks_checkpoint(spark, tmp_pa
 def test_a_plan_recomputed_after_its_merge_gives_the_same_outcomes(spark, tmp_path, monkeypatch):
     merge = ingest.merge
 
-    def merge_then_drop_the_persist(path, writes):
-        merge(path, writes)
+    def merge_then_drop_the_persist(path, writes, planned):
+        merge(path, writes, planned)
         assert cached(spark)
         spark.catalog.clearCache()
 
@@ -303,7 +303,7 @@ def test_a_crash_after_the_append_adds_no_duplicate_outcome(spark, tmp_path, rep
 def start_through_main(data: Path, monkeypatch) -> None:
     # A start the guard should have refused then ends, instead of waiting on the 60 s trigger.
     monkeypatch.setattr(ingest, "TRIGGER", {"availableNow": True})
-    ingest.main(["--data", str(data)])
+    ingest.main(["--data", str(data), "--classifier", "fake"])
 
 
 def test_no_recorded_batch_over_non_empty_outcomes_is_refused(spark, tmp_path, monkeypatch):
@@ -380,7 +380,7 @@ def test_a_row_the_merges_condition_refuses_raises(spark, tmp_path):
         "source_version", F.expr("IF(merchant_product_id = 'a', 0L, 2L)")
     )
     with pytest.raises(RuntimeError, match="applied 1 of 2 rows"):
-        ingest.merge(store, writes)
+        ingest.merge(store, writes, 2)
     assert source_versions(spark, store) == {"a": 1, "b": 2, "c": 1}
 
 
@@ -400,9 +400,8 @@ def count_attempts(monkeypatch, first_raises=None) -> list:
 
 def merge_at_a_gate(spark, store: str, gates: Path, during) -> None:
     """`ingest.merge` of the store's rows at their next version, doing `during(n)` while the
-    source's nth evaluation waits: once per attempt, then once for the check's count. The source
-    has one partition: two gated ones would hold both of local[2]'s slots, and an OPTIMIZE would
-    hang."""
+    source's nth evaluation waits, once per attempt. The source has one partition: two gated
+    ones would hold both of local[2]'s slots, and an OPTIMIZE would hang."""
     gates.mkdir()
 
     def wait(batches):
@@ -420,7 +419,7 @@ def merge_at_a_gate(spark, store: str, gates: Path, during) -> None:
     writes = writes.localCheckpoint(eager=True)
     with ThreadPoolExecutor(1) as pool:
         gated = writes.coalesce(1).mapInArrow(wait, writes.schema)
-        merging = pool.submit(ingest.merge, store, gated)
+        merging = pool.submit(ingest.merge, store, gated, writes.count())
         n = 1
         while not merging.done():
             if (gates / f"started-{n}").exists():
@@ -474,5 +473,5 @@ def test_the_conflicts_nothing_here_provokes_are_retried_as_well(
 ):
     store = seeded_store(spark, tmp_path)
     attempts = count_attempts(monkeypatch, first_raises=conflict)
-    ingest.merge(store, spark.read.format("delta").load(store).drop("updated_at"))
+    ingest.merge(store, spark.read.format("delta").load(store).drop("updated_at"), 3)
     assert len(attempts) == 2

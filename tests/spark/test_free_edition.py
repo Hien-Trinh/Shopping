@@ -22,7 +22,7 @@ def test_every_check_passes_and_a_second_pass_on_the_same_data_starts_clean(
 def test_a_failed_check_prints_fail_the_later_checks_still_print_and_main_raises(
     spark, tmp_path, capsys, monkeypatch
 ):
-    monkeypatch.setattr(ingest, "merge", lambda path, writes: None)
+    monkeypatch.setattr(ingest, "merge", lambda path, writes, planned: None)
     with pytest.raises(RuntimeError, match=r"\d of 5 checks failed"):
         free_edition.main(["--data", str(tmp_path)])
     lines = capsys.readouterr().out.splitlines()

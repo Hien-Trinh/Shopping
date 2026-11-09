@@ -2,12 +2,15 @@
 micro-batch at a time (docs/specs/step-a2.md).
 
 A batch plans, MERGEs, then appends its Outcomes, and the Spark checkpoint commits after that. A
-crash anywhere replays the batch, and v1's replay rule makes that safe (plan-v2.md, rule 3).
+crash anywhere replays the batch, and v1's replay rule makes that safe (plan-v2.md, rule 3). The
+MERGE's source classifies the Writes the plan marked, on the executors (step-a4.md).
 """
 
 import argparse
 from collections.abc import Sequence
+from dataclasses import replace
 from functools import partial
+from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
@@ -17,15 +20,14 @@ from delta.exceptions import (
     ConcurrentDeleteReadException,
 )
 from delta.tables import DeltaTable
-from pyspark.errors import AnalysisException
+from pyspark.errors import AnalysisException, PySparkAttributeError
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.pandas.types import from_arrow_schema
 from pyspark.sql.streaming import StreamingQuery
 from pyspark.sql.types import StructField, StructType
 
-from ingestion import decide, entry, landing, state, store, tables
-from ingestion.classify import FakeClassifier
+from ingestion import classify, classify_udf, decide, entry, landing, state, store, tables
 
 MAX_BYTES = 8_000_000  # a batch is this plus one commit; P4 retunes it (step-a2.md, question 2)
 MAX_FILES = 100_000  # so the byte cap binds
@@ -48,13 +50,17 @@ _WRITE = [f for f in _TABLE if f.name != "updated_at"]  # the MERGE's source set
 _PLAN = StructType(
     [
         StructField(f.name, f.dataType, nullable=True)
-        for f in from_arrow_schema(pa.schema([*tables.OUTCOMES, *_WRITE]))
+        for f in from_arrow_schema(
+            pa.schema([*tables.OUTCOMES, *_WRITE, ("needs_classify", pa.bool_())])
+        )
     ]
 )
 
 
-def plan_key(group: pd.DataFrame) -> pd.DataFrame:
-    """One key's Changes, each joined to its stored row: the key's Outcome and Write rows."""
+def plan_key(version: str, group: pd.DataFrame) -> pd.DataFrame:
+    """One key's Changes, each joined to its stored row: the key's Outcome and Write rows, planned
+    at the classifier's `version`. A Write to classify is marked `needs_classify` and holds the
+    answer a failure leaves, until the MERGE's source classifies it."""
     rows = group.sort_values(["_commit_version", "seq"]).to_dict("records")
     first = rows[0]
     stored = {}
@@ -62,7 +68,7 @@ def plan_key(group: pd.DataFrame) -> pd.DataFrame:
         columns = {f.name: first[f"s_{f.name}"] for f in _WRITE}
         stored[(first["merchant_id"], first["merchant_product_id"])] = store.stored(columns)
     landed = [landing.landed(r) for r in rows]
-    decision = decide.decide(landed, stored, FakeClassifier())
+    decision = decide.planned(landed, stored, version)
     outcomes = [
         {
             "hour": tables.hour(o["submission_id"]),
@@ -72,13 +78,21 @@ def plan_key(group: pd.DataFrame) -> pd.DataFrame:
         }
         for o in decision.outcomes
     ]
-    writes = [store.row(w) for w in decision.writes]
+    writes = [
+        store.row(
+            replace(w, classification=decide.provisional(w, version)) if w.needs_classify else w
+        )
+        | {"needs_classify": w.needs_classify}
+        for w in decision.writes
+    ]
     # object: else a price next to other rows' nulls turns into a float, and so does a column of
     # nulls alone, which then fails as a string column.
     return pd.DataFrame([*outcomes, *writes], columns=_PLAN.names, dtype=object)
 
 
-def merge(path: str, writes: DataFrame) -> None:
+def merge(path: str, writes: DataFrame, planned: int) -> None:
+    """MERGE `writes`, `planned` rows, counted by the caller: a count of a source that holds
+    the classifier would run it again (step-a4.md, fact 4)."""
     source = writes.withColumn("updated_at", F.current_timestamp()).alias("s")
     on = " AND ".join(f"t.{c} = s.{c}" for c in _KEY)
     for attempt in range(1, MERGE_ATTEMPTS + 1):
@@ -90,7 +104,6 @@ def merge(path: str, writes: DataFrame) -> None:
         except _CONFLICTS:  # a concurrent OPTIMIZE, say: the Write rows still hold
             if attempt == MERGE_ATTEMPTS:
                 raise
-    planned = writes.count()
     if applied < planned:  # another writer got there first: the replay reports these `stale`
         raise RuntimeError(f"MERGE applied {applied} of {planned} rows")
 
@@ -100,7 +113,9 @@ def append_outcomes(path: str, outcomes: DataFrame, query_id: str, batch_id: int
     writer.option("txnAppId", query_id).option("txnVersion", batch_id).save(path)
 
 
-def apply_batch(data: str, batch: DataFrame, batch_id: int) -> None:
+def apply_batch(
+    data: str, classifier: classify_udf.Spec, slots: int | None, batch: DataFrame, batch_id: int
+) -> None:
     spark = batch.sparkSession
     listing_store = f"{data}/listing_store"
     head = DeltaTable.forPath(spark, listing_store).history(1).first().version
@@ -111,9 +126,16 @@ def apply_batch(data: str, batch: DataFrame, batch_id: int) -> None:
     stored = stored.join(keys, list(_KEY), "left_semi")
     stored = stored.select(*(F.col(f.name).alias(f"s_{f.name}") for f in _WRITE))
     on = [changes[c] == stored[f"s_{c}"] for c in _KEY]
-    plan = changes.join(stored, on, "left").groupBy(*_KEY).applyInPandas(plan_key, _PLAN).persist()
+
+    def planning(group: pd.DataFrame) -> pd.DataFrame:  # not a partial: Spark reads its hints
+        return plan_key(classifier.version, group)
+
+    plan = changes.join(stored, on, "left").groupBy(*_KEY).applyInPandas(planning, _PLAN).persist()
     try:
-        merge(listing_store, plan.filter("submission_id IS NULL").select(*(f.name for f in _WRITE)))
+        writes = plan.filter("submission_id IS NULL").select(
+            *(f.name for f in _WRITE), "needs_classify"
+        )
+        merge(listing_store, classify_udf.classified(writes, classifier, slots), writes.count())
         outcomes = plan.filter("submission_id IS NOT NULL").select(*tables.OUTCOMES.names)
         if not outcomes.isEmpty():  # a retention DELETE's batch: an empty append would still commit
             query_id = _query_id(spark, f"{data}/checkpoints/ingest")
@@ -122,7 +144,9 @@ def apply_batch(data: str, batch: DataFrame, batch_id: int) -> None:
         plan.unpersist()
 
 
-def start(spark: SparkSession, data: str, *, trigger: dict) -> StreamingQuery:
+def start(
+    spark: SparkSession, data: str, *, trigger: dict, classifier: classify_udf.Spec
+) -> StreamingQuery:
     log, outcomes = f"{data}/landing_log", f"{data}/outcomes"
     listing_store, checkpoint = f"{data}/listing_store", f"{data}/checkpoints/ingest"
     # A missing init: forPath names the path, where readStream says only DELTA_SCHEMA_NOT_SET.
@@ -148,7 +172,13 @@ def start(spark: SparkSession, data: str, *, trigger: dict) -> StreamingQuery:
     if not _holds_batch(spark, f"{checkpoint}/commits"):
         earliest = landing_log.history().agg(F.min("version")).first()[0]
         reader = reader.option("startingVersion", earliest)  # else a snapshot, in no landing order
-    writer = reader.load(log).writeStream.foreachBatch(partial(apply_batch, data))
+    try:
+        slots = spark.sparkContext.defaultParallelism
+    except PySparkAttributeError:  # serverless has no sparkContext: the platform picks the tasks
+        slots = None
+    writer = reader.load(log).writeStream.foreachBatch(
+        partial(apply_batch, data, classifier, slots)
+    )
     return writer.option("checkpointLocation", checkpoint).trigger(**trigger).start()
 
 
@@ -182,8 +212,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m ingestion.ingest")
     # A string: Path would turn abfss://c@a/x into abfss:/c@a/x.
     args.add_argument("--data", default=str(state.DATA))
-    data = args.parse_args(argv).data
-    start(SparkSession.builder.getOrCreate(), data, trigger=TRIGGER).awaitTermination()
+    fakes = {"fake": classify_udf.FAKE, "down": classify_udf.DOWN}
+    args.add_argument("--classifier", choices=("student", *fakes), default="student")
+    args.add_argument("--models", type=Path, default=classify.MODELS)  # with train/ beside it
+    a = args.parse_args(argv)
+    classifier = fakes.get(a.classifier) or classify_udf.Spec.student(a.models)
+    spark = SparkSession.builder.getOrCreate()
+    start(spark, a.data, trigger=TRIGGER, classifier=classifier).awaitTermination()
 
 
 if __name__ == "__main__":

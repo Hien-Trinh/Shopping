@@ -4,8 +4,8 @@ import pytest
 from support import listing, poison, product_in, reclassify, up
 
 from ingestion import jev, state, store
-from ingestion.classify import Classifier, FakeClassifier
-from ingestion.decide import decide
+from ingestion.classify import Classifier, FakeClassifier, ModelMissing
+from ingestion.decide import answers, decide, planned, provisional
 from ingestion.keys import partition
 from ingestion.landing import Landed
 from ingestion.plan import Classification, Stored
@@ -212,3 +212,64 @@ def test_a_long_error_is_truncated():
     changes = [poison(A, 1, price_micros="x" * 5000)]  # Arrow echoes the value in its message
     (failed,) = run(changes).events(42)
     assert len(failed["error"]) == 500
+
+
+def test_planned_leaves_the_writes_marked_and_provisional_is_what_a_failure_leaves():  # A4
+    stored = {("m_1", A): Stored(1, listing("Shirt"), SHIRT)}
+    changes = [reclassify(A), up(B, 1, listing("Hat"))]
+    p = planned(landed(*changes), stored, "fake-1")
+    assert (p.outcomes, p.notes) == (run(changes, stored).outcomes, ())
+    assert [w.needs_classify for w in p.writes] == [True, True]
+    assert [provisional(w, "fake-1") for w in p.writes] == [
+        Classification("Fake > S", 0.9, "fake-1", True),  # its inputs unchanged: kept, flagged
+        Classification(UNCATEGORIZED, 0.0, "fake-1", True),
+    ]
+
+
+# The ingest query's policy (step-a4.md, decision 4): one call, then one per Listing.
+GOOD = ("Fake > H", 0.9)
+
+
+def misbehaving(kind: str):
+    """Answers GOOD, but a call holding the Listing titled Bad raises, answers one short, or
+    answers Bad out of contract."""
+
+    def answer(listings):
+        bad = [x.title == "Bad" for x in listings]
+        if not any(bad):
+            return [GOOD] * len(listings)
+        if kind == "raises":
+            raise RuntimeError("classifier unavailable")
+        if kind == "short":
+            return [GOOD] * (len(listings) - 1)
+        return [("", 0.9) if b else GOOD for b in bad]
+
+    return answer
+
+
+@pytest.mark.parametrize("kind", ["raises", "short", "out of contract"])
+def test_a_failed_call_retries_each_listing_so_only_the_bad_one_falls_back(kind):
+    stub = Stub(misbehaving(kind))
+    assert answers(stub, "fake-1", [listing("Hat"), listing("Bad"), listing("Hat")]) == [
+        HAT,
+        None,
+        HAT,
+    ]
+    assert stub.calls == [3, 1, 1, 1]
+
+
+def test_a_none_answer_stays_none_with_no_retry_and_no_listings_make_no_call():
+    stub = Stub(lambda listings: [None, GOOD][: len(listings)])
+    assert answers(stub, "fake-1", [listing("Shirt"), listing("Hat")]) == [None, HAT]
+    assert answers(stub, "fake-1", []) == []
+    assert stub.calls == [2]
+
+
+def test_a_fatal_error_inside_the_call_is_raised_not_retried():  # question 3
+    def missing(listings):
+        raise ModelMissing("the model went away")
+
+    stub = Stub(missing)
+    with pytest.raises(ModelMissing):
+        answers(stub, "fake-1", [listing("Hat"), listing("Hat")])
+    assert stub.calls == [2]

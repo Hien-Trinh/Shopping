@@ -20,7 +20,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.pandas.types import from_arrow_schema
 
-from ingestion import ingest, landing, replay, tables
+from ingestion import classify_udf, ingest, landing, replay, tables
 from ingestion.envelope import Change, Content
 from ingestion.status import Outcome as O
 
@@ -96,7 +96,8 @@ def _land(spark: SparkSession, data: str, n: int, changes: list) -> None:
 
 
 def _run_query(spark: SparkSession, data: str) -> None:
-    ingest.start(spark, data, trigger={"availableNow": True}).awaitTermination()
+    query = ingest.start(spark, data, trigger={"availableNow": True}, classifier=classify_udf.FAKE)
+    query.awaitTermination()
 
 
 def _outcomes(spark: SparkSession, data: str) -> list[tuple]:  # a list: a duplicate row would show

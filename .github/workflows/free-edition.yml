@@ -9,8 +9,12 @@ on:
 permissions:
   contents: read
 
-# One --data on the volume, and the quota is unpublished.
-concurrency: free-edition
+# One --data on the volume, and the quota is unpublished. queue: max keeps every dispatch waiting
+# in line, where the default cancels a waiting run for a newer one:
+# https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs
+concurrency:
+  group: free-edition
+  queue: max
 
 jobs:
   smoke:

@@ -38,7 +38,7 @@ docs/design-commerce-ingestion-pipeline.md, Observability: events carry submissi
 ## Trust boundaries
 Merchant-controlled values: f-strings into SQL or Delta predicates, merchant/product/submission IDs reaching the filesystem, cross-Merchant access (IDOR), constant-time key comparison, unbounded input reaching the classifier.
 
-Public CI logs, such as the free-edition workflow's: text from a remote reply goes through `scrub` (scripts/free-edition.py) before any cut, and no duration, email, workspace host or run URL prints. Every lane checks a new print path, since the security lane runs only on larger diffs.
+Public CI logs, such as the free-edition workflow's: text from a remote reply goes through `scrub` (scripts/free-edition.py) before any cut, and no email, workspace host or run URL prints, nor a duration measured on Free Edition (its acceptable use policy: step-a3.md, question 3). Every lane checks a new print path, since the security lane runs only on larger diffs.
 
 ## Coding rules
 There is no CODING_STANDARDS.md. The rules:

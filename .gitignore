@@ -9,5 +9,5 @@ __pycache__/
 
 .mutmut-cache
 mutants/
-/models/
+/models
 .venv-spark/

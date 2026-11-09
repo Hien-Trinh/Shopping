@@ -28,7 +28,8 @@ jobs:
         with:
           path: ~/.ivy2.5.2
           key: delta-jars-${{ hashFiles('requirements/spark.txt') }}
-      - run: JAVA_HOME=$JAVA_HOME_21_X64 make spark  # Runtime 18 runs JDK 21; the runner's default is 17
+      # --durations: the 10 slowest tests, as the job nears its timeout (A4.2: 6 of 10 minutes).
+      - run: JAVA_HOME=$JAVA_HOME_21_X64 make spark TEST='tests/spark --durations=10'  # Runtime 18 runs JDK 21; the runner's default is 17
 
   # Every chaos scenario for 60 s at the runner's defaults, ending with the three oracles
   # (step-7d.md, 7d.1). One leg per scenario, all at once; test_chaos_runner checks the list.

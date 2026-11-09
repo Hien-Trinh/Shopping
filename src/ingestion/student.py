@@ -362,9 +362,9 @@ def tag() -> str:
 # The pipeline (step-6m.md): the index the workers load, and the classifier over it.
 
 
-def index_path(models: Path, rev: str) -> Path:
+def index_path(models: Path, rev: str, train: Sequence[Path] | None = None) -> Path:
     """Named by everything that went into it, so a stale one is missing, never served."""
-    return models / "student" / f"index-{rev[:12]}-{tag()}-{train_hash()}.npz"
+    return models / "student" / f"index-{rev[:12]}-{tag()}-{train_hash(train)}.npz"
 
 
 def build_index(tax, embed: Callable, rev: str, models: Path) -> Path:
@@ -431,19 +431,31 @@ def train_hash(paths: Sequence[Path] | None = None) -> str:
     return h.hexdigest()[:8]
 
 
-def version(taxonomy_version: str, rev: str = FT_REVISION) -> str:
+def version(
+    taxonomy_version: str, rev: str = FT_REVISION, train: Sequence[Path] | None = None
+) -> str:
     """Every setting that changes an answer, so changing one reclassifies (step-6f.md, 6):
     the taxonomy, the encoder's Hub revision and file, k, and the training data."""
-    return f"{taxonomy_version}+{FT_MODEL}-knn@{rev[:12]}+{tag()}+k{K}+train-{train_hash()}"
+    return f"{taxonomy_version}+{FT_MODEL}-knn@{rev[:12]}+{tag()}+k{K}+train-{train_hash(train)}"
 
 
 def pipeline(tax, models: Path, *, threads: int | None = None) -> StudentClassifier:
-    """The workers' `--classifier student`: kNN (K) over the index, the encoder at FT_REVISION
-    on `threads` ONNX threads, nothing embedded at start (step-6f.md, 6f.3)."""
-    embed, rev = embedder(models, threads=threads)
+    """The workers' `--classifier student`: `serve` over the checkout's training files."""
+    return serve(
+        tax, models, index_path(models, FT_REVISION), version(tax.version), threads=threads
+    )
+
+
+def serve(
+    tax, models: Path, index: Path, version: str, *, threads: int | None = None
+) -> StudentClassifier:
+    """kNN (K) over `index`, the encoder at FT_REVISION on `threads` ONNX threads, answering at
+    `version`: paths and a version the caller worked out, as the ingest query's driver does for
+    its executors (step-a4.md). Nothing embedded at start (step-6f.md, 6f.3)."""
+    embed, _ = embedder(models, threads=threads)
     width = np.asarray(embed(["probe"])).shape[1]
-    x, y = load_index(index_path(models, rev), tax, width=width)
-    return StudentClassifier(embed, Knn(x, y, K), version(tax.version, rev))
+    x, y = load_index(index, tax, width=width)
+    return StudentClassifier(embed, Knn(x, y, K), version)
 
 
 def beats_knn(alone: float, curve, knn_alone: float, knn_point) -> bool:

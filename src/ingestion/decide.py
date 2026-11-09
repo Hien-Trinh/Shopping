@@ -1,7 +1,8 @@
 """What a batch of landed Changes does: the Writes to MERGE and the events to emit once it commits.
 
 No I/O but the classifier call. Storability check, plan, classify, then one Outcome event per
-landed Change in landing order; the worker reads the store before and merges after.
+landed Change in landing order; the worker reads the store before and merges after. The ingest
+query plans here (`planned`) and classifies on the executors (docs/specs/step-a4.md).
 """
 
 from collections.abc import Callable, Mapping, Sequence
@@ -21,7 +22,7 @@ _WRITES = {Outcome.WRITTEN, Outcome.RECLASSIFIED}
 
 @dataclass(frozen=True)
 class Decision:
-    writes: tuple[Write, ...]  # classified: ready to MERGE
+    writes: tuple[Write, ...]  # ready to MERGE once classified (none left `needs_classify`)
     notes: tuple[dict, ...]  # batch-level events: classify, classify_failed
     outcomes: tuple[dict, ...]  # one Outcome event per landed Change, without store_version
 
@@ -42,20 +43,26 @@ def decide(
     classifier,
     clock: Callable[[], float] = monotonic,
 ) -> Decision:
+    decision = planned(landed, stored, classifier.taxonomy_version)
+    writes, notes = _classify(decision.writes, classifier, clock)
+    return replace(decision, writes=tuple(writes), notes=tuple(notes))
+
+
+def planned(landed: Sequence[Landed], stored: Mapping[Key, Stored], version: str) -> Decision:
+    """`decide` without the classifier: the Writes to classify still marked `needs_classify`."""
     # A Change whose data can't be stored fails alone, before planning, so the rest plan without it
     # (design doc, lifecycle step 8). Any other error propagates: a bug, never the data.
     errors = store.unstorable([x.change.listing for x in landed])
     good = [x.change for x, error in zip(landed, errors, strict=True) if error is None]
-    planned = plan(good, stored, classifier.taxonomy_version)
-    writes, notes = _classify(planned.writes, classifier, clock)
+    planned = plan(good, stored, version)
     outcomes = iter(planned.outcomes)
     results = [
         {"type": Outcome.FAILED, "error": error} if error else {"type": next(outcomes)}
         for error in errors
     ]
     return Decision(
-        tuple(writes),
-        tuple(notes),
+        planned.writes,
+        (),
         tuple(
             {
                 "submission_id": x.submission_id,
@@ -85,7 +92,7 @@ def _classify(writes: Sequence[Write], classifier, clock) -> tuple[list[Write], 
     try:
         results = classifier.classify([w.listing for w in todo])
         found = [
-            None if a is None else _answer(a, version) for _, a in zip(todo, results, strict=True)
+            None if a is None else validated(a, version) for _, a in zip(todo, results, strict=True)
         ]
         # for the Listings it answered None: a classifier may say why (jev.JevClassifier.error)
         error = classifier.error
@@ -106,17 +113,7 @@ def _classify(writes: Sequence[Write], classifier, clock) -> tuple[list[Write], 
             "batch": len(todo),
             "error": error,
         })  # fmt: skip
-    # Keep an answer whose inputs haven't changed, else Uncategorized; either way flagged so
-    # the Backfill reclassifies it (design doc, lifecycle step 5).
-    found = [
-        f
-        or (
-            replace(w.fallback, needs_reclassify=True)
-            if w.fallback
-            else Classification(UNCATEGORIZED, 0.0, version, needs_reclassify=True)
-        )
-        for w, f in zip(todo, found, strict=True)
-    ]
+    found = [f or provisional(w, version) for w, f in zip(todo, found, strict=True)]
     answers = iter(found)
     classified = [
         replace(w, classification=next(answers), needs_classify=False) if w.needs_classify else w
@@ -125,7 +122,17 @@ def _classify(writes: Sequence[Write], classifier, clock) -> tuple[list[Write], 
     return classified, notes
 
 
-def _answer(answer, version: str) -> Classification:
+def provisional(write: Write, version: str) -> Classification:
+    """What a Write gets when classifying it fails: an answer whose inputs haven't changed, else
+    Uncategorized; either way flagged, so the Backfill reclassifies it (design doc, lifecycle
+    step 5)."""
+    if write.fallback:
+        return replace(write.fallback, needs_reclassify=True)
+    return Classification(UNCATEGORIZED, 0.0, version, needs_reclassify=True)
+
+
+def validated(answer, version: str) -> Classification:
+    """An answer under the classifier contract (`classify.Classifier`), else ValueError."""
     category, confidence = answer
     confidence = float(confidence)
     if not (isinstance(category, str) and category and 0.0 <= confidence <= 1.0):  # NaN fails too

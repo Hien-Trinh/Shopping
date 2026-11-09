@@ -63,5 +63,6 @@ Once the lanes are done, the session running the review settles a claim that a m
 ## Defer target, round record, PR body
 - Defer findings to a named later step in docs/plan-v1.md.
 - Record "Review: round N done" as a PR comment.
+- A fix commit that changes what runs on Spark reruns the Free Edition workflow before the round record (plan-v2.md, Testing rules), and Evidence cites the new run and the commit it ran on. `gh run list --workflow free-edition.yml --branch <branch> -L 1 --json databaseId,headSha` names both; `gh run watch <id> --exit-status`, then `gh run view <id> --log | grep -oE '(PASS|FAIL) .*|run: .*'`, prints the checks.
 - PR body follows the `pr` skill (Summary visual, Evidence, Merge Danger); step-7 regression tests update Evidence.
 - `/retro` exists here; its output goes in its own docs-or-tooling PR, never the step PR.

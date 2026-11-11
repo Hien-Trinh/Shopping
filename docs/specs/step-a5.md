@@ -1,6 +1,6 @@
 # Step A5: the Backfill as each micro-batch's tail (mini PRD)
 
-Status: draft, Nov 11. Questions 1 and 2 and the test points wait for your OK. Plan row: [plan-v2.md, PR steps, A5](../plan-v2.md). Decisions from the [streaming job][t137] (item 5) and v1's Backfill ([step-6c.md](step-6c.md)). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: draft, Nov 11. Question 1 answered Nov 11; question 2 and the test points wait for your OK. Plan row: [plan-v2.md, PR steps, A5](../plan-v2.md). Decisions from the [streaming job][t137] (item 5) and v1's Backfill ([step-6c.md](step-6c.md)). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 
@@ -44,7 +44,7 @@ Seeded from lean-review's finder angles.
 | A Listing flagged by an outage, the classifier back | The next batch that runs picks it. It gets the classifier's answer, unflagged, and a `reclassified` Outcome |
 | The classifier is still down | The pick keeps its stored answer, still flagged, with a new `updated_at`, so it goes to the back of the queue. Its Outcome is `reclassified`, as in v1. One round per batch, so no hot loop |
 | A new student version, 1M Listings on the old one | `LIMIT` per batch: about 17 h at 1,000 per 60 s (v1: about 3 h at 1,000 per 10 s). P4 retunes `LIMIT` with the trigger |
-| No Merchant Change arrives | No batch runs (fact 1), so pending Listings wait (question 1) |
+| No Merchant Change arrives | No batch runs (fact 1), so pending Listings wait for the next Change from any Merchant (question 1, an accepted gap) |
 | A Merchant Change for a picked key in the same batch | The pick sorts after it. An upsert: one Write, classified once, Outcomes `written` and `reclassified`. A delete: a Tombstone, and the pick is `skipped` |
 | A picked row is a Tombstone or on the classifier's version, unflagged | Never picked |
 | More pending than `LIMIT` | The oldest `LIMIT` by `updated_at`, ties by Listing key. The rest wait for later batches |
@@ -65,7 +65,7 @@ Seeded from lean-review's finder angles.
 4. **`tables.hour` reads `backfill-…` ids** by dropping the prefix. `uuid7_at` moves from `api` to `tables`, beside `hour`, which reads what it writes. `api` imports it from there, so `api.uuid7_at` still names it for v1's `backfill` and the tests.
 5. **No totals.** v1's `backfill` event counted every flagged and outdated row. That is a diagnostic, and A6's spec decides what the job logs (rule 6), as A4 left its `classify` events.
 6. **No Free Edition check is added.** The tail is plain Spark (a filter, a sort, a union), and the A3 and A4 checks run it on every batch with nothing pending. The PR's branch runs the workflow and cites it in its Evidence, as the plan asks.
-7. **plan-v2 changes, in this spec's PR:** the A5 row names this spec; section C gains question 1's gap, if you pick Option A.
+7. **plan-v2 changes, in this spec's PR:** the A5 row names this spec; section C gains question 1's gap.
 
 ## Testing decisions (test points for your OK)
 
@@ -90,7 +90,7 @@ Seeded from lean-review's finder angles.
    - **Option A (recommended): only with a batch.** The step is the plan's row as written. Cost: a quiet system doesn't reclassify, which plan-v2 section C records as an accepted gap. A11's outage leg gates on the oracles, not on the flagged count, so it still passes.
    - **Option B: a `rate` source ticks the stream.** The reader unions a one-row-per-second `rate` source to the change feed, and the batch drops its rows, so every trigger runs a batch and its tail (fact 2). Cost: about 15 more lines; an idle job scans the store and writes two checkpoint files every 60 s; the checkpoint holds two sources, so A6's "input waits" check and the `STREAMING_BACKLOG_BYTES` alert must ignore the tick; and no test has run `rate` on serverless.
 
-   **Answer:**
+   **Answer (Nov 11): only with a batch.**
 
 2. **Do the picks join the batch's plan, or run as a second MERGE?**
 
@@ -112,7 +112,7 @@ Seeded from lean-review's finder angles.
 
 ## Size
 
-About 70 changed lines, tests left out, so one PR: `ingest.py` about 45, `tables.py` about 12, `api.py` about 8 (the moved `uuid7_at`), plan-v2 about 5. About 200 of tests. A1 to A4 came in 22–109% over their estimates, so this may reach about 160, under the cap. Option B of question 1 adds about 15, and of question 2 about 40.
+About 70 changed lines, tests left out, so one PR: `ingest.py` about 45, `tables.py` about 12, `api.py` about 8 (the moved `uuid7_at`), plan-v2 about 5. About 200 of tests. A1 to A4 came in 22–109% over their estimates, so this may reach about 160, under the cap. Option B of question 2 adds about 40.
 
 [t137]: https://github.com/Hien-Trinh/Shopping/issues/137
 [probe]: https://github.com/Hien-Trinh/Shopping/tree/probe/a5

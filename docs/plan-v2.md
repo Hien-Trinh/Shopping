@@ -75,6 +75,7 @@ Every step keeps these. Each ticket holds the reasons.
 - **Fault 2 (one executor lost) is dropped.** No documented outside path kills one executor, and a hook would be test code inside the job ([Oct 28 review][t166]).
 - **No hung-batch or ADLS-throttling fault.** The first costs 10+ paid minutes for one setting, and the second has no cheap injection ([chaos][t138]).
 - **"Maintenance races the MERGE" runs only in the paid chaos window.** Open-source Delta can conflict where Databricks can't, so a CI runner would fail for the wrong reason ([CI][t162]).
+- **The Backfill runs only with a micro-batch.** Spark starts no batch without new Landing log rows, so while every Merchant is quiet, flagged Listings and Listings on an old classifier version wait for the next Change. At 50 Changes/s every trigger has input ([step-a5.md](specs/step-a5.md), question 1).
 - **No GPU path.** A T4 would sit 90–95% idle at 50/s and save $3–6, once, on the 1M load ([GPU][t155]).
 - **Revoking or rotating a Merchant key takes effect at the next `terraform apply`,** about a minute later, not at once as in v1 ([API on Container Apps][t161]).
 - **A hard kill between the API's two commits** leaves Landing log rows with no Submission log rows. That's harmless: the oracles read the Landing log, and freshness counts only Submission log Changes ([API on Container Apps][t161]).

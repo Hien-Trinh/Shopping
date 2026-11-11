@@ -1,6 +1,6 @@
 # Step A5: the Backfill as each micro-batch's tail (mini PRD)
 
-Status: draft, Nov 11. Question 1 answered Nov 11; question 2 and the test points wait for your OK. Plan row: [plan-v2.md, PR steps, A5](../plan-v2.md). Decisions from the [streaming job][t137] (item 5) and v1's Backfill ([step-6c.md](step-6c.md)). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: draft, Nov 11. Questions 1 and 2 answered Nov 11 (Option A for both); the test points wait for your OK. Plan row: [plan-v2.md, PR steps, A5](../plan-v2.md). Decisions from the [streaming job][t137] (item 5) and v1's Backfill ([step-6c.md](step-6c.md)). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 
@@ -99,7 +99,7 @@ Seeded from lean-review's finder angles.
    - **Option A (recommended): one plan.** The picks come from the store version the batch pinned and enter the plan as rows that sort last per key (decision 2). One MERGE and one Outcomes append, so the Backfill adds no commit and no crash point, and "one round in flight" holds with no gate. It equals v1: there, a reclassify also landed after the scan and met whatever the Listing held by then. Cost: a Listing flagged in this batch waits one batch.
    - **Option B: a second plan and MERGE after the first.** The picks see the store after the Merchant Changes. Cost: two more commits per batch with pending rows, a new crash point between the two MERGEs, a second classifier pass, and about 40 more lines.
 
-   **Answer:**
+   **Answer (Nov 11): one plan.**
 
 ## Out of scope
 

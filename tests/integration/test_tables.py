@@ -88,6 +88,14 @@ def test_each_record_lands_in_its_submissions_utc_hour(tmp_path, away_from_utc):
     }
 
 
+def test_hour_reads_a_backfill_rounds_id_and_refuses_any_other_prefix():  # step-a5.md
+    at = datetime(2026, 9, 30, 12, 59, 59, 999000, tzinfo=UTC)
+    round_id = f"backfill-{tables.uuid7_at(int(at.timestamp() * 1000))}"
+    assert tables.hour(round_id) == "2026-09-30T12"
+    with pytest.raises(ValueError):
+        tables.hour(round_id.replace("backfill-", "chaos-"))
+
+
 def test_a_lost_race_on_the_submission_log_is_retried_and_logged(tmp_path, monkeypatch):
     tables.init(tmp_path)
     submissions, sid = opened(tmp_path)[1], str(api.uuid7_at(int(NOW.timestamp() * 1000)))

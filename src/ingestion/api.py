@@ -32,6 +32,7 @@ from ingestion import entry, envelope, landing, merchants, state, status, tables
 from ingestion import events as event_files
 from ingestion.events import EventLog
 from ingestion.keys import partition
+from ingestion.tables import uuid7_at  # its home: the job needs it without FastAPI
 
 MAX_BODY = 32 * 2**20  # bytes; uvicorn and FastAPI set no limit (plan-v1 B8)
 MIN_FREE = 5 * 2**30  # bytes of free disk below which every write gets 503 (plan-v1 A13)
@@ -173,13 +174,6 @@ def create_app(
         return JSONResponse(reply | {"changes": changes})
 
     return app
-
-
-def uuid7_at(ms: int) -> uuid.UUID:
-    """A UUIDv7 (RFC 9562) whose 48-bit timestamp is `ms`: version 7, variant 10, 74 random bits.
-    A stand-in for uuid.uuid7(), which is 3.14+; Databricks runs 3.12."""
-    # A uuid4's low 76 bits are already v7's: 12 random, variant 10, 62 random.
-    return uuid.UUID(int=(ms << 80) | (7 << 76) | (uuid.uuid4().int & ((1 << 76) - 1)))
 
 
 def submission_events(submission: str, merchant_id: str, checked: envelope.Checked) -> list[dict]:

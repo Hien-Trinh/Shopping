@@ -3,11 +3,13 @@ micro-batch at a time (docs/specs/step-a2.md).
 
 A batch plans, MERGEs, then appends its Outcomes, and the Spark checkpoint commits after that. A
 crash anywhere replays the batch, and v1's replay rule makes that safe (plan-v2.md, rule 3). The
-MERGE's source classifies the Writes the plan marked, on the executors (step-a4.md).
+MERGE's source classifies the Writes the plan marked, on the executors (step-a4.md). Each batch
+ends with a Backfill round: its picks join the plan as `op=reclassify` rows (step-a5.md).
 """
 
 import argparse
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
@@ -21,7 +23,7 @@ from delta.exceptions import (
 )
 from delta.tables import DeltaTable
 from pyspark.errors import AnalysisException, PySparkAttributeError
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame, Row, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.pandas.types import from_arrow_schema
 from pyspark.sql.streaming import StreamingQuery
@@ -33,6 +35,8 @@ MAX_BYTES = 8_000_000  # a batch is this plus one commit; P4 retunes it (step-a2
 MAX_FILES = 100_000  # so the byte cap binds
 TRIGGER = {"processingTime": "60 seconds"}
 MERGE_ATTEMPTS = 3  # then the query fails and the batch replays
+LIMIT = 1000  # reclassifies per Backfill round, as in v1; P4 retunes it with the trigger
+_AFTER = 2**63 - 1  # a pick's _commit_version: after every Merchant Change of its key
 
 # By name: delta-spark's Python classes aren't subclasses of DeltaConcurrentModificationException.
 _CONFLICTS = (
@@ -90,6 +94,26 @@ def plan_key(version: str, group: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame([*outcomes, *writes], columns=_PLAN.names, dtype=object)
 
 
+def pending(stored: DataFrame, version: str, limit: int) -> list[Row]:
+    """Up to `limit` live Listings to reclassify against `version`, as (key, source_version):
+    flagged, or on another version. Oldest first, so one the classifier fails again goes to the
+    back. Collected, so a recomputed plan holds the same picks."""
+    # ponytail: scans every row each batch; P3 measures it at 100k Listings, an exit at 1M.
+    outdated = ~F.col("taxonomy_version").eqNullSafe(version)
+    todo = stored.filter(~F.col("is_tombstone") & (F.col("needs_reclassify") | outdated))
+    return todo.orderBy("updated_at", *_KEY).limit(limit).select(*_KEY, "source_version").collect()
+
+
+def _round(changes: DataFrame, picks: list[Row], now: float) -> DataFrame:
+    """A Backfill round as rows of `changes`: one `op=reclassify` per pick under one
+    `backfill-…` id, each after its key's Merchant Changes. A replay makes a new id."""
+    submission = f"{tables.BACKFILL}{tables.uuid7_at(int(now * 1000))}"
+    names = [*_KEY, "source_version", "op", "submission_id", "change_index", "_commit_version"]
+    rows = [(*pick, "reclassify", submission, i, _AFTER, i) for i, pick in enumerate(picks)]
+    schema = changes.select(*names, "seq").schema
+    return changes.sparkSession.createDataFrame(rows, schema)
+
+
 def merge(path: str, writes: DataFrame, planned: int) -> None:
     """MERGE `writes`, `planned` rows, counted by the caller: a count of a source that holds
     the classifier would run it again (step-a4.md, fact 4)."""
@@ -114,13 +138,20 @@ def append_outcomes(path: str, outcomes: DataFrame, query_id: str, batch_id: int
 
 
 def apply_batch(
-    data: str, classifier: classify_udf.Spec, slots: int | None, batch: DataFrame, batch_id: int
+    data: str,
+    classifier: classify_udf.Spec,
+    slots: int | None,
+    clock: Callable[[], float],
+    batch: DataFrame,
+    batch_id: int,
 ) -> None:
     spark = batch.sparkSession
     listing_store = f"{data}/listing_store"
     head = DeltaTable.forPath(spark, listing_store).history(1).first().version
     changes = batch.filter("_change_type = 'insert'")
     stored = spark.read.format("delta").option("versionAsOf", head).load(listing_store)
+    if picks := pending(stored, classifier.version, LIMIT):  # the Backfill's round: the tail
+        changes = changes.unionByName(_round(changes, picks, clock()), allowMissingColumns=True)
     # A left join can't broadcast the batch, so without this it shuffles the whole store.
     keys = F.broadcast(changes.select(*_KEY).distinct())
     stored = stored.join(keys, list(_KEY), "left_semi")
@@ -145,7 +176,12 @@ def apply_batch(
 
 
 def start(
-    spark: SparkSession, data: str, *, trigger: dict, classifier: classify_udf.Spec
+    spark: SparkSession,
+    data: str,
+    *,
+    trigger: dict,
+    classifier: classify_udf.Spec,
+    clock: Callable[[], float] = time.time,
 ) -> StreamingQuery:
     log, outcomes = f"{data}/landing_log", f"{data}/outcomes"
     listing_store, checkpoint = f"{data}/listing_store", f"{data}/checkpoints/ingest"
@@ -177,7 +213,7 @@ def start(
     except PySparkAttributeError:  # serverless has no sparkContext: the platform picks the tasks
         slots = None
     writer = reader.load(log).writeStream.foreachBatch(
-        partial(apply_batch, data, classifier, slots)
+        partial(apply_batch, data, classifier, slots, clock)
     )
     return writer.option("checkpointLocation", checkpoint).trigger(**trigger).start()
 

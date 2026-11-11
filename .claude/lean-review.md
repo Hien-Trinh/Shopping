@@ -3,7 +3,7 @@
 Read by the user-scoped `/lean-review` skill and its `reviewer-*` agents.
 
 ## Spec sources
-Read from `main` (`git show main:<path>`):
+Read from `origin/main` after `git fetch origin main` (`git show origin/main:<path>`): a worktree's local `main` can be behind, and then a new spec is missing there (#195):
 - the PR's row in docs/plan-v1.md's "PR steps" table, and its phase section (tests, "Rules carried")
 - for a v2 step (G1–P7): its row in docs/plan-v2.md's "PR steps" table, its phase under "Phases", and that plan's "Rules that hold across steps" and "Testing rules"
 - for a step with a mini PRD: docs/specs/step-<id>.md, whose Out of scope names the step that owns each gap. A lane reports a gap only when the spec names no owner
@@ -49,8 +49,8 @@ There is no CODING_STANDARDS.md. The rules:
 Tests that exercise only FakeClassifier or monkeypatches, never the real contract, are weak.
 
 ## Gates
-1. `make check`
-2. If the diff touches `src/` or `tests/spark/`: `make spark`
+1. The PR head's `check` job is green (`gh pr checks <n>`): CI is the gate (plan-v2.md, CI).
+2. If the diff touches `src/` or `tests/spark/`: its `spark` job is green too, and the touched Spark test files pass locally (`make spark TEST=<files>`). The full `make spark` took 16 minutes on the Mac against CI's 9 (#195).
 3. If the diff touches a pure module (`source_paths` under `[tool.mutmut]` in pyproject.toml): `make mutate`; surviving mutants in changed lines not on plan-v1.md's equivalent list must be fixed or explained.
 
 ## Running scratch scripts

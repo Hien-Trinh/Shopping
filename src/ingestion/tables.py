@@ -48,9 +48,20 @@ OUTCOMES_PROPERTIES = {
 Record = tuple[str, int, str, Change | None, datetime]
 
 
+BACKFILL = "backfill-"  # a Backfill round's submission id: this, then a UUIDv7 (step-a5.md)
+
+
+def uuid7_at(ms: int) -> uuid.UUID:
+    """A UUIDv7 (RFC 9562) whose 48-bit timestamp is `ms`: version 7, variant 10, 74 random bits.
+    A stand-in for uuid.uuid7(), which is 3.14+; Databricks runs 3.12."""
+    # A uuid4's low 76 bits are already v7's: 12 random, variant 10, 62 random.
+    return uuid.UUID(int=(ms << 80) | (7 << 76) | (uuid.uuid4().int & ((1 << 76) - 1)))
+
+
 def hour(submission_id: str) -> str:
-    """The partition of a Submission's rows: its UUIDv7's millisecond timestamp, to the hour."""
-    ms = uuid.UUID(submission_id).int >> 80
+    """The partition of a Submission's rows, or a Backfill round's: its UUIDv7's millisecond
+    timestamp, to the hour."""
+    ms = uuid.UUID(submission_id.removeprefix(BACKFILL)).int >> 80
     return datetime.fromtimestamp(ms / 1000, UTC).strftime("%Y-%m-%dT%H")
 
 

@@ -18,7 +18,7 @@ jobs:
   # (docs/specs/step-g5.md). Required on main once it has run green there.
   spark:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20  # A5: 8 min 37 s, and each Phase A step adds Spark tests
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0 (no floating major tags)
@@ -28,7 +28,7 @@ jobs:
         with:
           path: ~/.ivy2.5.2
           key: delta-jars-${{ hashFiles('requirements/spark.txt') }}
-      # --durations: the 10 slowest tests, as the job nears its timeout (A4.2: 6 of 10 minutes).
+      # --durations: the 10 slowest tests, as the job nears its timeout (A5: 9 of 20 minutes).
       - run: JAVA_HOME=$JAVA_HOME_21_X64 make spark TEST='tests/spark --durations=10'  # Runtime 18 runs JDK 21; the runner's default is 17
 
   # Every chaos scenario for 60 s at the runner's defaults, ending with the three oracles

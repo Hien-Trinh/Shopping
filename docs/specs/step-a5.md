@@ -1,6 +1,6 @@
 # Step A5: the Backfill as each micro-batch's tail (mini PRD)
 
-Status: draft, Nov 11. Questions 1 and 2 answered Nov 11 (Option A for both); the test points wait for your OK. Plan row: [plan-v2.md, PR steps, A5](../plan-v2.md). Decisions from the [streaming job][t137] (item 5) and v1's Backfill ([step-6c.md](step-6c.md)). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: approved Nov 11: the decisions, the test points and both questions (Option A for both). Plan row: [plan-v2.md, PR steps, A5](../plan-v2.md). Decisions from the [streaming job][t137] (item 5) and v1's Backfill ([step-6c.md](step-6c.md)). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 
@@ -67,7 +67,7 @@ Seeded from lean-review's finder angles.
 6. **No Free Edition check is added.** The tail is plain Spark (a filter, a sort, a union), and the A3 and A4 checks run it on every batch with nothing pending. The PR's branch runs the workflow and cites it in its Evidence, as the plan asks.
 7. **plan-v2 changes, in this spec's PR:** the A5 row names this spec; section C gains question 1's gap.
 
-## Testing decisions (test points for your OK)
+## Testing decisions
 
 - **`tests/spark/test_backfill_tail.py`** (new), in `make spark`, through the real query on `fake`:
   1. An outage, then the classifier back: a batch on `down` flags two Listings; a batch on `fake` with one unrelated Change gives both fake's answer, unflagged. Outcomes gain two `reclassified` rows under one `backfill-…` id, `change_index` 0 and 1 in oldest-first order, in the injected clock's hour. Red: no tail.

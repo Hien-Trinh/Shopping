@@ -127,18 +127,35 @@ def test_a_merchant_change_for_a_picked_key_comes_first_in_the_same_batch(spark,
     ]
 
 
-def test_a_crash_after_the_merge_leaves_the_picks_reclassified_with_no_outcome(spark, tmp_path):
+def test_a_crash_after_the_merge_loses_that_rounds_outcomes_and_the_replay_picks_the_next(
+    spark, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ingest, "LIMIT", 1)
     land(tmp_path, ["init"], commit(0, [up("a", 1), up("b", 1)]))
     run(spark, tmp_path, classify_udf.DOWN)
     land(tmp_path, commit(1, [up("x", 1)]))
-    crash_around(spark, tmp_path, "merge", after=True)
+    crash_around(spark, tmp_path, "merge", after=True)  # its round, "a", landed in the store
+    assert answers(spark, tmp_path) == {"a": FAKES, "b": FLAGGED, "x": FAKES}
+    assert rounds(spark, tmp_path) == []
+    run(spark, tmp_path)  # the replay: "a" is no longer pending, so its round is "b"
     assert answers(spark, tmp_path) == {"a": FAKES, "b": FAKES, "x": FAKES}
-    run(spark, tmp_path)  # the replay: nothing is pending any more
-    assert answers(spark, tmp_path) == {"a": FAKES, "b": FAKES, "x": FAKES}
-    assert [o[1:] for o in outcomes(spark, tmp_path)] == [
+    assert rounds(spark, tmp_path) == [[(ROUND_HOUR, 0, "reclassified")]]  # "a" has no Outcome
+    assert [o[1:] for o in outcomes(spark, tmp_path) if not o[1].startswith("backfill-")] == [
         (submission(0), 0, "written"),
         (submission(0), 1, "written"),
         (submission(1), 0, "already_applied"),  # rule 3; one Outcome row per Merchant Change
+    ]
+
+
+def test_a_batch_with_no_merchant_change_still_runs_its_round(spark, tmp_path):
+    land(tmp_path, ["init"], commit(0, [up("b", 1), up("a", 1)]))
+    run(spark, tmp_path, classify_udf.DOWN)
+    # A retention DELETE's rows start a batch that holds no Change: the round is all it plans.
+    assert land(tmp_path, ["delete", "received_at < '2100-01-01T00:00:00+00:00'"]) == [2]
+    run(spark, tmp_path)
+    assert answers(spark, tmp_path) == {"a": FAKES, "b": FAKES}
+    assert rounds(spark, tmp_path) == [
+        [(ROUND_HOUR, 0, "reclassified"), (ROUND_HOUR, 1, "reclassified")]
     ]
 
 

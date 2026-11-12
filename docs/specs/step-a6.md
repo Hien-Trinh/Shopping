@@ -1,6 +1,6 @@
 # Step A6: liveness (mini PRD)
 
-Status: draft, Nov 11. Question 1 is answered (Option A); the test points wait for your OK. Plan row: [plan-v2.md, PR steps, A6](../plan-v2.md). Decisions from the [streaming job][t137] (item 8), [events and oracles][t160] (items 2 and 5) and the [Oct 28 review][t166] (items 2 and 13). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: approved Nov 11: the decisions, the test points and question 1 (Option A). Plan row: [plan-v2.md, PR steps, A6](../plan-v2.md). Decisions from the [streaming job][t137] (item 8), [events and oracles][t160] (items 2 and 5) and the [Oct 28 review][t166] (items 2 and 13). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 
@@ -73,7 +73,7 @@ Seeded from lean-review's finder angles.
 7. **The job's settings are recorded here, not coded.** C2's Terraform applies them: `max_retries` = 3 (fault-1 firings + 3 in a paid run), `min_retry_interval_millis` = 30,000, an email on run failure, and a `STREAMING_BACKLOG_BYTES` health rule above 12 MB (1.5 × `ingest.MAX_BYTES`), a notice and not a gate.
 8. **plan-v2 changes, in this spec's PR:** the A6 row names this spec.
 
-## Testing decisions (test points for your OK)
+## Testing decisions
 
 - **`tests/unit/test_liveness.py`** (new), in `make check`, with fake queries and an injected clock, no sleep:
   1. A query whose trigger stays active with no new progress past the limit: `watch` raises `Stalled`, which names the query. Its `stop()` was called, and a `stop()` that never returns does not hold the raise. Red: no module.

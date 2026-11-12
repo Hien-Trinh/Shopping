@@ -9,7 +9,9 @@ watches the query and prints its diagnostics, one JSON line each (step-a6.md).
 """
 
 import argparse
+import contextlib
 import json
+import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -149,6 +151,15 @@ def append_outcomes(path: str, outcomes: DataFrame, query_id: str, batch_id: int
     writer.option("txnAppId", query_id).option("txnVersion", batch_id).save(path)
 
 
+def say(line: dict | str) -> None:
+    """One diagnostic line on stdout. One write, so the batch's thread and the listener's can't
+    mix two lines. A stdout that fails loses the line: it must not fail a batch after its MERGE."""
+    text = line if isinstance(line, str) else json.dumps(line)
+    with contextlib.suppress(OSError):
+        sys.stdout.write(f"{text}\n")
+        sys.stdout.flush()
+
+
 def apply_batch(
     data: str,
     classifier: classify_udf.Spec,
@@ -185,8 +196,7 @@ def apply_batch(
             query_id = _query_id(spark, f"{data}/checkpoints/ingest")
             append_outcomes(f"{data}/outcomes", outcomes, query_id, batch_id)
         # A diagnostic (rule 6): a crash loses it, and a replay prints its own.
-        line = {"type": "batch", "batch_id": batch_id, "writes": planned, "round": len(picks)}
-        print(json.dumps(line), flush=True)
+        say({"type": "batch", "batch_id": batch_id, "writes": planned, "round": len(picks)})
     finally:
         plan.unpersist()
 
@@ -267,14 +277,13 @@ class Progress(StreamingQueryListener):
         pass
 
     def onQueryProgress(self, event) -> None:
-        print(event.progress.json, flush=True)
+        say(event.progress.json)
 
     def onQueryIdle(self, event) -> None:
         pass
 
     def onQueryTerminated(self, event) -> None:
-        line = {"type": "terminated", "id": str(event.id), "exception": event.exception}
-        print(json.dumps(line), flush=True)
+        say({"type": "terminated", "id": str(event.id), "exception": event.exception})
 
 
 def main(argv: Sequence[str] | None = None) -> None:

@@ -2,14 +2,15 @@
 (docs/specs/step-a6.md)."""
 
 import json
+import sys
 import threading
 import time
 
 import pytest
 from support import up
-from test_ingest import commit, land, outcomes, store_rows
+from test_ingest import commit, land, outcomes, run, store_rows
 
-from ingestion import ingest, liveness
+from ingestion import classify_udf, ingest, liveness
 
 
 def main(data, *more: str) -> None:
@@ -76,3 +77,44 @@ def test_a_run_prints_each_batchs_progress_its_batch_line_and_the_querys_end(
     ]
     ends = [line for line in lines if line.get("type") == "terminated"]
     assert ends == [{"type": "terminated", "id": progress[0]["id"], "exception": None}]
+
+
+def batch_lines(capsys) -> list[dict]:
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    return [line for line in lines if line["type"] == "batch"]
+
+
+DELETE = ["delete", "received_at < '2100-01-01T00:00:00+00:00'"]  # a retention DELETE's batch
+
+
+def test_the_batch_line_counts_a_backfill_round_and_prints_for_a_batch_with_no_outcome(
+    spark, tmp_path, capsys
+):
+    flagged, plain = tmp_path / "flagged", tmp_path / "plain"
+    land(flagged, ["init"], commit(0, [up("a", 1), up("b", 1)]))
+    run(spark, flagged, classify_udf.DOWN)
+    land(flagged, DELETE)
+    run(spark, flagged)  # no Change, and a round of the two flagged Listings
+    assert batch_lines(capsys) == [
+        {"type": "batch", "batch_id": 0, "writes": 2, "round": 0},
+        {"type": "batch", "batch_id": 1, "writes": 2, "round": 2},
+    ]
+    land(plain, ["init"], commit(0, [up("a", 1)]))
+    run(spark, plain)
+    land(plain, DELETE)
+    run(spark, plain)  # no Change and nothing pending: no Outcome, and still a line
+    assert batch_lines(capsys)[-1] == {"type": "batch", "batch_id": 1, "writes": 0, "round": 0}
+
+
+def test_a_stdout_that_fails_loses_the_line_and_not_the_batch(spark, tmp_path, monkeypatch):
+    class Broken:
+        def write(self, text):
+            raise BrokenPipeError
+
+        flush = write
+
+    land(tmp_path, ["init"], commit(0, [up("a", 1)]))
+    monkeypatch.setattr(sys, "stdout", Broken())
+    run(spark, tmp_path)
+    monkeypatch.undo()
+    assert len(store_rows(spark, tmp_path)) == 1 and len(outcomes(spark, tmp_path)) == 1

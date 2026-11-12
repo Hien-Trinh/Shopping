@@ -6,23 +6,10 @@ import threading
 import time
 
 import pytest
-from pyspark.sql.streaming import StreamingQueryManager
 from support import up
 from test_ingest import commit, land, outcomes, store_rows
 
 from ingestion import ingest, liveness
-
-
-@pytest.fixture(autouse=True)
-def listeners(spark, monkeypatch):
-    """main adds a listener to the one shared session: take each off again."""
-    added, add = [], StreamingQueryManager.addListener
-    monkeypatch.setattr(
-        StreamingQueryManager, "addListener", lambda self, it: (added.append(it), add(self, it))[1]
-    )
-    yield
-    for listener in added:
-        spark.streams.removeListener(listener)
 
 
 def main(data, *more: str) -> None:

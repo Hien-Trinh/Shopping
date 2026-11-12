@@ -22,7 +22,7 @@ class Query:
     whether a trigger runs, `ends` when the query ends, `error` what it ends with."""
 
     def __init__(self, clock, name, *, batch_at=lambda t: None, active=True, ends=None, error=None):
-        self.clock, self.name, self.id = clock, name, f"id-{name}"
+        self.clock, self.name, self.id = clock, name, f"q{id(self)}"
         self.batch_at, self.active, self.ends, self.error = batch_at, active, ends, error
         self.stopped = threading.Event()
 
@@ -55,6 +55,8 @@ def test_a_trigger_active_past_the_limit_with_no_batch_raises_without_waiting_fo
         liveness.watch([query], limit=LIMIT, clock=clock)
     assert LIMIT < clock.now <= LIMIT + 10
     assert query.stopped.wait(5)
+    # Daemons: a stop() that never returns must not hold the process open.
+    assert all(t.daemon for t in threading.enumerate() if t is not threading.main_thread())
 
 
 @pytest.mark.parametrize(
@@ -80,9 +82,10 @@ def test_a_batch_that_finishes_just_under_the_limit_restarts_the_timer():
 
 def test_one_stalled_query_fires_while_the_other_finishes_batches():
     clock = Clock()
-    stuck, busy = Query(clock, "export"), Query(clock, "ingest", batch_at=int)
-    with pytest.raises(liveness.Stalled, match="export"):
+    stuck, busy = Query(clock, None), Query(clock, "ingest", batch_at=int)
+    with pytest.raises(liveness.Stalled, match=stuck.id):  # a query with no name: its id
         liveness.watch([busy, stuck], limit=LIMIT, clock=clock)
+    assert LIMIT < clock.now <= LIMIT + 10  # the two share one poll
     assert stuck.stopped.wait(5) and busy.stopped.wait(5)  # every query is stopped
 
 

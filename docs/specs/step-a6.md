@@ -1,6 +1,6 @@
 # Step A6: liveness (mini PRD)
 
-Status: draft, Nov 11. Question 1 and the test points wait for your OK. Plan row: [plan-v2.md, PR steps, A6](../plan-v2.md). Decisions from the [streaming job][t137] (item 8), [events and oracles][t160] (items 2 and 5) and the [Oct 28 review][t166] (items 2 and 13). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: draft, Nov 11. Question 1 is answered (Option A); the test points wait for your OK. Plan row: [plan-v2.md, PR steps, A6](../plan-v2.md). Decisions from the [streaming job][t137] (item 8), [events and oracles][t160] (items 2 and 5) and the [Oct 28 review][t166] (items 2 and 13). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 
@@ -68,7 +68,7 @@ Seeded from lean-review's finder angles.
 2. **"Input waits" means a trigger is active** (fact 1). The plan says the watchdog fires "when no batch finishes in 10 minutes while input waits". A stuck batch has input by definition, and an idle query has no active trigger.
 3. **The watchdog raises without waiting for `stop()`** (fact 3). It calls `stop()` on every query, each on a daemon thread, then raises.
 4. **`ingest.Progress`, the listener:** `onQueryProgress` prints `event.progress.json`; `onQueryTerminated` prints one line with the query's id and its exception; the other two do nothing. `main` adds it before the query starts. Lines go to stdout, which cluster log delivery copies to the volume ([events and oracles][t160]).
-5. **The `batch` line** (question 1), printed by `apply_batch` after the Outcomes append: `{"type": "batch", "batch_id": …, "writes": …, "round": …}`. Both counts are ones the batch already holds, so the line adds no Spark job.
+5. **The `batch` line** (question 1, Option A), printed by `apply_batch` after the Outcomes append: `{"type": "batch", "batch_id": …, "writes": …, "round": …}`. Both counts are ones the batch already holds, so the line adds no Spark job.
 6. **`main`:** `--watchdog SECONDS`, 600 by default. `awaitTermination()` becomes `liveness.watch([query], limit=a.watchdog)`.
 7. **The job's settings are recorded here, not coded.** C2's Terraform applies them: `max_retries` = 3 (fault-1 firings + 3 in a paid run), `min_retry_interval_millis` = 30,000, an email on run failure, and a `STREAMING_BACKLOG_BYTES` health rule above 12 MB (1.5 × `ingest.MAX_BYTES`), a notice and not a gate.
 8. **plan-v2 changes, in this spec's PR:** the A6 row names this spec.
@@ -96,7 +96,7 @@ Seeded from lean-review's finder angles.
    - **Option A (recommended): only what the driver already holds.** Spark's progress line gives the batch's size, duration and backlog. The `batch` line adds the Write count and the round's size. Classifier failures show in the table: the check job (A9) computes the Uncategorized rate from the Listing Store. Cost: the log doesn't say which batch a classifier outage started in.
    - **Option B: also count failures and totals.** After the MERGE, the batch reads its keys back and counts the rows left flagged, and one aggregate counts every flagged and outdated row. Cost: two more Spark jobs per batch, about 25 more lines, and the totals scan grows with the store.
 
-   **Answer:**
+   **Answer (Nov 11): only what the driver holds.**
 
 ## Out of scope
 
@@ -110,7 +110,7 @@ Seeded from lean-review's finder angles.
 
 ## Size
 
-About 85 changed lines, tests left out, so one PR: `liveness.py` about 45, `ingest.py` about 35 (the listener, the `batch` line, `main`), plan-v2 about 2. About 170 of tests. A1 to A4 came in 22–109% over their estimates and A5 on its estimate, so this may reach about 180, under the cap. Option B of question 1 adds about 25.
+About 85 changed lines, tests left out, so one PR: `liveness.py` about 45, `ingest.py` about 35 (the listener, the `batch` line, `main`), plan-v2 about 2. About 170 of tests. A1 to A4 came in 22–109% over their estimates and A5 on its estimate, so this may reach about 180, under the cap.
 
 [t137]: https://github.com/Hien-Trinh/Shopping/issues/137
 [t160]: https://github.com/Hien-Trinh/Shopping/issues/160

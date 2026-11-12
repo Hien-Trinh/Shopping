@@ -6,7 +6,7 @@ export UV_LOCKED := 1
 JAVA_HOME ?= $(shell /usr/libexec/java_home -v 21 2>/dev/null)
 export JAVA_HOME
 
-PURE := src/ingestion/keys.py,src/ingestion/envelope.py,src/ingestion/plan.py,src/ingestion/replay.py,src/ingestion/status.py,src/ingestion/collapse.py
+PURE := src/ingestion/keys.py,src/ingestion/envelope.py,src/ingestion/plan.py,src/ingestion/replay.py,src/ingestion/status.py,src/ingestion/collapse.py,src/ingestion/liveness.py
 
 .PHONY: check lint test hooks mutate repeat bench requirements spark spark-env
 

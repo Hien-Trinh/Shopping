@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
+from pyspark.sql.streaming import StreamingQueryManager
 
 RUNTIME = Path(__file__).parents[2] / "requirements" / "runtime-18.txt"
 
@@ -42,3 +43,16 @@ def spark():
     assert java == "21", f"Runtime 18 runs JDK 21, and this JVM is {java}: set JAVA_HOME"
     yield session
     session.stop()
+
+
+@pytest.fixture(autouse=True)
+def listeners(spark, monkeypatch):
+    """`ingest.main` adds a listener to the one shared session: take each off after its test, or
+    every later query's lines print once per listener left behind."""
+    added, add = [], StreamingQueryManager.addListener
+    monkeypatch.setattr(
+        StreamingQueryManager, "addListener", lambda self, it: (added.append(it), add(self, it))[1]
+    )
+    yield
+    for listener in added:
+        spark.streams.removeListener(listener)

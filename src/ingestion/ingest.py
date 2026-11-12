@@ -4,10 +4,14 @@ micro-batch at a time (docs/specs/step-a2.md).
 A batch plans, MERGEs, then appends its Outcomes, and the Spark checkpoint commits after that. A
 crash anywhere replays the batch, and v1's replay rule makes that safe (plan-v2.md, rule 3). The
 MERGE's source classifies the Writes the plan marked, on the executors (step-a4.md). Each batch
-ends with a Backfill round: its picks join the plan as `op=reclassify` rows (step-a5.md).
+ends with a Backfill round: its picks join the plan as `op=reclassify` rows (step-a5.md). `main`
+watches the query and prints its diagnostics, one JSON line each (step-a6.md).
 """
 
 import argparse
+import contextlib
+import json
+import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -26,10 +30,20 @@ from pyspark.errors import AnalysisException, PySparkAttributeError
 from pyspark.sql import DataFrame, Row, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.pandas.types import from_arrow_schema
-from pyspark.sql.streaming import StreamingQuery
+from pyspark.sql.streaming import StreamingQuery, StreamingQueryListener
 from pyspark.sql.types import StructField, StructType
 
-from ingestion import classify, classify_udf, decide, entry, landing, state, store, tables
+from ingestion import (
+    classify,
+    classify_udf,
+    decide,
+    entry,
+    landing,
+    liveness,
+    state,
+    store,
+    tables,
+)
 
 MAX_BYTES = 8_000_000  # a batch is this plus one commit; P4 retunes it (step-a2.md, question 2)
 MAX_FILES = 100_000  # so the byte cap binds
@@ -137,6 +151,15 @@ def append_outcomes(path: str, outcomes: DataFrame, query_id: str, batch_id: int
     writer.option("txnAppId", query_id).option("txnVersion", batch_id).save(path)
 
 
+def say(line: dict | str) -> None:
+    """One diagnostic line on stdout. One write, so the batch's thread and the listener's can't
+    mix two lines. A stdout that fails loses the line: it must not fail a batch after its MERGE."""
+    text = line if isinstance(line, str) else json.dumps(line)
+    with contextlib.suppress(OSError):
+        sys.stdout.write(f"{text}\n")
+        sys.stdout.flush()
+
+
 def apply_batch(
     data: str,
     classifier: classify_udf.Spec,
@@ -166,11 +189,14 @@ def apply_batch(
         writes = plan.filter("submission_id IS NULL").select(
             *(f.name for f in _WRITE), "needs_classify"
         )
-        merge(listing_store, classify_udf.classified(writes, classifier, slots), writes.count())
+        planned = writes.count()
+        merge(listing_store, classify_udf.classified(writes, classifier, slots), planned)
         outcomes = plan.filter("submission_id IS NOT NULL").select(*tables.OUTCOMES.names)
         if not outcomes.isEmpty():  # a retention DELETE's batch: an empty append would still commit
             query_id = _query_id(spark, f"{data}/checkpoints/ingest")
             append_outcomes(f"{data}/outcomes", outcomes, query_id, batch_id)
+        # A diagnostic (rule 6): a crash loses it, and a replay prints its own.
+        say({"type": "batch", "batch_id": batch_id, "writes": planned, "round": len(picks)})
     finally:
         plan.unpersist()
 
@@ -244,6 +270,22 @@ def _holds_batch(spark: SparkSession, log: str) -> bool:
         return False
 
 
+class Progress(StreamingQueryListener):
+    """Each finished batch's progress and each query's end, as one JSON line on stdout."""
+
+    def onQueryStarted(self, event) -> None:
+        pass
+
+    def onQueryProgress(self, event) -> None:
+        say(event.progress.json)
+
+    def onQueryIdle(self, event) -> None:
+        pass
+
+    def onQueryTerminated(self, event) -> None:
+        say({"type": "terminated", "id": str(event.id), "exception": event.exception})
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     args = argparse.ArgumentParser(prog="python -m ingestion.ingest")
     # A string: Path would turn abfss://c@a/x into abfss:/c@a/x.
@@ -251,10 +293,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     fakes = {"fake": classify_udf.FAKE, "down": classify_udf.DOWN}
     args.add_argument("--classifier", choices=("student", *fakes), default="student")
     args.add_argument("--models", type=Path, default=classify.MODELS)  # with train/ beside it
+    args.add_argument("--watchdog", type=float, default=600, metavar="SECONDS")
     a = args.parse_args(argv)
     classifier = fakes.get(a.classifier) or classify_udf.Spec.student(a.models)
     spark = SparkSession.builder.getOrCreate()
-    start(spark, a.data, trigger=TRIGGER, classifier=classifier).awaitTermination()
+    spark.streams.addListener(Progress())
+    query = start(spark, a.data, trigger=TRIGGER, classifier=classifier)
+    liveness.watch([query], limit=a.watchdog)
 
 
 if __name__ == "__main__":

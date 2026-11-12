@@ -71,7 +71,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.mutmut]
 # Pure modules only (plan-v1.md, Testing rules); run with `make mutate`.
-source_paths = ["src/ingestion/keys.py", "src/ingestion/envelope.py", "src/ingestion/plan.py", "src/ingestion/replay.py", "src/ingestion/status.py", "src/ingestion/collapse.py"]
+source_paths = ["src/ingestion/keys.py", "src/ingestion/envelope.py", "src/ingestion/plan.py", "src/ingestion/replay.py", "src/ingestion/status.py", "src/ingestion/collapse.py", "src/ingestion/liveness.py"]
 # test_decide imports non-pure modules, which the mutants tree doesn't hold
 pytest_add_cli_args_test_selection = ["tests/unit/", "--ignore=tests/unit/test_decide.py"]
 also_copy = ["tests/"]

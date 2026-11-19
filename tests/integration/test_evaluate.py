@@ -737,6 +737,17 @@ def test_a_worker_kind_the_eval_cannot_build_is_a_usage_error(kind, capsys):
     assert e.value.code == 2 and "invalid choice" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("kind", ["jev", "laya-shortlist", "bogus", ""])
+def test_candidate_refuses_a_kind_outside_candidates(kind, monkeypatch, tmp_path):
+    from ingestion import student
+
+    monkeypatch.setattr(evaluate.classify, "fastembed", lambda models: None)
+    monkeypatch.setattr(student, "load_training", lambda: [])
+    monkeypatch.setattr(student.StudentClassifier, "train", lambda *a, cache: ("trained", a[3]))
+    with pytest.raises(ValueError, match=kind or "''"):
+        evaluate.candidate(kind, tmp_path)
+
+
 def test_each_candidate_reaches_its_own_branch(monkeypatch, tmp_path):
     from ingestion import jev, student
 

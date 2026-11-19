@@ -173,7 +173,7 @@ Merchants stay in SQLite. It handles several processes writing (in WAL mode), an
 | --- | --- | --- | --- |
 | `check` | `ubuntu-latest` | `make check`: ruff, unit, integration, both coverage gates, and the Python/DuckDB hash equivalence test | From Phase 0: every PR and every push to `main` (required) |
 | `stress-smoke` | `ubuntu-latest` | 60 s of every chaos scenario at low rate, ending with the three oracles | From Phase 7: every PR (required) |
-| `model` | `macos-latest` (Apple Silicon) | Tests marked `model` (MLX/Laya and the real embedding model), with the model cached | From Phase 6: PRs that touch `classify*`, `taxonomy*`, `eval/` or dependencies (required, skipped otherwise) |
+| `model` | `macos-latest` (Apple Silicon) | Tests marked `model` (the real embedding model), with the model cached | From Phase 6: PRs that touch `classify*`, `taxonomy*`, `eval/` or dependencies (required, skipped otherwise) |
 | full stress / eval | local Mac | Full Phase 7 scenarios and the classifier eval | Before a release, run by hand. CI runners are too small to mean anything |
 
 Details that matter:
@@ -217,7 +217,6 @@ src/catalog/
   collapse.py     change-feed rows → latest row per key, tombstone → delete            [pure]
   classify.py     Classifier protocol, threshold, EmbeddingClassifier, FakeClassifier
   classifiers.py  a worker's classifier by `--classifier` kind, the version each stamps, `--download`
-  laya.py         LayaClassifier for the eval (hierarchical or shortlist), laya-mlx chooser
   jev.py          JevClassifier (embedding shortlist, then Jev): the workers' `--classifier jev` and an eval candidate; TypeSafe HTTP call
   student.py      the student (kNN over the fine-tuned encoder's vectors): the workers' `--classifier student` (`pipeline`, the index built by `--download`, the version), the eval candidates and the report
   evaluate.py     the classifier eval: labeled set, sample, run, score, report

@@ -472,12 +472,14 @@ def candidate(
         from ingestion import student
 
         return student.finetuned(tax, models, kind.removeprefix("student-"))
-    from ingestion import student
+    if kind.startswith("student-"):
+        from ingestion import student
 
-    return student.StudentClassifier.train(
-        tax, classify.fastembed(models), student.load_training(), kind.removeprefix("student-"),
-        cache=models / "student",
-    )  # fmt: skip
+        return student.StudentClassifier.train(
+            tax, classify.fastembed(models), student.load_training(), kind.removeprefix("student-"),
+            cache=models / "student",
+        )  # fmt: skip
+    raise ValueError(f"no candidate {kind!r}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:

@@ -98,4 +98,4 @@ From 6i: research every `confident: false`, every `none`, and a random 50–100 
 - Read each reviewer's reply: one 6l.2 Sonnet agent said it labeled from titles with quick searches only, so its batch went to a fresh agent. Another answered `none` for 13 films, missing `Media > Videos`; the disagreement step catches that, since a `none` never overrides.
 
 - In a worktree, `models/` is empty: pass `--models /path/to/main/checkout/models` to `evaluate run` rather than downloading again.
-- The eval name of the Jev candidate is `jev-shortlist`; plain `jev` (the worker's name) falls through to Laya and fails with "Laya won't load".
+- The eval name of the Jev candidate is `jev-shortlist`; plain `jev` (the worker's name) is not a choice, and `evaluate run` stops with "invalid choice".

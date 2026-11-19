@@ -147,7 +147,7 @@ class EmbeddingClassifier(Classifier):
 
     def top(self, listings: Sequence[Content], k: int) -> list[list[str]]:
         """Each Listing's `k` most similar paths, most similar first, with no budget: the
-        shortlist a Laya or Jev choice picks from (step-6e.md)."""
+        shortlist a Jev choice picks from (step-6e.md)."""
         out = []
         for i in range(0, len(listings), self.chunk):
             for row in self._similarity(listings[i : i + self.chunk]):

@@ -477,21 +477,6 @@ def test_a_negative_description_or_no_items_per_category_is_a_usage_error(argv):
     assert e.value.code == 2
 
 
-def test_the_laya_candidates_run_without_a_threshold(monkeypatch):
-    from ingestion import laya
-
-    monkeypatch.setattr(
-        evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
-    )
-    monkeypatch.setattr(laya, "mlx", lambda models: lambda text, options: [1.0] * len(options))
-    hierarchical = evaluate.candidate("laya-hierarchical", None, description=200)
-    assert hierarchical.mode == "hierarchical" and hierarchical.description == 200
-    shortlist = evaluate.candidate("laya-shortlist", None, description=200)
-    assert shortlist.mode == "shortlist" and shortlist.description == 200
-    assert shortlist.shortlist.threshold == 0.0 and shortlist.shortlist.budget == math.inf
-    assert shortlist.shortlist.description == 200
-
-
 def test_the_jev_candidate_shortlists_with_the_embedding(monkeypatch):
     from ingestion import jev
 
@@ -511,16 +496,14 @@ def test_the_jev_candidate_shortlists_with_the_embedding(monkeypatch):
     assert got.pool._max_workers == 1  # one call at a time: latency per Listing
 
 
-def test_shortlist_sets_the_jev_and_laya_shortlist_length(monkeypatch):
-    from ingestion import jev, laya
+def test_shortlist_sets_the_jev_shortlist_length(monkeypatch):
+    from ingestion import jev
 
     monkeypatch.setattr(
         evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
     )
     monkeypatch.setattr(jev, "http", lambda: lambda body: {})
-    monkeypatch.setattr(laya, "mlx", lambda models: lambda text, options: [1.0] * len(options))
     assert evaluate.candidate("jev-shortlist", None, shortlist=50).k == 50
-    assert evaluate.candidate("laya-shortlist", None, shortlist=50).k == 50
     assert evaluate.candidate("jev-shortlist", None).k == 10
 
 
@@ -749,19 +732,18 @@ def test_misses_refuses_a_result_whose_shortlist_used_other_texts():
 
 @pytest.mark.parametrize("kind", ["jev", "student", "down"])
 def test_a_worker_kind_the_eval_cannot_build_is_a_usage_error(kind, capsys):
-    with pytest.raises(SystemExit) as e:  # it once loaded the Laya model and failed there
+    with pytest.raises(SystemExit) as e:  # it once fell through to another candidate's branch
         evaluate.main(["run", "--classifier", kind])
     assert e.value.code == 2 and "invalid choice" in capsys.readouterr().err
 
 
 def test_each_candidate_reaches_its_own_branch(monkeypatch, tmp_path):
-    from ingestion import jev, laya, student
+    from ingestion import jev, student
 
     monkeypatch.setattr(
         evaluate.classify, "fastembed", lambda models: lambda texts: [[1.0, 0.0]] * len(texts)
     )
     monkeypatch.setattr(jev, "http", lambda: lambda body: {})
-    monkeypatch.setattr(laya, "mlx", lambda models: lambda text, options: [1.0] * len(options))
     monkeypatch.setattr(student, "finetuned", lambda tax, models, kind: ("finetuned", kind))
     monkeypatch.setattr(student, "load_training", lambda: [])
     monkeypatch.setattr(student.StudentClassifier, "train", lambda *a, cache: ("trained", a[3]))
@@ -774,8 +756,6 @@ def test_each_candidate_reaches_its_own_branch(monkeypatch, tmp_path):
     assert {k: built(evaluate.candidate(k, tmp_path)) for k in evaluate.CANDIDATES} == {
         "fake": ("FakeClassifier", None),
         "embedding": ("EmbeddingClassifier", None),
-        "laya-hierarchical": ("LayaClassifier", "hierarchical"),
-        "laya-shortlist": ("LayaClassifier", "shortlist"),
         "jev-shortlist": ("JevClassifier", None),
         "student-softmax": ("trained", "softmax"),
         "student-knn": ("trained", "knn"),

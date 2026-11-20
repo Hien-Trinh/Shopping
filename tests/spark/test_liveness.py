@@ -7,14 +7,28 @@ import threading
 import time
 
 import pytest
+from pyspark.errors import StreamingQueryException
 from support import up
-from test_ingest import commit, land, outcomes, run, store_rows
+from test_ingest import commit, fingerprints, land, outcomes, run, store_rows, version
 
-from ingestion import classify_udf, ingest, liveness
+from ingestion import change_export, classify_udf, ingest, liveness, replay
 
 
 def main(data, *more: str) -> None:
     ingest.main(["--data", str(data), "--classifier", "fake", *more])
+
+
+@pytest.fixture(autouse=True)
+def no_query_left(spark):
+    """`main` returns when one query ends, and the process then exits. Here the session lives on,
+    so the other query is stopped: a second `main` can't start a name that is still active."""
+    yield
+    stop_queries(spark)
+
+
+def stop_queries(spark) -> None:
+    for query in spark.streams.active:
+        query.stop()
 
 
 def wait_until(done, seconds: float = 30.0) -> None:
@@ -46,7 +60,9 @@ def test_a_hung_batch_fails_the_run_and_a_restart_lands_it(spark, tmp_path, monk
         wait_until(lambda: not spark.streams.active)  # the watchdog's stop() returns now
     monkeypatch.setattr(ingest, "TRIGGER", {"availableNow": True})
     main(hung)  # the restart, from the checkpoint
+    wait_until(lambda: not spark.streams.active)  # main returns when the first query ends
     main(plain)
+    wait_until(lambda: not spark.streams.active)
     assert len(store_rows(spark, hung)) == 2
     assert store_rows(spark, hung) == store_rows(spark, plain)
     assert outcomes(spark, hung) == outcomes(spark, plain)
@@ -63,10 +79,11 @@ def test_a_run_prints_each_batchs_progress_its_batch_line_and_the_querys_end(
     def ended() -> bool:  # the listener's events come after the query ends
         printed = capsys.readouterr().out.splitlines()
         lines.extend(json.loads(line) for line in printed if line.startswith("{"))
-        return any(line.get("type") == "terminated" for line in lines)
+        ran = [line["id"] for line in lines if line.get("name") == "ingest"]
+        return any(line.get("type") == "terminated" and line["id"] in ran for line in lines)
 
-    wait_until(ended)
-    progress = [line for line in lines if line.get("numInputRows")]
+    wait_until(ended)  # the ingest query's end: the export query can end first
+    progress = [line for line in lines if line.get("numInputRows") and line["name"] == "ingest"]
     assert len(progress) == 1  # one batch held the two Changes
     # 4 for the two Changes: the batch reads its input twice (the keys, the plan), and Spark
     # seems to count each read. A size to read by eye, not a fact (rule 6).
@@ -76,12 +93,13 @@ def test_a_run_prints_each_batchs_progress_its_batch_line_and_the_querys_end(
         {"type": "batch", "batch_id": 0, "writes": 2, "round": 0}
     ]
     ends = [line for line in lines if line.get("type") == "terminated"]
-    assert ends == [{"type": "terminated", "id": progress[0]["id"], "exception": None}]
+    assert {"type": "terminated", "id": progress[0]["id"], "exception": None} in ends
+    assert len(ends) <= 2  # the export query's too, if it ended before the lines were read
 
 
 def batch_lines(capsys) -> list[dict]:
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    return [line for line in lines if line["type"] == "batch"]
+    return [line for line in lines if line.get("type") == "batch"]
 
 
 DELETE = ["delete", "received_at < '2100-01-01T00:00:00+00:00'"]  # a retention DELETE's batch
@@ -118,3 +136,62 @@ def test_a_stdout_that_fails_loses_the_line_and_not_the_batch(spark, tmp_path, m
     run(spark, tmp_path)
     monkeypatch.undo()
     assert len(store_rows(spark, tmp_path)) == 1 and len(outcomes(spark, tmp_path)) == 1
+
+
+def test_main_runs_the_export_query_and_prints_its_line(spark, tmp_path, monkeypatch, capsys):
+    land(tmp_path, ["init"], commit(0, [up("a", 1), up("b", 1)]))
+    monkeypatch.setattr(ingest, "TRIGGER", {"processingTime": "2 seconds"})
+    job = threading.Thread(target=main, args=(tmp_path,), daemon=True)
+    job.start()
+    lines: list[dict] = []
+
+    def exported() -> bool:
+        printed = capsys.readouterr().out.splitlines()
+        lines.extend(json.loads(line) for line in printed if line.startswith("{"))
+        return any(line.get("type") == "export" for line in lines)
+
+    wait_until(exported)
+    (line,) = (line for line in lines if line.get("type") == "export")
+    head = version(spark, tmp_path / "listing_store")
+    assert line == {
+        "type": "export",
+        "batch_id": line["batch_id"],
+        "from": 1,
+        "to": head,
+        "rows": 2,
+    }
+    assert {q.name for q in spark.streams.active} == {"ingest", "export"}
+    stop_queries(spark)  # as a cancelled run: main returns
+    job.join(30)
+    assert not job.is_alive()
+    assert replay.replay_exports(change_export.files(spark, str(tmp_path))) == replay.live(
+        fingerprints(spark, tmp_path)
+    )
+
+
+def test_a_failed_export_query_fails_main(spark, tmp_path, monkeypatch):
+    def failing(*args):
+        raise RuntimeError("the export failed")
+
+    land(tmp_path, ["init"], commit(0, [up("a", 1)]))
+    monkeypatch.setattr(ingest, "TRIGGER", {"processingTime": "2 seconds"})
+    monkeypatch.setattr(change_export, "apply_batch", failing)
+    with pytest.raises(StreamingQueryException, match="the export failed"):
+        main(tmp_path)
+    assert len(store_rows(spark, tmp_path)) == 1  # the ingest query was not the one that failed
+
+
+def test_a_hung_export_batch_fails_the_run_by_its_name(spark, tmp_path, monkeypatch):
+    release = threading.Event()
+
+    def hanging(*args):
+        release.wait()
+        raise RuntimeError("released after the stall")
+
+    land(tmp_path, ["init"], commit(0, [up("a", 1)]))
+    monkeypatch.setattr(ingest, "TRIGGER", {"processingTime": "2 seconds"})
+    monkeypatch.setattr(change_export, "apply_batch", hanging)
+    with pytest.raises(liveness.Stalled, match="query export"):
+        main(tmp_path, "--watchdog", "3")
+    release.set()
+    wait_until(lambda: not spark.streams.active)  # the watchdog stopped both

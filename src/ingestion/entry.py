@@ -8,6 +8,7 @@ interpreter shutdown.
 
 import argparse
 import contextlib
+import json
 import os
 import signal
 import sys
@@ -146,3 +147,12 @@ def _stop_on_signals() -> threading.Event:
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
     return stop
+
+
+def say(line: dict | str) -> None:
+    """One diagnostic line on stdout. One write, so the batch's thread and the listener's can't
+    mix two lines. A stdout that fails loses the line: it must not fail a batch after its MERGE."""
+    text = line if isinstance(line, str) else json.dumps(line)
+    with contextlib.suppress(OSError):
+        sys.stdout.write(f"{text}\n")
+        sys.stdout.flush()

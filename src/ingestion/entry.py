@@ -151,8 +151,9 @@ def _stop_on_signals() -> threading.Event:
 
 def say(line: dict | str) -> None:
     """One diagnostic line on stdout. One write, so the batch's thread and the listener's can't
-    mix two lines. A stdout that fails loses the line: it must not fail a batch after its MERGE."""
+    mix two lines. A stdout that fails loses the line: it must not fail a batch after its write.
+    A closed stdout raises ValueError, not OSError."""
     text = line if isinstance(line, str) else json.dumps(line)
-    with contextlib.suppress(OSError):
+    with contextlib.suppress(OSError, ValueError):
         sys.stdout.write(f"{text}\n")
         sys.stdout.flush()

@@ -135,3 +135,15 @@ def test_a_second_signal_does_not_start_a_second_stopper(tmp_path, monkeypatch):
     for h in handlers.values():
         h(0, None)
     assert stop.is_set() and len(started) == 1
+
+
+@pytest.mark.parametrize("error", [BrokenPipeError, ValueError], ids=["a broken pipe", "closed"])
+def test_a_stdout_that_fails_loses_the_line_and_raises_nothing(monkeypatch, error):
+    class Broken:
+        def write(self, text):
+            raise error
+
+        flush = write
+
+    monkeypatch.setattr(sys, "stdout", Broken())
+    entry.say({"type": "batch"})  # a batch calls this after its write: it must return

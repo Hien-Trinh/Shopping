@@ -1,6 +1,7 @@
 """Change Export on real Spark: the export query over a Listing Store that the ingest query
 writes (docs/specs/step-a7.md)."""
 
+import json
 import re
 import shutil
 from pathlib import Path
@@ -48,7 +49,9 @@ def crash_after_the_write(spark, data: Path) -> None:
             export(spark, data)
 
 
-def test_the_files_replay_to_the_live_store_and_each_is_its_ranges_collapse(spark, tmp_path):
+def test_the_files_replay_to_the_live_store_and_each_is_its_ranges_collapse(
+    spark, tmp_path, capsys
+):
     store = str(tmp_path / "listing_store")
     land(tmp_path, ["init"])
     run(spark, tmp_path)  # creates the store, empty
@@ -73,12 +76,16 @@ def test_the_files_replay_to_the_live_store_and_each_is_its_ranges_collapse(spar
         "a": "upsert", "b": "delete", "c": "upsert", "d": "delete", "e": "upsert"
     }  # fmt: skip
     assert by_key["c"]["needs_reclassify"] is False  # the round's row, not the flagged one
+    printed = map(json.loads, capsys.readouterr().out.splitlines())
+    lines = {(p["from"], p["to"]): p["rows"] for p in printed if p["type"] == "export"}
     for name, rows in zip(names(tmp_path), files, strict=True):
         # Twelve digits each, so name order is version order past version 9.
         first, last = map(int, re.fullmatch(r"(\d{12})-(\d{12})\.parquet", name).groups())
         feed = spark.read.format("delta").option("readChangeFeed", "true")
         feed = feed.option("startingVersion", first).option("endingVersion", last).load(store)
         assert rows == collapse(row.asDict(recursive=True) for row in feed.collect())
+        # Its line counts the feed's rows without preimages: an update is one row, not two.
+        assert lines[first, last] == feed.filter("_change_type != 'update_preimage'").count()
     assert last == version(spark, tmp_path / "listing_store")
 
 

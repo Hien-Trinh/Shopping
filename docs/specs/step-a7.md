@@ -59,10 +59,11 @@ Seeded from lean-review's finder angles.
 | The ingest query fails while an export batch runs | `main` raises, and the process ends. The export batch replays at the restart |
 | No checkpoint over a store with rows (the runbook's recovery) | One file with the current state: live rows as `op=upsert`, Tombstones as `op=delete` (fact 3). A consumer that replays from this file is exact |
 | The export falls behind retention (`DELTA_CHANGE_DATA_FILE_NOT_FOUND`) | The run fails. The runbook (S3) says to delete `checkpoints/export`. Not reachable in one job that holds the writer and the VACUUM ([Change Export and maintenance][t156]) |
-| A lost checkpoint when the head's own file exists (`<head>-<head>`) | The state's file takes that name and replaces it. It holds every row the old file held, so a replay in name order is still exact |
+| A lost checkpoint when the head's own file exists (`<head>-<head>`) | The state's file takes that name and replaces it. It holds every row the old file held, unless that file held an `op=delete` for a physical delete, which nothing writes (Tombstones are kept). A consumer starts again from the state's file, as after v1's full-snapshot export ([Change Export and maintenance][t156]) |
+| An export batch waits for executor slots behind a long ingest batch (one scheduler pool) | The wait counts toward its watchdog limit. The cap keeps an ingest batch near 460 s of the 600 ([step-a2.md](step-a2.md)), and the paid smoke check (P3) measures both and retunes the limit. Not run: it needs a loaded cluster |
 | Version 10 and later | Names are zero-padded to 12 digits, so name order is version order |
 | A very large first batch (the 1M load, after a long stop) | One file. The collapse runs in Spark, not in Python, and no row reaches the driver |
-| stdout fails | The `export` line is lost, not the batch (`ingest.say`) |
+| stdout fails | The `export` line is lost, not the batch (`entry.say`, for an `OSError` and for a closed stdout's `ValueError`) |
 
 ## Implementation decisions
 

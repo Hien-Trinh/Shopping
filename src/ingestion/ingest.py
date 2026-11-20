@@ -5,13 +5,11 @@ A batch plans, MERGEs, then appends its Outcomes, and the Spark checkpoint commi
 crash anywhere replays the batch, and v1's replay rule makes that safe (plan-v2.md, rule 3). The
 MERGE's source classifies the Writes the plan marked, on the executors (step-a4.md). Each batch
 ends with a Backfill round: its picks join the plan as `op=reclassify` rows (step-a5.md). `main`
-watches the query and prints its diagnostics, one JSON line each (step-a6.md).
+runs it beside the export query (step-a7.md), watches both and prints their diagnostics, one JSON
+line each (step-a6.md).
 """
 
 import argparse
-import contextlib
-import json
-import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -34,6 +32,7 @@ from pyspark.sql.streaming import StreamingQuery, StreamingQueryListener
 from pyspark.sql.types import StructField, StructType
 
 from ingestion import (
+    change_export,
     classify,
     classify_udf,
     decide,
@@ -151,15 +150,6 @@ def append_outcomes(path: str, outcomes: DataFrame, query_id: str, batch_id: int
     writer.option("txnAppId", query_id).option("txnVersion", batch_id).save(path)
 
 
-def say(line: dict | str) -> None:
-    """One diagnostic line on stdout. One write, so the batch's thread and the listener's can't
-    mix two lines. A stdout that fails loses the line: it must not fail a batch after its MERGE."""
-    text = line if isinstance(line, str) else json.dumps(line)
-    with contextlib.suppress(OSError):
-        sys.stdout.write(f"{text}\n")
-        sys.stdout.flush()
-
-
 def apply_batch(
     data: str,
     classifier: classify_udf.Spec,
@@ -196,7 +186,7 @@ def apply_batch(
             query_id = _query_id(spark, f"{data}/checkpoints/ingest")
             append_outcomes(f"{data}/outcomes", outcomes, query_id, batch_id)
         # A diagnostic (rule 6): a crash loses it, and a replay prints its own.
-        say({"type": "batch", "batch_id": batch_id, "writes": planned, "round": len(picks)})
+        entry.say({"type": "batch", "batch_id": batch_id, "writes": planned, "round": len(picks)})
     finally:
         plan.unpersist()
 
@@ -238,8 +228,10 @@ def start(
         slots = spark.sparkContext.defaultParallelism
     except PySparkAttributeError:  # serverless has no sparkContext: the platform picks the tasks
         slots = None
-    writer = reader.load(log).writeStream.foreachBatch(
-        partial(apply_batch, data, classifier, slots, clock)
+    writer = (
+        reader.load(log)
+        .writeStream.queryName("ingest")
+        .foreachBatch(partial(apply_batch, data, classifier, slots, clock))
     )
     return writer.option("checkpointLocation", checkpoint).trigger(**trigger).start()
 
@@ -277,13 +269,13 @@ class Progress(StreamingQueryListener):
         pass
 
     def onQueryProgress(self, event) -> None:
-        say(event.progress.json)
+        entry.say(event.progress.json)
 
     def onQueryIdle(self, event) -> None:
         pass
 
     def onQueryTerminated(self, event) -> None:
-        say({"type": "terminated", "id": str(event.id), "exception": event.exception})
+        entry.say({"type": "terminated", "id": str(event.id), "exception": event.exception})
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -298,8 +290,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     classifier = fakes.get(a.classifier) or classify_udf.Spec.student(a.models)
     spark = SparkSession.builder.getOrCreate()
     spark.streams.addListener(Progress())
-    query = start(spark, a.data, trigger=TRIGGER, classifier=classifier)
-    liveness.watch([query], limit=a.watchdog)
+    query = start(spark, a.data, trigger=TRIGGER, classifier=classifier)  # creates the store
+    export = change_export.start(spark, a.data, trigger=TRIGGER)
+    liveness.watch([query, export], limit=a.watchdog)
 
 
 if __name__ == "__main__":

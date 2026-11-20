@@ -26,7 +26,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.pandas.types import from_arrow_schema
 
-from ingestion import classify_udf, ingest, landing, replay, tables
+from ingestion import change_export, classify_udf, ingest, landing, replay, tables
 from ingestion.envelope import Change, Content
 from ingestion.status import Outcome as O
 
@@ -183,6 +183,21 @@ def store_has_its_layout(spark: SparkSession, data: str) -> None:
     _expect(metrics.get("numTargetDeletionVectorsAdded"), "1")
 
 
+def export_replays_to_the_store(spark: SparkSession, data: str) -> None:
+    """Two files: the store's state at the first start, then one more MERGE's feed, with its
+    deletion vector. Replayed, they are the live store."""
+    for n in (0, 1):
+        if n:
+            _land(spark, data, len(_BACKLOG) + n, [(_up("plain", 3), O.WRITTEN)])
+            _run_query(spark, data)
+        change_export.start(spark, data, trigger={"availableNow": True}).awaitTermination()
+    files = change_export.files(spark, data)
+    _expect(len(files), 2)
+    rows = spark.read.format("delta").load(f"{data}/listing_store").collect()
+    store = {(r.merchant_id, r.merchant_product_id): replay.fingerprint(r.asDict()) for r in rows}
+    _expect(replay.diff(replay.live(store), replay.replay_exports(files)), [])
+
+
 def student_classifies(spark: SparkSession, data: str, spec: classify_udf.Spec) -> None:
     """The Listings in KNOWN, through the ingest query on `spec`: each stored with its category,
     at the student's version and not flagged."""
@@ -205,6 +220,7 @@ CHECKS = {
     "a restart adds nothing": restart_adds_nothing,
     "a later commit reads its stored rows": later_commit_reads_its_stored_rows,
     "the store has its layout": store_has_its_layout,
+    "the export replays to the store": export_replays_to_the_store,
 }
 STUDENT = "the student classifies on the executors"
 

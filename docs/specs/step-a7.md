@@ -7,7 +7,7 @@ Status: approved Nov 20: the decisions, the test points and questions 1 to 3 (Op
 The streaming job writes the Listing Store, and nothing sends its changes on toward serving. v1's Change Export is a delta-rs process with its own watermark file, and S2 deletes it. Freshness (plan-v2, rule 5) is measured to the export file, so the check job (A9) has nothing to measure until this step. Nine facts shape it. "Probed" means local Spark on Nov 14 (PySpark 4.1.4, delta-spark 4.4.1, JDK 21, `local[2]`), with the files in `probe/local/` on the unmerged branch [`probe/a7`][probe].
 
 1. **The feed's rows.** Probed: a MERGE's new Listing is one `insert`; a changed one is an `update_preimage` and an `update_postimage`; a Tombstone is an `update_postimage` with `is_tombstone` true. Each row carries its commit's `_commit_version`.
-2. **An `OPTIMIZE` adds no rows.** Probed: a range that holds only an `OPTIMIZE` never calls the batch function, and the checkpoint still moves past it.
+2. **An `OPTIMIZE` adds no rows.** Probed: a range that holds only an `OPTIMIZE` never calls the batch function, and the checkpoint still moves past it. A7's tests added one case: the first batch over an empty store is called, with no rows, so the batch returns early on a count of 0.
 3. **A stream with no checkpoint and no `startingVersion` starts with the store's current state.** Probed: every row, Tombstones included, came as an `insert` at the latest version. This is the plan's recovery after a lost checkpoint.
 4. **A replay keeps its rows.** Probed: a batch that failed, then two more MERGEs, then a restart: the replay had the same batch id and the same rows, and the new commits came as the next batch.
 5. **A cap splits the history between commits.** Probed with `maxFilesPerTrigger` = 1: one batch per commit. Not probed: whether a cap can end a batch inside one commit. Two such batches would have the same version range.
@@ -59,20 +59,22 @@ Seeded from lean-review's finder angles.
 | The ingest query fails while an export batch runs | `main` raises, and the process ends. The export batch replays at the restart |
 | No checkpoint over a store with rows (the runbook's recovery) | One file with the current state: live rows as `op=upsert`, Tombstones as `op=delete` (fact 3). A consumer that replays from this file is exact |
 | The export falls behind retention (`DELTA_CHANGE_DATA_FILE_NOT_FOUND`) | The run fails. The runbook (S3) says to delete `checkpoints/export`. Not reachable in one job that holds the writer and the VACUUM ([Change Export and maintenance][t156]) |
+| A lost checkpoint when the head's own file exists (`<head>-<head>`) | The state's file takes that name and replaces it. It holds every row the old file held, unless that file held an `op=delete` for a physical delete, which nothing writes (Tombstones are kept). A consumer starts again from the state's file, as after v1's full-snapshot export ([Change Export and maintenance][t156]) |
+| An export batch waits for executor slots behind a long ingest batch (one scheduler pool) | The wait counts toward its watchdog limit. The cap keeps an ingest batch near 460 s of the 600 ([step-a2.md](step-a2.md)), and the paid smoke check (P3) measures both and retunes the limit. Not run: it needs a loaded cluster |
 | Version 10 and later | Names are zero-padded to 12 digits, so name order is version order |
 | A very large first batch (the 1M load, after a long stop) | One file. The collapse runs in Spark, not in Python, and no row reaches the driver |
-| stdout fails | The `export` line is lost, not the batch (`ingest.say`) |
+| stdout fails | The `export` line is lost, not the batch (`entry.say`, for an `OSError` and for a closed stdout's `ValueError`) |
 
 ## Implementation decisions
 
-1. **`src/ingestion/change_export.py`** (new; v1's `export.py` stays until S2): `start(spark, data, *, trigger)` and `apply_batch`. It needs pyspark, so it is not in the pure-module list.
+1. **`src/ingestion/change_export.py`** (new; v1's `export.py` stays until S2): `start(spark, data, *, trigger)`, `apply_batch`, and `files(spark, data)`, each file's rows in name order, for the tests, the Free Edition check and A9. It needs pyspark, so it is not in the pure-module list.
 2. **The collapse is Spark's:** drop `update_preimage`, then `max_by(struct(*), _commit_version)` per Listing key. One MERGE holds one row per key, so the version alone orders a key's rows. `op` is `delete` for a Tombstone or a physical delete, else `upsert`, v1's two values, so `replay.replay_exports` reads the files unchanged. v1's pure `collapse` is the test's reference.
 3. **Every Listing Store column plus `op`,** as in v1.
 4. **A file is a directory** (question 1) named by the batch's `_commit_version` range, zero-padded to 12 digits: `export/000000000041-000000000057.parquet/`, written with `coalesce(1)` and `mode("overwrite")` (question 2), so it holds one data file.
 5. **No `startingVersion`.** The first start and the recovery after a lost checkpoint are then one path (fact 3). On a clean start the store is empty or one MERGE old. The ingest query pins its version because landing order needs every commit; the export needs only each key's latest row.
-6. **No cap that can bind:** `maxFilesPerTrigger` = `ingest.MAX_FILES` and no byte cap, so a batch takes every commit that waits and never ends inside one (fact 5).
+6. **No cap that can bind:** `maxFilesPerTrigger` = 2³¹ − 1 (its own constant: `ingest` imports this module) and no byte cap, so a batch takes every commit that waits and never ends inside one (fact 5).
 7. **Both queries get a name** (`queryName`: `ingest`, `export`), so `Stalled` and the progress lines name them.
-8. **The `export` line** holds the batch id, the range and the row count, all from the one aggregate the name needs. The two test files of fact 9 already drop or filter lines by type; the spec's PR checks that they still pass.
+8. **The `export` line** holds the batch id, the range and the row count, all from the one aggregate the name needs. `say` moves from `ingest` to `entry`, so both modules print through it. The two test files of fact 9 already drop or filter lines by type; the spec's PR checks that they still pass.
 9. **Free Edition gains one check:** "the export replays to the store".
 10. **The job deletes no export file** (question 3). C1's Terraform adds a lifecycle rule on the `export/` prefix: delete 3 days after the last change.
 11. **plan-v2 changes, in this spec's PR:** the A7 row names this spec, says a file is a directory that only a replay rewrites, and drops v1's adopt-a-file recovery. "Kept 3 days" moves to C1's row as the lifecycle rule. A9's row says its reader accepts an empty directory.
@@ -86,7 +88,7 @@ Seeded from lean-review's finder angles.
   4. A crash after the write and before the checkpoint's commit, in the first batch and in a later one, with more commits before the restart: the files' names and rows equal an uninterrupted run's.
   5. A partial directory under a batch's name (what a crash during the write leaves): the replay leaves one complete file, and the oracle holds.
   6. No checkpoint over a store with rows: one file, and the oracle holds from it.
-  7. Names sort in version order past version 9.
+  7. Names sort in version order past version 9: test 1 asserts twelve digits per version, which is what orders them.
 - **`tests/spark/test_liveness.py`,** through `ingest.main`:
   8. Both queries run, and the `export` line prints. An export batch that raises fails `main`. An export batch that hangs raises `Stalled`, which names `export`.
 - **Free Edition:** the workflow on this PR's branch, with the new check.

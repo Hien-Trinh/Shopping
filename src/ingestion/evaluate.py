@@ -73,7 +73,7 @@ CATEGORIES = [  # Amazon Reviews '23's category files, less Unknown
     "Video_Games",
 ]
 CANDIDATES = (  # exactly what candidate() builds
-    "fake", "embedding", "laya-hierarchical", "laya-shortlist", "jev-shortlist",
+    "fake", "embedding", "jev-shortlist",
     "student-softmax", "student-knn", "student-ft", "student-ft-knn",
 )  # fmt: skip
 THRESHOLDS = [round(0.30 + 0.05 * i, 2) for i in range(13)]  # 0.30 .. 0.90
@@ -450,7 +450,7 @@ def candidate(
         return classify.FakeClassifier()
     tax = taxonomy.load()
     embedding = None
-    if kind in ("embedding", "laya-shortlist", "jev-shortlist"):
+    if kind in ("embedding", "jev-shortlist"):
         embedding = classify.EmbeddingClassifier(
             tax,
             classify.fastembed(models),
@@ -479,12 +479,7 @@ def candidate(
             tax, classify.fastembed(models), student.load_training(), kind.removeprefix("student-"),
             cache=models / "student",
         )  # fmt: skip
-    from ingestion import laya  # here: it loads laya_mlx, an optional Apple Silicon only group
-
-    mode = kind.removeprefix("laya-")
-    return laya.LayaClassifier(
-        tax, laya.mlx(models), mode, embedding, shortlist, description=description
-    )
+    raise ValueError(f"no candidate {kind!r}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -499,7 +494,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     r.add_argument("--models", type=Path, default=classify.MODELS)
     r.add_argument("--description", type=int, default=classify.DESCRIPTION)
     r.add_argument("--texts", choices=classify.RECIPES, default="path")  # step-6h.md
-    r.add_argument("--shortlist", type=int, default=10)  # paths a Laya or Jev choice sees
+    r.add_argument("--shortlist", type=int, default=10)  # paths a Jev choice sees
     s = sub.add_parser("sample")
     s.add_argument("--source", default=AMAZON)
     s.add_argument("--categories", nargs="+", default=CATEGORIES)

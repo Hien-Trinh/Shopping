@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 from support import listing
 
-from ingestion import classifiers, classify, entry, jev, laya, state, student, supervisor, taxonomy
+from ingestion import classifiers, classify, entry, jev, state, student, supervisor, taxonomy
 
 MODULES = ("classify", "taxonomy", "jev", "student", "decide", "metrics", "evaluate", "worker")
 
@@ -40,7 +40,7 @@ def test_each_module_imports_first_in_a_fresh_interpreter(module):  # no import 
 
 
 def test_the_seam_imports_no_adapter_and_nothing_imports_back_up():
-    assert not imported("classify") & {"jev", "student", "evaluate", "classifiers", "laya"}
+    assert not imported("classify") & {"jev", "student", "evaluate", "classifiers"}
     assert "evaluate" not in imported("student")
     assert "worker" not in imported("supervisor")
     assert "jev" not in imported("decide") and "jev" not in imported("worker")
@@ -58,7 +58,6 @@ def test_every_adapter_is_a_classifier():
         classify.EmbeddingClassifier,
         jev.JevClassifier,
         student.StudentClassifier,
-        laya.LayaClassifier,
     ):
         assert issubclass(adapter, classify.Classifier)
 

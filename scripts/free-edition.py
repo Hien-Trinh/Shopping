@@ -108,10 +108,14 @@ def upload_student() -> None:
 
 
 def pins() -> list[str]:
-    """Every pin of the compiled requirements: Databricks installs what a wheel lists, and ours
-    lists nothing (step-a3.md, question 1)."""
+    """The compiled pins of what the runtime doesn't ship: Databricks installs what a wheel lists,
+    and ours lists nothing (step-a3.md, question 1). The environment keeps its own version of a
+    library it ships, and refuses an older pin of one (certifi, Nov 2026)."""
+    with open("requirements/runtime-18.txt") as f:
+        shipped = {line.split("==")[0] for line in f if "==" in line}
     with open("requirements/databricks.txt") as f:
-        return [line.strip() for line in f if line.strip() and not line.startswith(("#", " "))]
+        ours = [line.strip() for line in f if line.strip() and not line.startswith(("#", " "))]
+    return [pin for pin in ours if pin.split("==")[0] not in shipped]
 
 
 def submit(wheel_path: str) -> int:

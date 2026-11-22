@@ -37,7 +37,11 @@ LOCAL = {
     "models/models--Qdrant--bge-small-en-v1.5-onnx-Q/model.onnx": b"bge-small",  # not the student's
     "models/student/vectors-rev.npy": b"vectors",  # nor the index
 }
-PINS = "# compiled\nfastembed==0.9.0\n    # via\n    #   -c runtime-18.txt\n\nnumpy==2.1.3\n"
+PINS = (
+    "# compiled\nfastembed==0.9.0\n    # via -r databricks.in\nnumpy==2.1.3\n    # via fastembed\n"
+)
+# The runtime ships numpy, so its pin is not sent: the environment keeps its own version.
+RUNTIME = "# Runtime 18\ncertifi==2025.4.26\nnumpy==2.1.3\n"
 
 DROP = object()  # the stub closes the connection instead of replying
 # An email across the 1500-character cut, so a cut before the scrub would strand its first part.
@@ -131,6 +135,7 @@ def script(tmp_path):
         (tmp_path / local).write_bytes(data)
     (tmp_path / "requirements").mkdir()
     (tmp_path / "requirements" / "databricks.txt").write_text(PINS)
+    (tmp_path / "requirements" / "runtime-18.txt").write_text(RUNTIME)
     stubs = []
 
     def start(table):
@@ -190,7 +195,7 @@ def test_a_passing_run_prints_its_check_lines_count_and_code_and_exits_0(script)
             "environment_key": "wheel",
             "spec": {
                 "environment_version": "5",
-                "dependencies": [WHEEL_PATH, "fastembed==0.9.0", "numpy==2.1.3"],
+                "dependencies": [WHEEL_PATH, "fastembed==0.9.0"],
             },
         }
     ]

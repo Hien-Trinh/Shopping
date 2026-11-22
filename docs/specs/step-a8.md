@@ -1,6 +1,6 @@
 # Step A8: the Listing Store's maintenance (mini PRD)
 
-Status: draft Nov 22, questions 1 to 3 answered (Option A for each), the Free Edition probe ran Nov 22 (fact 11). Plan row: [plan-v2.md, PR steps, A8](../plan-v2.md). Decisions from [Change Export and maintenance][t156] (items 2 to 4) and the [Oct 28 review][t166] (items 4 and 10). v1's steps: [step-5c.md](step-5c.md) (snapshots) and v1's `maintenance.py`. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: built Nov 22 (decisions 1, 7 and 8 hold what the code changed); questions 1 to 3 answered (Option A for each), the Free Edition probe ran Nov 22 (fact 11). Plan row: [plan-v2.md, PR steps, A8](../plan-v2.md). Decisions from [Change Export and maintenance][t156] (items 2 to 4) and the [Oct 28 review][t166] (items 4 and 10). v1's steps: [step-5c.md](step-5c.md) (snapshots) and v1's `maintenance.py`. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 
@@ -59,17 +59,17 @@ In one tick the order is: snapshot, drop, `OPTIMIZE`, `VACUUM`. A `VACUUM` then 
 ## Implementation decisions
 
 1. **`src/ingestion/store_maintenance.py`** (new; v1's `maintenance.py` and `snapshots.py` stay until S2), with three parts:
-   - `due(now, last, snapshots, *, every) -> list[Action]`, pure, no pyspark import: what to run now, from the last run times and each snapshot's `(version, taken)`. It joins `[tool.mutmut]`'s `source_paths` only if it sits in its own module; it stays in this one, tested by plain unit tests in `tests/spark/`, since a second module for 20 lines is not worth a file.
-   - `tick(spark, data, schema, last, now, *, every)`: reads the snapshots, calls `due`, runs each action, prints its line.
-   - `start(spark, data, *, schema, every, failed)`: an `InheritableThread`, daemon, that sets the pool and calls `tick` every 60 s with `datetime.now(UTC)`.
+   - `due(now, last, snapshots, head, *, every) -> list[Action]`, pure, no pyspark import: what to run now, from the last run times, each snapshot's `(version, taken)` and the store's head. The head is there so that a version gets one snapshot (an idle store is not asked for one each minute), and so that "the newest" counts the snapshot this tick takes. It joins `[tool.mutmut]`'s `source_paths` only if it sits in its own module; it stays in this one, tested by plain unit tests in `tests/spark/`, since a second module for 20 lines is not worth a file.
+   - `tick(spark, data, schema, last, now, *, every, conflicts)`: reads the snapshots, calls `due`, runs each action, prints its line.
+   - `start(spark, data, *, schema, every, conflicts, failed)`: an `InheritableThread`, daemon, that sets the pool and calls `tick` every 60 s with `datetime.now(UTC)`. It returns an Event that stops it, which `main` sets when it returns. `main` passes the MERGE's conflict classes as `conflicts`.
 2. **Snapshots are named tables in one schema, in both places** (question 1): `--snapshots SCHEMA`, default `default`. The source is the store's path, the name is `snapshot_v<version>`, the location is `<data>/snapshots/snapshot_v<version>`.
 3. **The pinned version is the head when the tick runs,** from `DeltaTable.history(1)`. A snapshot's age is its `CLONE` commit's timestamp (`DESCRIBE HISTORY`, one query per snapshot).
    `ponytail:` at the stress cadence that is up to 336 history reads per snapshot tick; one `SHOW TABLE EXTENDED` or a name with the time in it if a tick ever takes minutes.
 4. **Constants:** `OPTIMIZE_EVERY` 1 h, `VACUUM_EVERY` 24 h, `KEEP` 7 days, and `--snapshot-every SECONDS`, default 21600 (6 h); stress runs pass 1800. `KEEP` must not exceed Delta's default `deletedFileRetentionDuration`, which this step leaves unset on the table.
 5. **Plain statements:** `OPTIMIZE delta.\`<store>\``, `VACUUM delta.\`<store>\`` with no `RETAIN`, `DROP TABLE IF EXISTS <schema>.snapshot_v<n>`. No `OPTIMIZE FULL`, no `REORG … PURGE` ([t156][t156], item 2).
 6. **The pool** is `maintenance`, set inside the thread, skipped on `PySparkAttributeError`. C2's cluster sets `spark.scheduler.mode FAIR` (fact 9): one clause in the C2 row.
-7. **A failed action ends the job** (question 2): the thread records the error and stops both queries; `main` raises it after `liveness.watch` returns. `main` gains about 5 lines.
-8. **The `maintenance` line:** `{"type": "maintenance", "op": "optimize" | "vacuum" | "snapshot" | "drop", "version": n}`, through `entry.say`. `version` is the store's head for `optimize` and `vacuum`, and the snapshot's pin for the other two.
+7. **A failed action ends the job** (question 2): the thread records the error and stops both queries; `main` raises it after `liveness.watch` returns. `main` gains about 20 lines.
+8. **The `maintenance` line:** `{"type": "maintenance", "op": "optimize" | "vacuum" | "snapshot" | "drop", "version": n}`, through `entry.say`. `version` is the store's head when the tick began for `optimize` and `vacuum`, and the snapshot's pin for the other two. An `OPTIMIZE` that lost a conflict prints its line with `"ran": false`.
 9. **The job deletes no clone directory.** A dropped clone leaves a log of a few KB (fact 5). C1's lifecycle rule gains the `snapshots/` prefix at 8 days, one day past `KEEP`: one clause in the C1 row.
 10. **Free Edition gains one check, "OPTIMIZE and VACUUM leave the store's rows"** (question 3, fact 11): the tick's two statements on the store, then the store oracle again. No snapshot check: Free Edition refuses the clone, so the first snapshot on Databricks is P3's smoke check.
 11. **plan-v2 changes, in this spec's PR:** the A8 row names this spec and says the newest snapshot is never dropped; the C1 and C2 clauses of decisions 6 and 9.

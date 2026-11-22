@@ -1,6 +1,6 @@
 # Step A8: the Listing Store's maintenance (mini PRD)
 
-Status: draft Nov 21, questions 1 and 2 answered (Option A for each), question 3 open. Plan row: [plan-v2.md, PR steps, A8](../plan-v2.md). Decisions from [Change Export and maintenance][t156] (items 2 to 4) and the [Oct 28 review][t166] (items 4 and 10). v1's steps: [step-5c.md](step-5c.md) (snapshots) and v1's `maintenance.py`. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: draft Nov 22, questions 1 to 3 answered (Option A for each), the Free Edition probe is owed. Plan row: [plan-v2.md, PR steps, A8](../plan-v2.md). Decisions from [Change Export and maintenance][t156] (items 2 to 4) and the [Oct 28 review][t166] (items 4 and 10). v1's steps: [step-5c.md](step-5c.md) (snapshots) and v1's `maintenance.py`. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 
@@ -103,7 +103,7 @@ Tests that read stdout: `tests/spark/test_liveness.py` gains test 8; `tests/spar
    - **Option A (recommended): the job fails,** and its 3 retries restart it. One rule, the same as a failed export query (A7). An `OPTIMIZE` that loses a conflict is the one exception: it is skipped until the next hour.
    - **Option B: print a line and try again at the next tick.** The job keeps running, but a `VACUUM` or a snapshot that fails for days is seen only by someone who reads the log.
 
-3. **Does Free Edition check this step?**
+3. **Does Free Edition check this step?** Answered Nov 22: Option A.
 
    Free Edition is serverless: no pool, and no page says whether a shallow clone with a `LOCATION`, `OPTIMIZE` or `VACUUM` works there on a table under a volume.
    - **Option A (recommended): one probe run first.** A throwaway branch runs the three statements once (one run of the unpublished quota). The code PR then adds one check, "a snapshot reads as the store at its pin", for what the probe showed to work.

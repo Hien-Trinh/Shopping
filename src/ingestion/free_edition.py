@@ -14,6 +14,7 @@ Listings it knows (docs/specs/step-a4.md, decision 9).
 
 import argparse
 import os
+import re
 import shutil
 import uuid
 from collections.abc import Sequence
@@ -225,12 +226,90 @@ CHECKS = {
 STUDENT = "the student classifies on the executors"
 
 
+# --- probe/a8-free-edition: step A8's statements on serverless (docs/specs/step-a8.md, question 3).
+# Not for main. Each line says only PASS, or FAIL with the error's class and condition.
+_NAMED, _MANAGED = "default.probe_a8_named", "default.probe_a8_managed"
+
+
+def _store(data: str) -> str:
+    return f"delta.`{data}/listing_store`"
+
+
+def _clone(spark: SparkSession, data: str, target: str, location: str = "") -> None:
+    head = _version(spark, data, "listing_store")
+    rows = spark.read.format("delta").load(f"{data}/listing_store").collect()
+    spark.sql(
+        f"CREATE TABLE IF NOT EXISTS {target} SHALLOW CLONE {_store(data)} VERSION AS OF {head}"
+        + (f" LOCATION '{location}'" if location else "")
+    )
+    _expect(len(spark.sql(f"SELECT * FROM {target}").collect()), len(rows))
+
+
+def probe_named_with_location(spark: SparkSession, data: str) -> None:
+    spark.sql(f"DROP TABLE IF EXISTS {_NAMED}")
+    _clone(spark, data, _NAMED, f"{data}/snapshots/named")
+
+
+def probe_managed(spark: SparkSession, data: str) -> None:
+    spark.sql(f"DROP TABLE IF EXISTS {_MANAGED}")
+    _clone(spark, data, _MANAGED)
+
+
+def probe_path(spark: SparkSession, data: str) -> None:
+    _clone(spark, data, f"delta.`{data}/snapshots/path`")
+
+
+def probe_optimize(spark: SparkSession, data: str) -> None:
+    spark.sql(f"OPTIMIZE {_store(data)}").collect()
+
+
+def probe_vacuum(spark: SparkSession, data: str) -> None:
+    spark.sql(f"VACUUM {_store(data)}").collect()
+
+
+def probe_history(spark: SparkSession, data: str) -> None:
+    """The age of a snapshot is its CLONE commit's time (decision 4)."""
+    for target in (_NAMED, _MANAGED, f"delta.`{data}/snapshots/path`"):
+        try:
+            _expect(spark.sql(f"DESCRIBE HISTORY {target}").collect()[-1].operation, "CLONE")
+            return
+        except Exception as e:
+            last = e
+    raise last
+
+
+def probe_drop(spark: SparkSession, data: str) -> None:
+    errors = []
+    for target in (_NAMED, _MANAGED):
+        try:
+            spark.sql(f"DROP TABLE IF EXISTS {target}")
+        except Exception as e:
+            errors.append(e)
+    if errors:
+        raise errors[0]
+
+
+CHECKS |= {
+    "probe: a clone to a named table with a location": probe_named_with_location,
+    "probe: a clone to a managed named table": probe_managed,
+    "probe: a clone to a path": probe_path,
+    "probe: optimize": probe_optimize,
+    "probe: vacuum": probe_vacuum,
+    "probe: a clone's history starts with CLONE": probe_history,
+    "probe: drop": probe_drop,
+}
+
+
 def _passes(name: str, check, spark: SparkSession, data: str) -> bool:
     try:
         check(spark, data)
     except Exception as e:  # one failure must not hide the later checks' lines
         # On one line, whole: the workflow's script cuts it after replacing any email.
-        print(f"FAIL {name}: {type(e).__name__}: {' '.join(str(e).split())}", flush=True)
+        text = " ".join(str(e).split())
+        if name.startswith("probe"):  # the condition only: these logs are public
+            found = re.search(r"\[[A-Z_.0-9]+\]|SQLSTATE: \w+", text)
+            text = found.group() if found else "no condition"
+        print(f"FAIL {name}: {type(e).__name__}: {text}", flush=True)
         return False
     print(f"PASS {name}", flush=True)
     return True

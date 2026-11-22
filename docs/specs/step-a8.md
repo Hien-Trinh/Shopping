@@ -1,6 +1,6 @@
 # Step A8: the Listing Store's maintenance (mini PRD)
 
-Status: draft Nov 22, questions 1 to 3 answered (Option A for each), the Free Edition probe is owed. Plan row: [plan-v2.md, PR steps, A8](../plan-v2.md). Decisions from [Change Export and maintenance][t156] (items 2 to 4) and the [Oct 28 review][t166] (items 4 and 10). v1's steps: [step-5c.md](step-5c.md) (snapshots) and v1's `maintenance.py`. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: draft Nov 22, questions 1 to 3 answered (Option A for each), the Free Edition probe ran Nov 22 (fact 11). Plan row: [plan-v2.md, PR steps, A8](../plan-v2.md). Decisions from [Change Export and maintenance][t156] (items 2 to 4) and the [Oct 28 review][t166] (items 4 and 10). v1's steps: [step-5c.md](step-5c.md) (snapshots) and v1's `maintenance.py`. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 
@@ -16,6 +16,7 @@ The streaming job writes the Listing Store with a MERGE per batch, and nothing t
 8. **`VACUUM` adds two commits,** `VACUUM START` and `VACUUM END`. Probed, and Databricks logs them by default for external tables ([VACUUM][vacuum]). Neither they nor an `OPTIMIZE` commit reached the export query: no new export file (A7's fact 2, probed again).
 9. **A pool is set per thread.** Probed: `sparkContext.setLocalProperty("spark.scheduler.pool", …)` inside a `pyspark.InheritableThread` holds in that thread and not in the main one. A pool only shares the cluster fairly when `spark.scheduler.mode` is `FAIR`; local Spark leaves it unset (FIFO), and no page gave Databricks' default for a job cluster. Serverless has no `sparkContext` ([limits][limits]), as `ingest.start` already handles.
 10. **Two Spark test files read stdout** (`grep -l readouterr tests/`): `tests/spark/test_free_edition.py` and `tests/spark/test_liveness.py`. Since A7 the first drops every `{"type": ` line, so a new line type changes neither.
+11. **Free Edition runs `OPTIMIZE` and `VACUUM`, and refuses every shallow clone of the store.** Probed Nov 22 on serverless environment 5, on the store under the volume (branch `probe/a8-free-edition`, one run): `OPTIMIZE` and a default `VACUUM` on the store's path pass. A clone of the store's path fails with `CANNOT_SHALLOW_CLONE_NON_UC_MANAGED_TABLE_AS_SOURCE_OR_TARGET`, to a managed named table and to a path alike; with a `LOCATION` under the volume it fails with an error that has no condition. So on this compute a clone needs a source that Unity Catalog knows. Whether the trial's job cluster takes a path as the source stays open (question 1's risk): P3's smoke check answers it.
 
 ## Solution
 
@@ -70,12 +71,12 @@ In one tick the order is: snapshot, drop, `OPTIMIZE`, `VACUUM`. A `VACUUM` then 
 7. **A failed action ends the job** (question 2): the thread records the error and stops both queries; `main` raises it after `liveness.watch` returns. `main` gains about 5 lines.
 8. **The `maintenance` line:** `{"type": "maintenance", "op": "optimize" | "vacuum" | "snapshot" | "drop", "version": n}`, through `entry.say`. `version` is the store's head for `optimize` and `vacuum`, and the snapshot's pin for the other two.
 9. **The job deletes no clone directory.** A dropped clone leaves a log of a few KB (fact 5). C1's lifecycle rule gains the `snapshots/` prefix at 8 days, one day past `KEEP`: one clause in the C1 row.
-10. **Free Edition** (question 3).
+10. **Free Edition gains one check, "OPTIMIZE and VACUUM leave the store's rows"** (question 3, fact 11): the tick's two statements on the store, then the store oracle again. No snapshot check: Free Edition refuses the clone, so the first snapshot on Databricks is P3's smoke check.
 11. **plan-v2 changes, in this spec's PR:** the A8 row names this spec and says the newest snapshot is never dropped; the C1 and C2 clauses of decisions 6 and 9.
 
 ## Testing decisions (test points for your OK)
 
-Tests that read stdout: `tests/spark/test_liveness.py` gains test 8; `tests/spark/test_free_edition.py` needs no change (fact 10).
+Tests that read stdout: `tests/spark/test_liveness.py` gains test 8; `tests/spark/test_free_edition.py` changes only its check counts (fact 10, decision 10).
 
 - **`tests/spark/test_store_maintenance.py`** (new), in `make spark`, three local runs before the PR:
   1. `due`, with an injected time: `VACUUM` at the start and 24 h later; `OPTIMIZE` after 1 h, not before; a snapshot when none exists and when the newest is older than the cadence; drops for snapshots older than 7 days, never the newest; the order snapshot, drop, optimize, vacuum. Red: no module.
@@ -87,7 +88,7 @@ Tests that read stdout: `tests/spark/test_liveness.py` gains test 8; `tests/spar
   7. The thread's pool: inside `start`'s thread the property is `maintenance`; in the main thread it is unset.
 - **`tests/spark/test_liveness.py`,** through `ingest.main`:
   8. `main` starts the thread, and a `maintenance` line prints. An action that raises fails `main` with that error.
-- **Free Edition:** per question 3.
+- **Free Edition:** check 8 of 8, "OPTIMIZE and VACUUM leave the store's rows" (decision 10). `tests/spark/test_free_edition.py` counts the checks, so its counts move from 6 and 7 to 7 and 8.
 
 ## Questions
 
@@ -117,11 +118,11 @@ Tests that read stdout: `tests/spark/test_liveness.py` gains test 8; `tests/spar
 - Timing one `OPTIMIZE` and its effect on a batch; a watchdog for a hung action: P3.
 - The runbook's line for a partial clone directory: S3.
 - Deleting v1's `maintenance.py` and `snapshots.py`: S2.
-- Deleting `probe/a8`: when Phase A's probes end.
+- Deleting `probe/a8` and `probe/a8-free-edition`: when Phase A's probes end.
 
 ## Size
 
-About 110 changed lines, tests left out, so one PR: `store_maintenance.py` about 90, `ingest.py` about 12, plan-v2 about 4, and about 15 in `free_edition.py` if question 3 adds a check. About 200 of tests. A7 came in near its estimate; the cap is 150.
+About 110 changed lines, tests left out, so one PR: `store_maintenance.py` about 90, `ingest.py` about 12, plan-v2 about 4, and about 10 in `free_edition.py` (decision 10). About 200 of tests. A7 came in near its estimate; the cap is 150.
 
 [t156]: https://github.com/Hien-Trinh/Shopping/issues/156
 [t166]: https://github.com/Hien-Trinh/Shopping/issues/166

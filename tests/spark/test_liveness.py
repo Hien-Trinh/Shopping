@@ -18,19 +18,6 @@ def main(data, *more: str) -> None:
     ingest.main(["--data", str(data), "--classifier", "fake", *more])
 
 
-@pytest.fixture(autouse=True)
-def no_query_left(spark):
-    """`main` returns when one query ends, and the process then exits. Here the session lives on,
-    so the other query is stopped: a second `main` can't start a name that is still active."""
-    yield
-    stop_queries(spark)
-
-
-def stop_queries(spark) -> None:
-    for query in spark.streams.active:
-        query.stop()
-
-
 def wait_until(done, seconds: float = 30.0) -> None:
     end = time.monotonic() + seconds
     while not done():
@@ -161,7 +148,8 @@ def test_main_runs_the_export_query_and_prints_its_line(spark, tmp_path, monkeyp
         "rows": 2,
     }
     assert {q.name for q in spark.streams.active} == {"ingest", "export"}
-    stop_queries(spark)  # as a cancelled run: main returns
+    for query in spark.streams.active:  # as a cancelled run: main returns
+        query.stop()
     job.join(30)
     assert not job.is_alive()
     assert replay.replay_exports(change_export.files(spark, str(tmp_path))) == replay.live(

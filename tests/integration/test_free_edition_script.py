@@ -307,6 +307,18 @@ def test_a_run_that_failed_after_every_check_passed_still_exits_1(script):
     ]
 
 
+def test_a_failed_library_installation_ends_with_where_to_find_pips_own_error(script):
+    table = replies()
+    table["GET", GET] = run_reply("RUN_EXECUTION_ERROR", "Library installation failed: Unable to")
+    table["GET", OUTPUT] = (200, {"logs": ""})
+    _, done = script(table)
+    assert done.returncode == 1
+    hint = done.stdout.splitlines()[-1]
+    assert hint.startswith("hint: ")
+    assert "%pip install" in hint
+    assert "release-notes/serverless/environment-version/five" in hint
+
+
 @pytest.mark.parametrize(
     ("failure", "first_line"),
     [

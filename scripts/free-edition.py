@@ -30,6 +30,12 @@ COUNT = re.compile(r"\d+ of \d+ checks passed")  # main's last line (ingestion.f
 # each revision in the cache, and the index.
 ENCODER = "models/models--Hien-Trinh--listing-student-ft/snapshots"
 INDEX = "models/student/index-*.npz"
+# Databricks cuts a failed installation's error in the API and on the run's page (Nov 2026).
+INSTALL_HINT = (
+    "hint: for pip's own error, run %pip install of this run's pins in a serverless notebook, and "
+    "compare them with "
+    "https://docs.databricks.com/aws/en/release-notes/serverless/environment-version/five"
+)
 
 
 class ApiError(Exception):
@@ -174,6 +180,8 @@ def report(run: dict, output: dict) -> int:
     for text in (details.get("message"), output.get("error")):
         if text:
             print(scrub(text)[:LINE])
+    if "Library installation failed" in (details.get("message") or ""):
+        print(INSTALL_HINT)
     return 1
 
 

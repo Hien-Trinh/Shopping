@@ -7,6 +7,7 @@ import threading
 import time
 
 import pytest
+from delta.tables import DeltaTable
 from pyspark.errors import StreamingQueryException
 from support import up
 from test_ingest import commit, fingerprints, land, outcomes, run, store_rows, version
@@ -139,12 +140,21 @@ def test_main_runs_the_export_query_and_prints_its_line(spark, tmp_path, monkeyp
 
     wait_until(exported)
     (line,) = (line for line in lines if line.get("type") == "export")
-    head = version(spark, tmp_path / "listing_store")
+    store = DeltaTable.forPath(spark, str(tmp_path / "listing_store"))
+    (merge,) = store.history().filter("operation = 'MERGE'").collect()
+    # The range holds the MERGE, and may hold a commit of the VACUUM at the start beside it.
+    assert (
+        1
+        <= line["from"]
+        <= merge.version
+        <= line["to"]
+        <= version(spark, tmp_path / "listing_store")
+    )
     assert line == {
         "type": "export",
         "batch_id": line["batch_id"],
-        "from": 1,
-        "to": head,
+        "from": line["from"],
+        "to": line["to"],
         "rows": 2,
     }
     assert {q.name for q in spark.streams.active} == {"ingest", "export"}

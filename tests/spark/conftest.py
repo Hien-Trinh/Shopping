@@ -69,14 +69,9 @@ def no_query_left(spark):
     yield
     for query in spark.streams.active:
         query.stop()
-
-
-@pytest.fixture(autouse=True)
-def no_maintenance_left(spark, no_query_left):
-    """`main` stops its maintenance thread when it returns, and the thread ends after the action
-    it is in. Wait for it, and drop the snapshots it left in the session's one catalog, or a later
-    `main` would read a snapshot of another test's store."""
-    yield
+    # `main` then returns and stops its maintenance thread, which ends after the action it is in.
+    # Wait for it, and drop the snapshots it left in the session's one catalog, or a later `main`
+    # would read a snapshot of another test's store.
     for thread in threading.enumerate():
         if thread.name == "maintenance":
             thread.join(120)

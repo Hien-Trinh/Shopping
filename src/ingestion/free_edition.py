@@ -26,7 +26,15 @@ from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.pandas.types import from_arrow_schema
 
-from ingestion import change_export, classify_udf, ingest, landing, replay, tables
+from ingestion import (
+    change_export,
+    classify_udf,
+    ingest,
+    landing,
+    replay,
+    store_maintenance,
+    tables,
+)
 from ingestion.envelope import Change, Content
 from ingestion.status import Outcome as O
 
@@ -198,6 +206,21 @@ def export_replays_to_the_store(spark: SparkSession, data: str) -> None:
     _expect(replay.diff(replay.live(store), replay.replay_exports(files)), [])
 
 
+def maintenance_leaves_the_rows(spark: SparkSession, data: str) -> None:
+    """The job's OPTIMIZE and VACUUM. No snapshot: Free Edition refuses a shallow clone of a path
+    (docs/specs/step-a8.md, fact 11)."""
+
+    def rows() -> list[tuple]:
+        return sorted(
+            map(tuple, spark.read.format("delta").load(f"{data}/listing_store").collect())
+        )
+
+    before = rows()
+    store_maintenance.optimize(spark, data)
+    store_maintenance.vacuum(spark, data)
+    _expect(rows(), before)
+
+
 def student_classifies(spark: SparkSession, data: str, spec: classify_udf.Spec) -> None:
     """The Listings in KNOWN, through the ingest query on `spec`: each stored with its category,
     at the student's version and not flagged."""
@@ -221,6 +244,7 @@ CHECKS = {
     "a later commit reads its stored rows": later_commit_reads_its_stored_rows,
     "the store has its layout": store_has_its_layout,
     "the export replays to the store": export_replays_to_the_store,
+    "OPTIMIZE and VACUUM leave the store's rows": maintenance_leaves_the_rows,
 }
 STUDENT = "the student classifies on the executors"
 

@@ -13,6 +13,7 @@ import argparse
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from datetime import timedelta
 from functools import partial
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from ingestion import (
     liveness,
     state,
     store,
+    store_maintenance,
     tables,
 )
 
@@ -286,13 +288,35 @@ def main(argv: Sequence[str] | None = None) -> None:
     args.add_argument("--classifier", choices=("student", *fakes), default="student")
     args.add_argument("--models", type=Path, default=classify.MODELS)  # with train/ beside it
     args.add_argument("--watchdog", type=float, default=600, metavar="SECONDS")
+    args.add_argument("--snapshots", default="default", metavar="SCHEMA")  # their tables' schema
+    args.add_argument("--snapshot-every", type=float, default=21600, metavar="SECONDS")
     a = args.parse_args(argv)
     classifier = fakes.get(a.classifier) or classify_udf.Spec.student(a.models)
     spark = SparkSession.builder.getOrCreate()
     spark.streams.addListener(Progress())
     query = start(spark, a.data, trigger=TRIGGER, classifier=classifier)  # creates the store
     export = change_export.start(spark, a.data, trigger=TRIGGER)
-    liveness.watch([query, export], limit=a.watchdog)
+    errors: list[Exception] = []
+
+    def failed(error: Exception) -> None:  # in the maintenance thread: a failed action ends the job
+        errors.append(error)
+        for each in (query, export):
+            each.stop()
+
+    maintenance = store_maintenance.start(
+        spark,
+        a.data,
+        schema=a.snapshots,
+        every=timedelta(seconds=a.snapshot_every),
+        conflicts=_CONFLICTS,
+        failed=failed,
+    )
+    try:
+        liveness.watch([query, export], limit=a.watchdog)
+    finally:
+        maintenance.set()
+    if errors:
+        raise errors[0]
 
 
 if __name__ == "__main__":

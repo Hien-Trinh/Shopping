@@ -82,7 +82,7 @@ def test_due_drops_what_is_older_than_keep_but_never_the_newest_snapshot():
 
 def test_keep_is_at_most_deltas_default_retention():
     # VACUUM runs on the default, 7 days, and a snapshot must be dropped before its files are.
-    assert sm.KEEP <= timedelta(days=7)
+    assert timedelta(days=7) >= sm.KEEP
     assert sm.OPTIMIZE_EVERY == H and sm.VACUUM_EVERY == 24 * H
 
 

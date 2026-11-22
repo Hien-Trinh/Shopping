@@ -114,7 +114,7 @@ def tick(
             try:
                 optimize(spark, data)
             except conflicts:
-                line["skipped"] = "conflict"
+                line["ran"] = False  # not an Outcome's word: those are spelled in status.py
         else:
             vacuum(spark, data)
             last[op] = now

@@ -179,7 +179,7 @@ def test_an_optimize_that_loses_a_conflict_is_skipped_until_the_next_hour(
     monkeypatch.setattr(sm, "optimize", losing)
     sm.tick(spark, str(tmp_path), schema, last, now, every=EVERY, conflicts=conflicts)
     assert lines(capsys)[-1] == {
-        "type": "maintenance", "op": "optimize", "version": head, "skipped": "conflict"
+        "type": "maintenance", "op": "optimize", "version": head, "ran": False
     }  # fmt: skip
     assert last["optimize"] == now
     monkeypatch.setattr(sm, "vacuum", losing)  # any other action's conflict is a failure

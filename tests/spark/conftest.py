@@ -4,6 +4,8 @@ holds about 850 MB, so there is one, and no xdist."""
 import os
 import re
 import sys
+import threading
+import uuid
 from importlib.metadata import distributions
 from pathlib import Path
 
@@ -11,6 +13,8 @@ import pytest
 from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 from pyspark.sql.streaming import StreamingQueryManager
+
+from ingestion import store_maintenance
 
 RUNTIME = Path(__file__).parents[2] / "requirements" / "runtime-18.txt"
 
@@ -36,6 +40,8 @@ def spark():
         .config("spark.databricks.delta.snapshotPartitions", 1)
         .config("spark.sql.shuffle.partitions", 4)  # 1 would hide what each partition writes
         .config("spark.ui.enabled", False)
+        # A VACUUM lists the table's files in this many tasks: the default, 10000, takes minutes.
+        .config("spark.sql.sources.parallelPartitionDiscovery.parallelism", 4)
     )
     os.environ["PYSPARK_PYTHON"] = sys.executable  # workers: not PATH's python3 (a 3.15 on the Mac)
     session = configure_spark_with_delta_pip(builder).getOrCreate()  # adds the matching Delta jar
@@ -65,3 +71,21 @@ def no_query_left(spark):
     yield
     for query in spark.streams.active:
         query.stop()
+    # `main` then returns and stops its maintenance thread, which ends after the action it is in.
+    # Wait for it, and drop the snapshots it left in the session's one catalog, or a later `main`
+    # would read a snapshot of another test's store.
+    for thread in threading.enumerate():
+        if thread.name == store_maintenance.POOL:
+            thread.join(120)
+            assert not thread.is_alive(), "the maintenance thread did not stop"
+    for row in spark.sql("SHOW TABLES IN default LIKE 'snapshot_v*'").collect():
+        spark.sql(f"DROP TABLE default.{row.tableName}")
+
+
+@pytest.fixture
+def schema(spark, tmp_path):
+    """A schema of its own for a test's snapshots (`--snapshots`)."""
+    name = f"s_{uuid.uuid4().hex[:12]}"
+    spark.sql(f"CREATE SCHEMA {name} LOCATION '{tmp_path}/schema'")
+    yield name
+    spark.sql(f"DROP SCHEMA {name} CASCADE")

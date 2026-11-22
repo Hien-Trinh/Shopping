@@ -41,12 +41,12 @@ def test_a_failed_check_prints_fail_the_later_checks_still_print_and_main_raises
     spark, tmp_path, capsys, monkeypatch
 ):
     monkeypatch.setattr(ingest, "merge", lambda path, writes, planned: None)
-    with pytest.raises(RuntimeError, match=r"\d of 6 checks failed"):
+    with pytest.raises(RuntimeError, match=r"\d of 7 checks failed"):
         free_edition.main(["--data", str(tmp_path)])
     lines = printed(capsys).splitlines()
     assert lines[0].startswith("FAIL the backlog lands as the store oracle says")
     assert len(lines) == len(free_edition.CHECKS) + 1
-    assert lines[-1].endswith(" of 6 checks passed")  # printed before main raises
+    assert lines[-1].endswith(" of 7 checks passed")  # printed before main raises
 
 
 def test_a_wipe_that_fails_stops_the_run(tmp_path):
@@ -104,12 +104,12 @@ def test_models_that_cant_load_print_fail_beside_the_other_checks_and_main_raise
     spark, tmp_path, capsys
 ):
     models = tmp_path / "models"  # no train/ beside it, so the student's Spec raises
-    with pytest.raises(RuntimeError, match="1 of 7 checks failed"):
+    with pytest.raises(RuntimeError, match="1 of 8 checks failed"):
         free_edition.main(["--data", str(tmp_path / "data"), "--models", str(models)])
     lines = printed(capsys).splitlines()
-    assert lines[:6] == [f"PASS {name}" for name in free_edition.CHECKS]
-    assert lines[6].startswith(f"FAIL {free_edition.STUDENT}: ModelMissing")
-    assert lines[7:] == ["6 of 7 checks passed"]
+    assert lines[:7] == [f"PASS {name}" for name in free_edition.CHECKS]
+    assert lines[7].startswith(f"FAIL {free_edition.STUDENT}: ModelMissing")
+    assert lines[8:] == ["7 of 8 checks passed"]
 
 
 @pytest.mark.model
@@ -117,4 +117,4 @@ def test_main_with_the_real_models_passes_every_check(spark, tmp_path, capsys):
     free_edition.main(["--data", str(tmp_path), "--models", str(ROOT / "models")])
     lines = printed(capsys).splitlines()
     names = [*free_edition.CHECKS, free_edition.STUDENT]
-    assert lines == [f"PASS {name}" for name in names] + ["7 of 7 checks passed"]
+    assert lines == [f"PASS {name}" for name in names] + ["8 of 8 checks passed"]

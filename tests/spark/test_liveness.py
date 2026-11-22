@@ -7,11 +7,12 @@ import threading
 import time
 
 import pytest
+from delta.tables import DeltaTable
 from pyspark.errors import StreamingQueryException
 from support import up
 from test_ingest import commit, fingerprints, land, outcomes, run, store_rows, version
 
-from ingestion import change_export, classify_udf, ingest, liveness, replay
+from ingestion import change_export, classify_udf, ingest, liveness, replay, store_maintenance
 
 
 def main(data, *more: str) -> None:
@@ -139,12 +140,21 @@ def test_main_runs_the_export_query_and_prints_its_line(spark, tmp_path, monkeyp
 
     wait_until(exported)
     (line,) = (line for line in lines if line.get("type") == "export")
-    head = version(spark, tmp_path / "listing_store")
+    store = DeltaTable.forPath(spark, str(tmp_path / "listing_store"))
+    (merge,) = store.history().filter("operation = 'MERGE'").collect()
+    # The range holds the MERGE, and may hold a commit of the VACUUM at the start beside it.
+    assert (
+        1
+        <= line["from"]
+        <= merge.version
+        <= line["to"]
+        <= version(spark, tmp_path / "listing_store")
+    )
     assert line == {
         "type": "export",
         "batch_id": line["batch_id"],
-        "from": 1,
-        "to": head,
+        "from": line["from"],
+        "to": line["to"],
         "rows": 2,
     }
     assert {q.name for q in spark.streams.active} == {"ingest", "export"}
@@ -183,3 +193,44 @@ def test_a_hung_export_batch_fails_the_run_by_its_name(spark, tmp_path, monkeypa
         main(tmp_path, "--watchdog", "3")
     release.set()
     wait_until(lambda: not spark.streams.active)  # the watchdog stopped both
+
+
+def test_main_runs_the_maintenance_thread_and_prints_its_lines(
+    spark, tmp_path, schema, monkeypatch, capsys
+):
+    land(tmp_path, ["init"], commit(0, [up("a", 1)]))
+    monkeypatch.setattr(ingest, "TRIGGER", {"processingTime": "2 seconds"})
+    monkeypatch.setattr(store_maintenance, "TICK", 0.5)
+    args = (tmp_path, "--snapshots", schema, "--snapshot-every", "1")
+    job = threading.Thread(target=main, args=args, daemon=True)
+    job.start()
+    lines: list[dict] = []
+
+    def snapshots() -> list[int]:
+        printed = capsys.readouterr().out.splitlines()
+        lines.extend(json.loads(line) for line in printed if line.startswith("{"))
+        return [line["version"] for line in lines if line.get("op") == "snapshot"]
+
+    wait_until(lambda: len(snapshots()) >= 2, 60)  # the empty store's, then one after the MERGE
+    assert {"type": "maintenance", "op": "vacuum", "version": 0} in lines  # at the start
+    pins = snapshots()
+    assert pins == sorted(set(pins)) and pins[0] == 0
+    tables = spark.sql(f"SHOW TABLES IN {schema} LIKE 'snapshot_v*'").collect()
+    assert {f"snapshot_v{pin}" for pin in pins} <= {row.tableName for row in tables}
+    for query in spark.streams.active:  # as a cancelled run: main returns, and stops the thread
+        query.stop()
+    job.join(30)
+    assert not job.is_alive()
+    wait_until(lambda: not [t for t in threading.enumerate() if t.name == "maintenance"], 120)
+
+
+def test_a_failed_maintenance_action_fails_main_with_its_error(spark, tmp_path, monkeypatch):
+    def failing(*args):
+        raise RuntimeError("the vacuum failed")
+
+    land(tmp_path, ["init"], commit(0, [up("a", 1)]))
+    monkeypatch.setattr(ingest, "TRIGGER", {"processingTime": "2 seconds"})
+    monkeypatch.setattr(store_maintenance, "vacuum", failing)
+    with pytest.raises(RuntimeError, match="^the vacuum failed$"):
+        main(tmp_path)
+    wait_until(lambda: not spark.streams.active)  # the thread stopped both queries

@@ -5,7 +5,8 @@ a Listing Store Snapshot at the snapshot cadence, VACUUM at the start and then e
 A snapshot is a shallow clone, a table named snapshot_v<version> in one schema, with its log
 under <data>/snapshots/. In one tick the order is snapshot, drop, OPTIMIZE, VACUUM: the VACUUM
 runs on Delta's default retention, and outside Unity Catalog it breaks a clone that still needs a
-file older than that, so no snapshot older than KEEP is left when it runs.
+file older than that. So when it runs, the only snapshot older than KEEP that can be left is the
+head's own, which needs no file that the store has dropped.
 """
 
 import contextlib
@@ -41,13 +42,12 @@ def due(
     """What to run now, in order. `last` holds when OPTIMIZE and VACUUM last ran, with no
     "vacuum" before the first one; `snapshots` holds each one's (version, taken).
 
-    One snapshot per version: an idle store gets no second one. The newest is never dropped, so
-    the head's snapshot stays and no later clone meets a dropped one's files."""
+    One snapshot per version: an idle store gets no second one. The head's snapshot is never
+    dropped, so an idle store keeps its newest, and no later clone meets a dropped one's files."""
     versions = [version for version, _ in snapshots]
     snapshot = head not in versions and all(now - taken >= every for _, taken in snapshots)
-    newest = head if snapshot else max(versions, default=None)
     actions = [("snapshot", head)] if snapshot else []
-    actions += [("drop", v) for v, taken in sorted(snapshots) if now - taken > KEEP and v != newest]
+    actions += [("drop", v) for v, taken in sorted(snapshots) if now - taken > KEEP and v != head]
     if now - last["optimize"] >= OPTIMIZE_EVERY:
         actions.append(("optimize", head))
     if "vacuum" not in last or now - last["vacuum"] >= VACUUM_EVERY:
@@ -58,13 +58,17 @@ def due(
 def snapshots(spark: SparkSession, schema: str) -> list[tuple[int, datetime]]:
     """Each snapshot's (version, taken), the time of its CLONE commit.
 
-    ponytail: one history read per snapshot, up to 336 at the stress cadence; a name that holds
-    the time if a tick ever takes minutes."""
+    ponytail: one history read per snapshot in every tick. Measured on local[2]: 1 s for 10
+    snapshots, 13 s for 100. The default cadence keeps 28; the stress cadence reaches 100 after
+    two days. Keep each one's time in the thread if P3's smoke check shows a slow tick."""
     found = []
     for row in spark.sql(f"SHOW TABLES IN {schema} LIKE '{_NAME}*'").collect():
+        version = row.tableName.removeprefix(_NAME)
+        if not version.isdecimal():  # a table that someone made by hand: not a snapshot
+            continue
         history = spark.sql(f"DESCRIBE HISTORY {schema}.{row.tableName}")
         taken = history.orderBy("version").first().timestamp  # naive, in the driver's zone
-        found.append((int(row.tableName.removeprefix(_NAME)), taken.astimezone(UTC)))
+        found.append((int(version), taken.astimezone(UTC)))
     return found
 
 
@@ -101,24 +105,30 @@ def tick(
     conflicts: tuple[type[Exception], ...],
 ) -> None:
     """Run what is due, and print a line for each action. An OPTIMIZE that loses to a MERGE
-    (`conflicts`) waits for the next hour; any other error is the caller's."""
-    head = DeltaTable.forPath(spark, f"{data}/listing_store").history(1).first().version
-    for op, version in due(now, last, snapshots(spark, schema), head, every=every):
-        line = {"type": "maintenance", "op": op, "version": version}
-        if op == "snapshot":
-            snapshot(spark, data, schema, version)
-        elif op == "drop":
-            drop(spark, schema, version)
-        elif op == "optimize":
-            last[op] = now
-            try:
-                optimize(spark, data)
-            except conflicts:
-                line["ran"] = False  # not an Outcome's word: those are spelled in status.py
-        else:
-            vacuum(spark, data)
-            last[op] = now
-        entry.say(line)
+    (`conflicts`) waits for the next hour. Any other error is the caller's, after a line that
+    names the action: the job's own error can be another one, if a query is slow to stop."""
+    line: dict = {"type": "maintenance"}
+    try:
+        head = DeltaTable.forPath(spark, f"{data}/listing_store").history(1).first().version
+        for op, version in due(now, last, snapshots(spark, schema), head, every=every):
+            line = {"type": "maintenance", "op": op, "version": version}
+            if op == "snapshot":
+                snapshot(spark, data, schema, version)
+            elif op == "drop":
+                drop(spark, schema, version)
+            elif op == "optimize":
+                last[op] = now
+                try:
+                    optimize(spark, data)
+                except conflicts:
+                    line["ran"] = False  # not an Outcome's word: those are spelled in status.py
+            else:
+                vacuum(spark, data)
+                last[op] = now
+            entry.say(line)
+    except Exception as e:
+        entry.say(line | {"error": f"{type(e).__name__}: {' '.join(str(e).split())}"[:500]})
+        raise
 
 
 def start(

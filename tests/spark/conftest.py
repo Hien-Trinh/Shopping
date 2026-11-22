@@ -14,6 +14,8 @@ from delta import configure_spark_with_delta_pip
 from pyspark.sql import SparkSession
 from pyspark.sql.streaming import StreamingQueryManager
 
+from ingestion import store_maintenance
+
 RUNTIME = Path(__file__).parents[2] / "requirements" / "runtime-18.txt"
 
 
@@ -73,7 +75,7 @@ def no_query_left(spark):
     # Wait for it, and drop the snapshots it left in the session's one catalog, or a later `main`
     # would read a snapshot of another test's store.
     for thread in threading.enumerate():
-        if thread.name == "maintenance":
+        if thread.name == store_maintenance.POOL:
             thread.join(120)
             assert not thread.is_alive(), "the maintenance thread did not stop"
     for row in spark.sql("SHOW TABLES IN default LIKE 'snapshot_v*'").collect():

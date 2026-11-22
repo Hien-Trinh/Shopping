@@ -3,12 +3,14 @@ ingest query writes (docs/specs/step-a8.md)."""
 
 import json
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from delta.exceptions import ConcurrentAppendException
 from delta.tables import DeltaTable
+from pyspark.errors import AnalysisException, PySparkAttributeError
 from support import delete, up
 from test_change_export import assert_the_export_oracle_holds, export
 from test_ingest import commit, fingerprints, land, run, store_rows, version
@@ -78,6 +80,9 @@ def test_due_drops_what_is_older_than_keep_but_never_the_newest_snapshot():
     assert due(now + S, ran, [(3, T), (9, T)]) == [("drop", 3)]  # an idle store keeps its head's
     assert due(now + S, ran, [(8, T), (3, T)]) == [("snapshot", 9), ("drop", 3), ("drop", 8)]
     assert due(now + S, ran, [(8, T)], head=8) == []
+    # A restored store, whose head is below a snapshot's version: still the head's that stays.
+    assert due(now + S, ran, [(5, T), (100, now)], head=5) == []
+    assert due(now + S, ran, [(5, T), (100, T)], head=5) == [("drop", 100)]
 
 
 def test_keep_is_at_most_deltas_default_retention():
@@ -122,8 +127,37 @@ def test_a_second_tick_at_the_same_head_adds_no_snapshot(spark, tmp_path, schema
     tick(spark, tmp_path, schema, now)
     taken = snapshots(spark, schema)
     assert len(lines(capsys)) == 1
+    by_hand = f"{schema}.snapshot_v1_by_hand"  # not a snapshot: its name holds no version
+    spark.sql(f"CREATE TABLE {by_hand} (n INT) USING delta LOCATION '{tmp_path}/by_hand'")
     tick(spark, tmp_path, schema, now + EVERY + H)
-    assert snapshots(spark, schema) == taken and lines(capsys) == []
+    assert snapshots(spark, schema) == [*taken, "snapshot_v1_by_hand"] and lines(capsys) == []
+
+
+def test_a_tick_sets_each_timer_it_ran_so_the_next_tick_runs_nothing(
+    spark, tmp_path, schema, capsys
+):
+    land(tmp_path, ["init"], commit(0, [up("a", 1)]))
+    run(spark, tmp_path)
+    now = datetime.now(UTC)
+    last = {"optimize": now - H}  # as an hour after the thread's start, with no VACUUM yet
+    for _ in range(2):
+        sm.tick(spark, str(tmp_path), schema, last, now, every=EVERY, conflicts=())
+    assert [line["op"] for line in lines(capsys)] == ["snapshot", "optimize", "vacuum"]
+    assert last == {"optimize": now, "vacuum": now}
+
+
+def test_a_snapshots_age_is_in_utc_whatever_the_drivers_zone(spark, tmp_path, schema, monkeypatch):
+    land(tmp_path, ["init"], commit(0, [up("a", 1)]))
+    run(spark, tmp_path)
+    monkeypatch.setenv("TZ", "Asia/Tokyo")  # CI's zone is UTC, where a wrong zone would pass
+    time.tzset()
+    try:
+        tick(spark, tmp_path, schema, datetime.now(UTC))
+        ((_, taken),) = sm.snapshots(spark, schema)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+    assert abs(datetime.now(UTC) - taken) < timedelta(minutes=5)
 
 
 def test_eight_days_on_the_old_snapshots_are_dropped_and_the_newest_stays(
@@ -187,6 +221,22 @@ def test_an_optimize_that_loses_a_conflict_is_skipped_until_the_next_hour(
         sm.tick(
             spark, str(tmp_path), schema, {"optimize": now}, now, every=EVERY, conflicts=conflicts
         )
+    failed = lines(capsys)[-1]  # the line that names the action, before the error leaves
+    assert (failed["op"], failed["version"]) == ("vacuum", head)
+    assert (
+        failed["error"].startswith("ConcurrentAppendException: ") and "MERGE won" in failed["error"]
+    )
+
+
+def test_a_tick_that_cant_list_the_snapshots_prints_the_error_and_raises(spark, tmp_path, capsys):
+    land(tmp_path, ["init"], commit(0, [up("a", 1)]))
+    run(spark, tmp_path)
+    now = datetime.now(UTC)
+    with pytest.raises(AnalysisException):
+        tick(spark, tmp_path, "no_such_schema", now)
+    (line,) = lines(capsys)
+    assert set(line) == {"type", "error"} and "no_such_schema" in line["error"]
+    assert len(line["error"]) <= 500
 
 
 def test_the_thread_ticks_in_its_own_pool_and_stops(spark, tmp_path, monkeypatch):
@@ -225,3 +275,22 @@ def test_a_tick_that_raises_ends_the_thread_and_reports_the_error(spark, tmp_pat
     wait_until(lambda: failures)
     assert failures == [error]
     wait_until(lambda: not [t for t in threading.enumerate() if t.name == "maintenance"])
+
+
+def test_the_thread_runs_without_a_pool_where_there_is_no_spark_context(tmp_path, monkeypatch):
+    class Serverless:
+        @property
+        def sparkContext(self):  # noqa: N802
+            raise PySparkAttributeError(
+                errorClass="JVM_ATTRIBUTE_NOT_SUPPORTED", messageParameters={"attr_name": "sc"}
+            )
+
+    ticks, failures = [], []
+    monkeypatch.setattr(sm, "tick", lambda *args, **kwargs: ticks.append(args[0]))
+    session = Serverless()
+    stop = sm.start(
+        session, str(tmp_path), schema="default", every=EVERY, conflicts=(), failed=failures.append
+    )
+    wait_until(lambda: ticks or failures)
+    stop.set()
+    assert ticks == [session] and failures == []

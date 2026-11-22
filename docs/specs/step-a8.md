@@ -1,6 +1,6 @@
 # Step A8: the Listing Store's maintenance (mini PRD)
 
-Status: draft Nov 21, question 1 answered (Option A), questions 2 and 3 open. Plan row: [plan-v2.md, PR steps, A8](../plan-v2.md). Decisions from [Change Export and maintenance][t156] (items 2 to 4) and the [Oct 28 review][t166] (items 4 and 10). v1's steps: [step-5c.md](step-5c.md) (snapshots) and v1's `maintenance.py`. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: draft Nov 21, questions 1 and 2 answered (Option A for each), question 3 open. Plan row: [plan-v2.md, PR steps, A8](../plan-v2.md). Decisions from [Change Export and maintenance][t156] (items 2 to 4) and the [Oct 28 review][t166] (items 4 and 10). v1's steps: [step-5c.md](step-5c.md) (snapshots) and v1's `maintenance.py`. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 
@@ -97,7 +97,7 @@ Tests that read stdout: `tests/spark/test_liveness.py` gains test 8; `tests/spar
    - **Option A (recommended): a named table in a schema, in both places.** One statement and one code path: `--snapshots SCHEMA`. Local tests then run the cloud's statement. The local catalog is in memory, so the local check job (A9, another process) reads the clones by path. Risk: the docs don't say that the source can be a path in Unity Catalog; P3's smoke check answers it, and the fallback is one more argument that names the store's table.
    - **Option B: a bare path locally, a named table in the cloud.** Two statements, two ways to list and to drop, and the cloud's way runs first in the paid trial.
 
-2. **What happens when a maintenance action fails?**
+2. **What happens when a maintenance action fails?** Answered Nov 21: Option A.
 
    v1's rule is "any error propagates: the supervisor restarts it".
    - **Option A (recommended): the job fails,** and its 3 retries restart it. One rule, the same as a failed export query (A7). An `OPTIMIZE` that loses a conflict is the one exception: it is skipped until the next hour.

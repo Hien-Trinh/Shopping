@@ -1,6 +1,6 @@
 # Step A8: the Listing Store's maintenance (mini PRD)
 
-Status: draft Nov 21, questions 1 to 3 open. Plan row: [plan-v2.md, PR steps, A8](../plan-v2.md). Decisions from [Change Export and maintenance][t156] (items 2 to 4) and the [Oct 28 review][t166] (items 4 and 10). v1's steps: [step-5c.md](step-5c.md) (snapshots) and v1's `maintenance.py`. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: draft Nov 21, question 1 answered (Option A), questions 2 and 3 open. Plan row: [plan-v2.md, PR steps, A8](../plan-v2.md). Decisions from [Change Export and maintenance][t156] (items 2 to 4) and the [Oct 28 review][t166] (items 4 and 10). v1's steps: [step-5c.md](step-5c.md) (snapshots) and v1's `maintenance.py`. Terms follow [GLOSSARY.md](../../GLOSSARY.md).
 
 ## Problem
 
@@ -91,7 +91,7 @@ Tests that read stdout: `tests/spark/test_liveness.py` gains test 8; `tests/spar
 
 ## Questions
 
-1. **How does the job name a snapshot?**
+1. **How does the job name a snapshot?** Answered Nov 21: Option A.
 
    A snapshot must be a named table in Unity Catalog (fact 3). On local Spark it can be a named table or a bare path (fact 2).
    - **Option A (recommended): a named table in a schema, in both places.** One statement and one code path: `--snapshots SCHEMA`. Local tests then run the cloud's statement. The local catalog is in memory, so the local check job (A9, another process) reads the clones by path. Risk: the docs don't say that the source can be a path in Unity Catalog; P3's smoke check answers it, and the fallback is one more argument that names the store's table.

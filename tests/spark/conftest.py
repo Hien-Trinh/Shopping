@@ -56,3 +56,12 @@ def listeners(spark, monkeypatch):
     yield
     for listener in added:
         spark.streams.removeListener(listener)
+
+
+@pytest.fixture(autouse=True)
+def no_query_left(spark):
+    """`main` returns when one query ends, and the process then exits. Here the session lives on,
+    so the other query is stopped: a second `main` can't start a name that is still active."""
+    yield
+    for query in spark.streams.active:
+        query.stop()

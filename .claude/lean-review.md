@@ -52,6 +52,7 @@ Tests that exercise only FakeClassifier or monkeypatches, never the real contrac
 1. The PR head's `check` job is green (`gh pr checks <n>`): CI is the gate (plan-v2.md, CI).
 2. If the diff touches `src/` or `tests/spark/`: its `spark` job is green too, and the touched Spark test files pass locally (`make spark TEST=<files>`). The full `make spark` took 16 minutes on the Mac against CI's 9 (#195).
 3. If the diff touches a pure module (`source_paths` under `[tool.mutmut]` in pyproject.toml): `make mutate`; surviving mutants in changed lines not on plan-v1.md's equivalent list must be fixed or explained.
+4. If the diff adds or changes a check on a real platform (a name in `free_edition.CHECKS`, or a paid run's gate): Evidence cites the run on a throwaway branch where that check printed FAIL (plan-v2.md, Testing rules). #207 was reviewed and merged without one.
 
 ## Running scratch scripts
 From the repo root with `uv run`, `PYTHONPATH=tests` for test helpers. Run a script's body through `entry.exit_with(main)`, which flushes and exits hard: a process that scanned a Delta table can hang at interpreter exit (spikes/NOTES.md, "Exit hang").

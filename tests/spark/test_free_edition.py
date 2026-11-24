@@ -3,9 +3,10 @@
 import runpy
 
 import pytest
+from delta.tables import DeltaTable
 from test_ingest import ROOT
 
-from ingestion import classify_udf, free_edition, ingest, replay
+from ingestion import classify_udf, free_edition, ingest, replay, store_maintenance
 
 # The workflow's verdict on a run's logs (scripts/free-edition.py), so main's count line and the
 # script's copy of it are checked together.
@@ -92,6 +93,16 @@ def test_the_export_check_fails_on_a_replay_that_differs_from_the_live_store(
         free_edition.export_replays_to_the_store(spark, str(tmp_path))
 
 
+def test_the_maintenance_check_fails_when_an_action_changes_the_rows(spark, tmp_path, monkeypatch):
+    def losing_a_row(session, data):
+        DeltaTable.forPath(session, f"{data}/listing_store").delete("merchant_product_id = 'plain'")
+
+    free_edition.backlog_lands(spark, str(tmp_path))
+    monkeypatch.setattr(store_maintenance, "vacuum", losing_a_row)
+    with pytest.raises(ValueError, match="plain"):
+        free_edition.maintenance_leaves_the_rows(spark, str(tmp_path))
+
+
 def test_the_student_check_on_fake_prints_fail(spark, tmp_path, capsys):
     def on_fake(session, data):
         free_edition.student_classifies(session, data, classify_udf.FAKE)
@@ -118,3 +129,27 @@ def test_main_with_the_real_models_passes_every_check(spark, tmp_path, capsys):
     lines = printed(capsys).splitlines()
     names = [*free_edition.CHECKS, free_edition.STUDENT]
     assert lines == [f"PASS {name}" for name in names] + ["8 of 8 checks passed"]
+
+
+# The test that shows each check red. A check that can't fail checks nothing, and A8's was merged
+# without one (plan-v2.md, Testing rules: it is also seen red on Free Edition before merge).
+RED = {
+    "the backlog lands as the store oracle says": (
+        test_a_failed_check_prints_fail_the_later_checks_still_print_and_main_raises
+    ),
+    "one Outcome per Change": test_each_later_check_fails_on_what_it_checks,
+    "a restart adds nothing": test_each_later_check_fails_on_what_it_checks,
+    "a later commit reads its stored rows": test_each_later_check_fails_on_what_it_checks,
+    "the store has its layout": test_each_later_check_fails_on_what_it_checks,
+    "the export replays to the store": (
+        test_the_export_check_fails_on_a_replay_that_differs_from_the_live_store
+    ),
+    "OPTIMIZE and VACUUM leave the store's rows": (
+        test_the_maintenance_check_fails_when_an_action_changes_the_rows
+    ),
+    free_edition.STUDENT: test_the_student_check_on_fake_prints_fail,
+}
+
+
+def test_every_check_names_the_test_that_shows_it_red():
+    assert list(RED) == [*free_edition.CHECKS, free_edition.STUDENT]

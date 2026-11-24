@@ -146,17 +146,12 @@ def test_a_tick_sets_each_timer_it_ran_so_the_next_tick_runs_nothing(
     assert last == {"optimize": now, "vacuum": now}
 
 
-def test_a_snapshots_age_is_in_utc_whatever_the_drivers_zone(spark, tmp_path, schema, monkeypatch):
+def test_a_snapshots_age_is_in_utc_whatever_the_drivers_zone(spark, tmp_path, schema):
     land(tmp_path, ["init"], commit(0, [up("a", 1)]))
     run(spark, tmp_path)
-    monkeypatch.setenv("TZ", "Asia/Tokyo")  # CI's zone is UTC, where a wrong zone would pass
-    time.tzset()
-    try:
-        tick(spark, tmp_path, schema, datetime.now(UTC))
-        ((_, taken),) = sm.snapshots(spark, schema)
-    finally:
-        monkeypatch.undo()
-        time.tzset()
+    assert time.localtime().tm_gmtoff != 0  # conftest's zone: in UTC a wrong zone would pass
+    tick(spark, tmp_path, schema, datetime.now(UTC))
+    ((_, taken),) = sm.snapshots(spark, schema)
     assert abs(datetime.now(UTC) - taken) < timedelta(minutes=5)
 
 

@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import threading
+import time
 import uuid
 from importlib.metadata import distributions
 from pathlib import Path
@@ -18,9 +19,14 @@ from ingestion import store_maintenance
 
 RUNTIME = Path(__file__).parents[2] / "requirements" / "runtime-18.txt"
 
+# A zone that is not UTC, with a half hour in its offset, for Python and for the JVM this starts:
+# CI's runner is in UTC, where code that reads a local time as UTC gives the right answer (#207).
+os.environ["TZ"] = "Asia/Kolkata"
+time.tzset()
+
 
 @pytest.fixture(scope="session")
-def spark():
+def spark(tmp_path_factory):
     # Every library the env shares with Runtime 18 is at the runtime's version.
     lines = RUNTIME.read_text().splitlines()
     pins = dict(line.split("==") for line in lines if not line.startswith("#"))
@@ -40,6 +46,8 @@ def spark():
         .config("spark.databricks.delta.snapshotPartitions", 1)
         .config("spark.sql.shuffle.partitions", 4)  # 1 would hide what each partition writes
         .config("spark.ui.enabled", False)
+        # Not the working directory: a table with no LOCATION would land in the checkout (#207).
+        .config("spark.sql.warehouse.dir", str(tmp_path_factory.mktemp("warehouse")))
         # A VACUUM lists the table's files in this many tasks: the default, 10000, takes minutes.
         .config("spark.sql.sources.parallelPartitionDiscovery.parallelism", 4)
     )

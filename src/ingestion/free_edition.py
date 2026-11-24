@@ -218,7 +218,9 @@ def maintenance_leaves_the_rows(spark: SparkSession, data: str) -> None:
     before = rows()
     store_maintenance.optimize(spark, data)
     store_maintenance.vacuum(spark, data)
-    _expect(rows(), before)
+    # probe/a8-red, not for main: a lost row, so the check must print FAIL on every pass.
+    DeltaTable.forPath(spark, f"{data}/listing_store").delete("merchant_product_id = 'plain'")
+    _expect(len(rows()), len(before))
 
 
 def student_classifies(spark: SparkSession, data: str, spec: classify_udf.Spec) -> None:
